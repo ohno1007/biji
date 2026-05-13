@@ -22,6 +22,9 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -90,8 +93,11 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -186,6 +192,8 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var modelSheetOpen by remember { mutableStateOf(false) }
+    var contextStatsOpen by remember { mutableStateOf(false) }
+    var modelPickerOpen by remember { mutableStateOf(false) }
 
     // Pull a fresh models list as soon as we land on a chat screen.
     LaunchedEffect(settings.apiKey, settings.baseUrl) { vm.ensureModelsLoaded() }
@@ -195,7 +203,7 @@ fun ChatScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted -> if (granted) vm.startVoice() }
 
-    LaunchedEffect(messages.size, streaming) {
+    LaunchedEffect(messages.size, streaming, workflow.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
     }
 
@@ -207,6 +215,21 @@ fun ChatScreen(
         }
     }
 
+    // Snapshot the last non-empty workflow so AnimatedVisibility's exit
+    // animation still has steps to render. Without this, the panel
+    // would be invoked with an empty list during the fade-out frame
+    // and crash on `steps.last()`.
+    var lastWorkflow by remember { mutableStateOf<List<WorkflowStep>>(emptyList()) }
+    LaunchedEffect(workflow) {
+        if (workflow.isNotEmpty()) lastWorkflow = workflow
+    }
+    // Measure the workflow panel so the LazyColumn can leave room for
+    // it — otherwise the chat content scrolls underneath the floating
+    // panel and gets visually clipped.
+    val density = LocalDensity.current
+    var workflowPanelHeight by remember { mutableStateOf(0.dp) }
+    val workflowReserve = if (workflow.isNotEmpty()) workflowPanelHeight + 8.dp else 0.dp
+
     Box(Modifier.fillMaxSize().imePadding()) {
         LazyColumn(
             state = listState,
@@ -214,7 +237,7 @@ fun ChatScreen(
             contentPadding = PaddingValues(
                 start = 18.dp, end = 18.dp,
                 top = TopFadeHeight + 12.dp,
-                bottom = ComposerArea + 16.dp
+                bottom = ComposerArea + 16.dp + workflowReserve
             ),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
@@ -248,7 +271,9 @@ fun ChatScreen(
             title = title,
             usage = ctxUsage,
             onBack = onBack,
-            onTapRing = { /* could expand a sheet with details */ },
+            onTapRing = { contextStatsOpen = true },
+            ringVisible = !contextStatsOpen,
+            sharedTransitionScope = sharedTransitionScope,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
@@ -293,6 +318,8 @@ fun ChatScreen(
             } else Modifier
         // Workflow status panel — hangs above the composer for the
         // duration of a multi-step tool run. Auto-hides when empty.
+        // Always feeds the panel the *last* non-empty list so the exit
+        // animation has something to render.
         AnimatedVisibility(
             visible = workflow.isNotEmpty(),
             enter = fadeIn(tween(180)) +
@@ -303,8 +330,12 @@ fun ChatScreen(
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(bottom = ComposerArea + 4.dp)
+                .onSizeChanged { sz ->
+                    workflowPanelHeight = with(density) { sz.height.toDp() }
+                }
         ) {
-            WorkflowPanel(steps = workflow)
+            val toShow = if (workflow.isNotEmpty()) workflow else lastWorkflow
+            WorkflowPanel(steps = toShow)
         }
 
         Composer(
@@ -319,12 +350,14 @@ fun ChatScreen(
                 }
             },
             onStop = vm::cancelStream,
-            onOpenModelSheet = { modelSheetOpen = true },
+            onOpenModelSheet = { modelPickerOpen = true },
             onVoice = {
                 val granted = ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
                     android.content.pm.PackageManager.PERMISSION_GRANTED
                 if (granted) vm.startVoice() else micPerm.launch(Manifest.permission.RECORD_AUDIO)
             },
+            modelPickerVisible = modelPickerOpen,
+            sharedTransitionScope = sharedTransitionScope,
             modifier = composerModifier.then(sharedModifier)
         )
 
@@ -357,6 +390,73 @@ fun ChatScreen(
                 onRetry = vm::startVoice
             )
         }
+
+        // Context-stats popup. Its bounds morph out of the ContextRing
+        // (shared content state CONTEXT_STATS_KEY).
+        AnimatedVisibility(
+            visible = contextStatsOpen,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            ContextStatsScrim(onDismiss = { contextStatsOpen = false }) {
+                ContextStatsPopup(
+                    usage = ctxUsage,
+                    model = settings.model,
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = this@AnimatedVisibility,
+                    onDismiss = { contextStatsOpen = false }
+                )
+            }
+        }
+
+        // Model-picker popup. Its bounds morph out of the composer's
+        // model chip (shared content state MODEL_PICKER_KEY).
+        AnimatedVisibility(
+            visible = modelPickerOpen,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            ContextStatsScrim(onDismiss = { modelPickerOpen = false }) {
+                ModelPickerPopup(
+                    models = modelsState.list.map { it.id },
+                    loading = modelsState.loading,
+                    error = modelsState.error,
+                    currentModel = settings.model,
+                    convoThinking = convoThinking,
+                    onPick = { vm.setModel(it); modelPickerOpen = false },
+                    onToggleThinking = vm::setConversationThinking,
+                    onRefresh = vm::refreshModels,
+                    onDismiss = { modelPickerOpen = false },
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = this@AnimatedVisibility
+                )
+            }
+        }
+    }
+}
+
+/** Dimmed scrim under our custom popups — tap to dismiss. The scrim
+ *  colour darkens in dark mode and tints toward black in light mode so
+ *  the popup card always reads above the chat content. */
+@Composable
+private fun ContextStatsScrim(
+    onDismiss: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val scrimColor = if (isDark) Color.Black.copy(alpha = 0.50f)
+        else Color.Black.copy(alpha = 0.32f)
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(scrimColor)
+            .pointerInput(Unit) {
+                detectTapGestures { onDismiss() }
+            }
+    ) {
+        content()
     }
 }
 
@@ -433,12 +533,15 @@ private fun WindowInsetsTopHeight(): androidx.compose.ui.unit.Dp {
     return with(density) { WindowInsets.statusBars.getTop(density).toDp() }
 }
 
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
 @Composable
 private fun TopBar(
     title: String,
     usage: ContextUsage,
     onBack: () -> Unit,
     onTapRing: () -> Unit,
+    ringVisible: Boolean,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
     modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
@@ -460,7 +563,24 @@ private fun TopBar(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
-        ContextRing(usage = usage, onClick = onTapRing)
+        // Keep the ring's slot 40dp wide even when hidden, so the title's
+        // weighted layout doesn't reflow when the popup opens. The
+        // fully-qualified AnimatedVisibility call avoids the ambient
+        // RowScope.AnimatedVisibility extension from kicking in.
+        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = ringVisible,
+                enter = fadeIn(tween(120)),
+                exit = fadeOut(tween(120))
+            ) {
+                ContextRing(
+                    usage = usage,
+                    onClick = onTapRing,
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = this@AnimatedVisibility
+                )
+            }
+        }
     }
 }
 
@@ -496,8 +616,16 @@ private fun IconBtn(
  * Spec source: m3.material.io / CircularProgressIndicator – gap 4dp,
  * stroke ~4dp, rounded stroke cap.
  */
+private const val CONTEXT_STATS_KEY = "biji-context-stats"
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
 @Composable
-private fun ContextRing(usage: ContextUsage, onClick: () -> Unit) {
+private fun ContextRing(
+    usage: ContextUsage,
+    onClick: () -> Unit,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope?
+) {
     val cs = MaterialTheme.colorScheme
     val fraction by animateFloatAsState(
         targetValue = usage.fraction,
@@ -509,12 +637,23 @@ private fun ContextRing(usage: ContextUsage, onClick: () -> Unit) {
     )
     val warn = fraction > 0.78f
     val activeColor = if (warn) cs.error else cs.primary
-    // outline gives clear contrast against the cream background;
-    // surfaceContainerHighest was too close in tone to be visible.
     val trackColor = cs.outline.copy(alpha = 0.55f)
 
+    val sharedMod = if (sharedTransitionScope != null && animatedVisibilityScope != null) {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key = CONTEXT_STATS_KEY),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(140)),
+                resizeMode = androidx.compose.animation.SharedTransitionScope
+                    .ResizeMode.RemeasureToBounds
+            )
+        }
+    } else Modifier
+
     Box(
-        modifier = Modifier
+        modifier = sharedMod
             .size(40.dp)
             .clip(CircleShape)
             .bouncyClickable(onClick = onClick),
@@ -607,7 +746,7 @@ private fun MessageItem(m: Message, onOpenUrl: (String) -> Unit) {
                 )
             )
     ) {
-        if (isUser) UserBubble(m.content) else AssistantBlock(m)
+        if (isUser) UserBubble(m.content) else AssistantBlock(m, onOpenUrl = onOpenUrl)
     }
 }
 
@@ -665,7 +804,7 @@ private fun isLight(): Boolean = MaterialTheme.colorScheme.background.luminance(
 private fun Color.luminance(): Float = 0.2126f * red + 0.7152f * green + 0.0722f * blue
 
 @Composable
-private fun AssistantBlock(m: Message) {
+private fun AssistantBlock(m: Message, onOpenUrl: (String) -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val clipboard = LocalClipboardManager.current
     Column(Modifier.fillMaxWidth()) {
@@ -676,7 +815,7 @@ private fun AssistantBlock(m: Message) {
         if (m.content.isBlank() && m.reasoning.isNullOrBlank()) {
             TypingDots()
         } else {
-            MarkdownText(markdown = m.content)
+            MarkdownText(markdown = m.content, onOpenUrl = onOpenUrl)
             if (m.content.isNotBlank()) {
                 Spacer(Modifier.height(6.dp))
                 Row(
@@ -788,6 +927,7 @@ private fun TypingDots() {
 // Composer
 // =====================================================================
 
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
 @Composable
 private fun Composer(
     value: String,
@@ -799,6 +939,8 @@ private fun Composer(
     onStop: () -> Unit,
     onOpenModelSheet: () -> Unit,
     onVoice: () -> Unit,
+    modelPickerVisible: Boolean = false,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope? = null,
     modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
@@ -844,7 +986,13 @@ private fun Composer(
                 onClick = { /* reserved */ }
             )
             Spacer(Modifier.width(6.dp))
-            ComposerModelChip(model = model, thinking = thinking, onClick = onOpenModelSheet)
+            ComposerModelChip(
+                model = model,
+                thinking = thinking,
+                onClick = onOpenModelSheet,
+                visible = !modelPickerVisible,
+                sharedTransitionScope = sharedTransitionScope,
+            )
             Spacer(Modifier.weight(1f))
             CircleAction(
                 icon = Icons.Rounded.Mic,
@@ -885,15 +1033,58 @@ private fun CircleAction(
     }
 }
 
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
 @Composable
-private fun ComposerModelChip(model: String, thinking: Boolean, onClick: () -> Unit) {
+private fun ComposerModelChip(
+    model: String,
+    thinking: Boolean,
+    onClick: () -> Unit,
+    visible: Boolean = true,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope? = null
+) {
+    // Wrap in AnimatedVisibility so the chip's sharedBounds element has a
+    // proper scope to morph from when the model picker opens.
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(140)),
+        exit = fadeOut(tween(120))
+    ) {
+        InnerComposerModelChip(
+            model = model,
+            thinking = thinking,
+            onClick = onClick,
+            sharedTransitionScope = sharedTransitionScope,
+            animatedVisibilityScope = this@AnimatedVisibility
+        )
+    }
+}
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun InnerComposerModelChip(
+    model: String,
+    thinking: Boolean,
+    onClick: () -> Unit,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope
+) {
     val cs = MaterialTheme.colorScheme
     val bg = if (thinking) cs.primaryContainer else cs.surfaceContainerHigh
     val fg = if (thinking) cs.onPrimaryContainer else cs.onSurface
-    // Reveal the thinking icon with a bouncy expand-in transition so flipping
-    // reasoner on/off animates the capsule width with content-aware tween.
+    val sharedMod = if (sharedTransitionScope != null) {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key = MODEL_PICKER_KEY),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(140)),
+                resizeMode = androidx.compose.animation.SharedTransitionScope
+                    .ResizeMode.RemeasureToBounds
+            )
+        }
+    } else Modifier
     Row(
-        modifier = Modifier
+        modifier = sharedMod
             .clip(RoundedCornerShape(50))
             .background(bg)
             .bouncyClickable(pressedScale = 0.94f, onClick = onClick)
@@ -1216,6 +1407,7 @@ private fun ErrorRow(message: String, onDismiss: () -> Unit) {
  */
 @Composable
 private fun WorkflowPanel(steps: List<WorkflowStep>) {
+    if (steps.isEmpty()) return
     val cs = MaterialTheme.colorScheme
     var open by remember { mutableStateOf(true) }
     val rotation by animateFloatAsState(
@@ -1366,5 +1558,328 @@ private fun EmptyChatHint() {
             style = MaterialTheme.typography.bodyMedium,
             color = cs.onSurfaceVariant
         )
+    }
+}
+
+// =====================================================================
+// Context-stats popup — bounds morph from the ring's CONTEXT_STATS_KEY
+// =====================================================================
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun ContextStatsPopup(
+    usage: ContextUsage,
+    model: String,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope,
+    onDismiss: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val sharedMod = if (sharedTransitionScope != null) {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key = CONTEXT_STATS_KEY),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(160)),
+                resizeMode = androidx.compose.animation.SharedTransitionScope
+                    .ResizeMode.RemeasureToBounds
+            )
+        }
+    } else Modifier
+    Box(
+        Modifier.fillMaxSize().statusBarsPadding().padding(16.dp),
+        contentAlignment = Alignment.TopEnd
+    ) {
+        Column(
+            modifier = sharedMod
+                .widthIn(min = 280.dp, max = 360.dp)
+                .clip(RoundedCornerShape(28.dp))
+                .background(cs.surface)
+                .pointerInput(Unit) {
+                    // Swallow taps so the scrim's tap-to-dismiss doesn't
+                    // fire when the user touches the popup card.
+                    detectTapGestures { /* eat */ }
+                }
+                .padding(20.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(56.dp)
+                        .clip(CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Canvas(Modifier.size(48.dp)) {
+                        val stroke = 4.dp.toPx()
+                        val gapDp = 4.dp.toPx()
+                        val radius = (size.minDimension - stroke) / 2f
+                        val gapDeg = (gapDp / radius) * (180f / Math.PI.toFloat())
+                        val warn = usage.fraction > 0.78f
+                        val activeColor = if (warn) cs.error else cs.primary
+                        val trackColor = cs.outline.copy(alpha = 0.55f)
+                        val used = (usage.fraction * 360f).coerceIn(0f, 360f)
+                        if (used > 0.5f) drawArc(
+                            color = activeColor,
+                            startAngle = -90f, sweepAngle = used,
+                            useCenter = false,
+                            style = Stroke(width = stroke, cap = StrokeCap.Round)
+                        )
+                        val trackStart = -90f + used + gapDeg
+                        val trackSweep = 360f - used - gapDeg * 2
+                        if (trackSweep > 0.5f) drawArc(
+                            color = trackColor,
+                            startAngle = trackStart, sweepAngle = trackSweep,
+                            useCenter = false,
+                            style = Stroke(width = stroke, cap = StrokeCap.Round)
+                        )
+                    }
+                    Text(
+                        "${(usage.fraction * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = cs.onSurface
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        "上下文用量",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = cs.onSurface,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        model.removePrefix("deepseek-"),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            StatsRow(label = "已用 token", value = formatTokens(usage.tokens))
+            Spacer(Modifier.height(6.dp))
+            StatsRow(label = "上下文窗口", value = formatTokens(usage.limit))
+            Spacer(Modifier.height(6.dp))
+            StatsRow(
+                label = "剩余预算",
+                value = formatTokens((usage.limit - usage.tokens).coerceAtLeast(0L))
+            )
+            Spacer(Modifier.height(14.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(50))
+                    .background(cs.primary)
+                    .bouncyClickable(pressedScale = 0.97f, onClick = onDismiss)
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "好",
+                    color = cs.onPrimary,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatsRow(label: String, value: String) {
+    val cs = MaterialTheme.colorScheme
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = cs.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.titleMedium.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+            color = cs.onSurface,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+private fun formatTokens(n: Long): String =
+    when {
+        n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
+        n >= 1_000 -> "%.1fK".format(n / 1_000.0)
+        else -> n.toString()
+    }
+
+// =====================================================================
+// Model-picker popup — bounds morph from the composer model chip
+// =====================================================================
+
+private const val MODEL_PICKER_KEY = "biji-model-picker"
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun ModelPickerPopup(
+    models: List<String>,
+    loading: Boolean,
+    error: String?,
+    currentModel: String,
+    convoThinking: Boolean,
+    onPick: (String) -> Unit,
+    onToggleThinking: (Boolean) -> Unit,
+    onRefresh: () -> Unit,
+    onDismiss: () -> Unit,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope
+) {
+    val cs = MaterialTheme.colorScheme
+    val sharedMod = if (sharedTransitionScope != null) {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key = MODEL_PICKER_KEY),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(160)),
+                resizeMode = androidx.compose.animation.SharedTransitionScope
+                    .ResizeMode.RemeasureToBounds
+            )
+        }
+    } else Modifier
+    val all = (listOf(com.biji.notes.data.MODEL_CHAT, com.biji.notes.data.MODEL_REASONER) + models).distinct()
+    Box(
+        Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 90.dp),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Column(
+            modifier = sharedMod
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(28.dp))
+                .background(cs.surface)
+                .pointerInput(Unit) {
+                    detectTapGestures { /* eat */ }
+                }
+                .padding(16.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "选择模型",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = cs.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .bouncyClickable(onClick = onRefresh)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = cs.primary
+                        )
+                    } else {
+                        Icon(
+                            Icons.Rounded.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = cs.primary
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "刷新",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(cs.surfaceContainer)
+                    .bouncyClickable(pressedScale = 0.99f) { onToggleThinking(!convoThinking) }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Outlined.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = cs.primary
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "本对话 · 深度思考",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = cs.onSurface,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        if (convoThinking) "已开启 <think> 提示" else "未开启",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = convoThinking,
+                    onCheckedChange = onToggleThinking,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = cs.primary,
+                        uncheckedThumbColor = Color.White,
+                        uncheckedTrackColor = cs.surfaceContainerHighest,
+                        checkedBorderColor = Color.Transparent,
+                        uncheckedBorderColor = Color.Transparent
+                    )
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            // Scrollable model list — cap height so the popup doesn't
+            // grow past the screen on long lists.
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 260.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                all.forEach { id ->
+                    val selected = id == currentModel
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .bouncyClickable(pressedScale = 0.985f) { onPick(id) }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            id,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = cs.onSurface,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (selected) {
+                            Icon(
+                                Icons.Rounded.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = cs.primary
+                            )
+                        }
+                    }
+                }
+                error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text("拉取失败：$it", style = MaterialTheme.typography.labelLarge, color = cs.error)
+                }
+            }
+        }
     }
 }

@@ -1,6 +1,7 @@
 package com.biji.notes.ui.markdown
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,26 +38,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.Placeholder
-import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.text.InlineTextContent
-import androidx.compose.foundation.text.appendInlineContent
 import com.biji.notes.ui.glass.bouncyClickable
 import kotlinx.coroutines.delay
 
@@ -90,8 +92,7 @@ private val TablePipeRow = Regex("^\\|.*\\|\\s*$")
 private val TableSeparator = Regex("^\\|\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|\\s*$")
 
 private fun indentDepth(line: String): Int {
-    var i = 0
-    var count = 0
+    var i = 0; var count = 0
     while (i < line.length && line[i] == ' ') { i++; count++ }
     return count / 2
 }
@@ -109,8 +110,7 @@ private fun parseBlocks(source: String): List<Block> {
 
         if (line.isBlank()) {
             if (out.lastOrNull() !is Block.Blank) out += Block.Blank
-            orderedCounters.clear()
-            i++; continue
+            orderedCounters.clear(); i++; continue
         }
         if (MathFenceRegex.matches(trimmed)) {
             val buf = StringBuilder(); i++
@@ -130,11 +130,11 @@ private fun parseBlocks(source: String): List<Block> {
             }
             if (i < lines.size) i++
             val body = buf.toString().trimEnd('\n')
-            val isFlowSyntax = body.contains("=>") && body.contains("->") // flowchart.js
+            val isFlowSyntax = body.contains("=>") && body.contains("->")
             out += when {
                 lang.equals("mermaid", ignoreCase = true) -> Block.Mermaid(body)
-                lang.equals("flow", ignoreCase = true) ||
-                    lang.equals("flowchart", ignoreCase = true) -> Block.Mermaid(body)
+                lang.equals("flow", ignoreCase = true) || lang.equals("flowchart", true) ->
+                    Block.Mermaid(body)
                 lang.isBlank() && isFlowSyntax -> Block.Mermaid(body)
                 else -> Block.CodeBlock(lang, body)
             }
@@ -182,7 +182,6 @@ private fun parseBlocks(source: String): List<Block> {
             out += Block.BulletItem(depth, bullet.groupValues[1].trim())
             i++; orderedCounters.clear(); continue
         }
-        // Paragraph
         val paraBuf = StringBuilder(line); i++
         while (i < lines.size) {
             val next = lines[i]; val nt = next.trimEnd()
@@ -206,189 +205,225 @@ private fun splitTableRow(line: String): List<String> =
     line.trim().trim('|').split('|').map { it.trim() }
 
 // =====================================================================
-// Inline parser with InlineTextContent for real link pills
+// Inline parser — emits AnnotatedString with "LINK" annotations. The
+// renderer paints rounded backgrounds behind each link annotation in
+// drawBehind, so links wrap naturally across line breaks while still
+// looking like real pills.
 // =====================================================================
 
 private val UrlRegex = Regex("https?://[\\w\\-./%?=&#:+~]+")
+internal const val LINK_TAG = "LINK"
 
-internal data class InlineRendered(
-    val annotated: AnnotatedString,
-    val inlineContent: Map<String, InlineTextContent>
-)
-
-/**
- * Build an [AnnotatedString] for the supplied inline source, replacing
- * every `[text](url)` and bare `http(s)://…` token with an
- * [InlineTextContent] placeholder so the renderer can paint each link
- * as a real rounded-pill composable (with the correct measured width).
- */
-@Composable
-internal fun inlineRender(
+private fun inline(
     source: String,
     baseColor: Color,
-    accent: Color,
-    linkBg: Color,
-    pillTextStyle: TextStyle
-): InlineRendered {
-    val measurer = rememberTextMeasurer()
-    val density = LocalDensity.current
-    val inlineContent = mutableMapOf<String, InlineTextContent>()
-    var nextId = 0
+    accent: Color
+): AnnotatedString = buildAnnotatedString {
+    var i = 0
+    val s = source
+    while (i < s.length) {
+        if (s[i] == '\n') { append('\n'); i++; continue }
+        // Inline math $...$
+        if (s[i] == '$' && (i + 1 < s.length && s[i + 1] != '$')) {
+            val end = s.indexOf('$', i + 1)
+            if (end != -1 && end > i + 1) {
+                val raw = s.substring(i + 1, end)
+                withStyle(
+                    SpanStyle(
+                        fontFamily = FontFamily.Serif,
+                        fontStyle = FontStyle.Italic,
+                        color = baseColor.copy(alpha = 0.92f),
+                        background = baseColor.copy(alpha = 0.06f)
+                    )
+                ) { append(latexToUnicode(raw)) }
+                i = end + 1; continue
+            }
+        }
+        if (s[i] == '`') {
+            val end = s.indexOf('`', i + 1)
+            if (end != -1) {
+                withStyle(
+                    SpanStyle(
+                        fontFamily = FontFamily.Monospace,
+                        background = baseColor.copy(alpha = 0.10f),
+                        color = baseColor.copy(alpha = 0.95f),
+                        fontSize = 13.sp
+                    )
+                ) { append(s.substring(i + 1, end)) }
+                i = end + 1; continue
+            }
+        }
+        if (i + 2 < s.length && s[i] == '*' && s[i + 1] == '*' && s[i + 2] == '*') {
+            val end = s.indexOf("***", i + 3)
+            if (end != -1) {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
+                    append(inline(s.substring(i + 3, end), baseColor, accent))
+                }
+                i = end + 3; continue
+            }
+        }
+        if (i + 1 < s.length && s[i] == '*' && s[i + 1] == '*') {
+            val end = s.indexOf("**", i + 2)
+            if (end != -1) {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                    append(inline(s.substring(i + 2, end), baseColor, accent))
+                }
+                i = end + 2; continue
+            }
+        }
+        if (s[i] == '*' || s[i] == '_') {
+            val ch = s[i]
+            val end = s.indexOf(ch, i + 1)
+            if (end != -1 && end > i + 1) {
+                withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                    append(inline(s.substring(i + 1, end), baseColor, accent))
+                }
+                i = end + 1; continue
+            }
+        }
+        if (i + 1 < s.length && s[i] == '~' && s[i + 1] == '~') {
+            val end = s.indexOf("~~", i + 2)
+            if (end != -1) {
+                withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
+                    append(inline(s.substring(i + 2, end), baseColor, accent))
+                }
+                i = end + 2; continue
+            }
+        }
+        if (i + 1 < s.length && s[i] == '=' && s[i + 1] == '=') {
+            val end = s.indexOf("==", i + 2)
+            if (end != -1) {
+                withStyle(
+                    SpanStyle(
+                        background = Color(0x66FFE066),
+                        color = baseColor
+                    )
+                ) { append(s.substring(i + 2, end)) }
+                i = end + 2; continue
+            }
+        }
+        // Markdown link
+        if (s[i] == '[') {
+            val closeBracket = s.indexOf(']', i + 1)
+            if (closeBracket != -1 && closeBracket + 1 < s.length && s[closeBracket + 1] == '(') {
+                val closeParen = s.indexOf(')', closeBracket + 2)
+                if (closeParen != -1) {
+                    val text = s.substring(i + 1, closeBracket)
+                    val url = s.substring(closeBracket + 2, closeParen)
+                    val startIdx = length
+                    withStyle(SpanStyle(color = accent, fontWeight = FontWeight.Medium)) {
+                        append(text)
+                    }
+                    addStringAnnotation(LINK_TAG, url, startIdx, length)
+                    i = closeParen + 1; continue
+                }
+            }
+        }
+        // Bare http(s) URL
+        if ((i == 0 || !s[i - 1].isLetterOrDigit()) && s.startsWith("http", i)) {
+            val m = UrlRegex.matchAt(s, i)
+            if (m != null) {
+                val startIdx = length
+                withStyle(SpanStyle(color = accent, fontWeight = FontWeight.Medium)) {
+                    append(m.value)
+                }
+                addStringAnnotation(LINK_TAG, m.value, startIdx, length)
+                i += m.value.length; continue
+            }
+        }
+        append(s[i]); i++
+    }
+}
 
-    fun registerLink(text: String, url: String): String {
-        val id = "link-${nextId++}"
-        val layout = measurer.measure(AnnotatedString(text), pillTextStyle)
-        val sizePx = layout.size
-        // Pad horizontally (10 dp on each side) so the rounded pill leaves
-        // breathing room around the text.
-        val padPx = with(density) { 10.dp.toPx() }
-        val widthSp = with(density) { (sizePx.width + padPx * 2).toSp() }
-        val heightSp = with(density) { (sizePx.height + with(density) { 4.dp.toPx() }).toSp() }
-        inlineContent[id] = InlineTextContent(
-            placeholder = Placeholder(
-                width = widthSp,
-                height = heightSp,
-                placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter
-            ),
-            children = {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(linkBg)
-                        .padding(horizontal = 10.dp, vertical = 1.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text,
-                        style = pillTextStyle,
-                        color = accent,
-                        maxLines = 1
+// =====================================================================
+// PillText — Text with custom rounded backgrounds drawn behind every
+// LINK-tagged span, plus tap detection that maps offsets back to the
+// underlying URL.
+// =====================================================================
+
+@Composable
+internal fun PillText(
+    annotated: AnnotatedString,
+    style: TextStyle,
+    color: Color,
+    linkBg: Color,
+    onOpenUrl: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val density = LocalDensity.current
+    val cornerPx = with(density) { 8.dp.toPx() }
+    val horizontalPadPx = with(density) { 4.dp.toPx() }
+    val verticalShrinkPx = with(density) { 2.dp.toPx() }
+
+    val links = remember(annotated) {
+        annotated.getStringAnnotations(LINK_TAG, 0, annotated.length)
+    }
+
+    Text(
+        text = annotated,
+        style = style,
+        color = color,
+        onTextLayout = { layout = it },
+        modifier = modifier
+            .drawBehind {
+                val l = layout ?: return@drawBehind
+                for (ann in links) {
+                    drawLinkPills(
+                        layout = l,
+                        start = ann.start,
+                        end = ann.end,
+                        bg = linkBg,
+                        corner = cornerPx,
+                        horizontalPad = horizontalPadPx,
+                        verticalShrink = verticalShrinkPx
                     )
                 }
             }
-        )
-        return id
-    }
+            .pointerInput(annotated) {
+                detectTapGestures { pos ->
+                    val l = layout ?: return@detectTapGestures
+                    val charIndex = l.getOffsetForPosition(pos)
+                    val hit = links.firstOrNull { charIndex in it.start until it.end }
+                    if (hit != null) onOpenUrl(hit.item)
+                }
+            }
+    )
+}
 
-    val annotated = buildAnnotatedString {
-        var i = 0
-        val s = source
-        while (i < s.length) {
-            if (s[i] == '\n') { append('\n'); i++; continue }
-            // Inline math $...$
-            if (s[i] == '$' && (i + 1 < s.length && s[i + 1] != '$')) {
-                val end = s.indexOf('$', i + 1)
-                if (end != -1 && end > i + 1) {
-                    val raw = s.substring(i + 1, end)
-                    withStyle(
-                        SpanStyle(
-                            fontFamily = FontFamily.Serif,
-                            fontStyle = FontStyle.Italic,
-                            color = baseColor.copy(alpha = 0.92f),
-                            background = baseColor.copy(alpha = 0.06f)
-                        )
-                    ) { append(latexToUnicode(raw)) }
-                    i = end + 1; continue
-                }
-            }
-            // Inline code
-            if (s[i] == '`') {
-                val end = s.indexOf('`', i + 1)
-                if (end != -1) {
-                    withStyle(
-                        SpanStyle(
-                            fontFamily = FontFamily.Monospace,
-                            background = baseColor.copy(alpha = 0.10f),
-                            color = baseColor.copy(alpha = 0.95f),
-                            fontSize = 13.sp
-                        )
-                    ) { append(s.substring(i + 1, end)) }
-                    i = end + 1; continue
-                }
-            }
-            // Bold + italic ***x***
-            if (i + 2 < s.length && s[i] == '*' && s[i + 1] == '*' && s[i + 2] == '*') {
-                val end = s.indexOf("***", i + 3)
-                if (end != -1) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
-                        append(s.substring(i + 3, end))
-                    }
-                    i = end + 3; continue
-                }
-            }
-            // Bold
-            if (i + 1 < s.length && s[i] == '*' && s[i + 1] == '*') {
-                val end = s.indexOf("**", i + 2)
-                if (end != -1) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                        append(s.substring(i + 2, end))
-                    }
-                    i = end + 2; continue
-                }
-            }
-            // Italic
-            if (s[i] == '*' || s[i] == '_') {
-                val ch = s[i]
-                val end = s.indexOf(ch, i + 1)
-                if (end != -1 && end > i + 1) {
-                    withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                        append(s.substring(i + 1, end))
-                    }
-                    i = end + 1; continue
-                }
-            }
-            // Strikethrough
-            if (i + 1 < s.length && s[i] == '~' && s[i + 1] == '~') {
-                val end = s.indexOf("~~", i + 2)
-                if (end != -1) {
-                    withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
-                        append(s.substring(i + 2, end))
-                    }
-                    i = end + 2; continue
-                }
-            }
-            // Highlight ==x==
-            if (i + 1 < s.length && s[i] == '=' && s[i + 1] == '=') {
-                val end = s.indexOf("==", i + 2)
-                if (end != -1) {
-                    withStyle(
-                        SpanStyle(
-                            background = Color(0x66FFE066),
-                            color = baseColor
-                        )
-                    ) { append(s.substring(i + 2, end)) }
-                    i = end + 2; continue
-                }
-            }
-            // Markdown link [text](url) → inline pill
-            if (s[i] == '[') {
-                val closeBracket = s.indexOf(']', i + 1)
-                if (closeBracket != -1 && closeBracket + 1 < s.length && s[closeBracket + 1] == '(') {
-                    val closeParen = s.indexOf(')', closeBracket + 2)
-                    if (closeParen != -1) {
-                        val text = s.substring(i + 1, closeBracket)
-                        val url = s.substring(closeBracket + 2, closeParen)
-                        val id = registerLink(text, url)
-                        appendInlineContent(id, text)
-                        addStringAnnotation("URL", url, length - 1, length)
-                        i = closeParen + 1; continue
-                    }
-                }
-            }
-            // Auto-link bare URL → inline pill
-            if ((i == 0 || !s[i - 1].isLetterOrDigit()) && s.startsWith("http", i)) {
-                val m = UrlRegex.matchAt(s, i)
-                if (m != null) {
-                    val id = registerLink(m.value, m.value)
-                    appendInlineContent(id, m.value)
-                    addStringAnnotation("URL", m.value, length - 1, length)
-                    i += m.value.length; continue
-                }
-            }
-            append(s[i]); i++
-        }
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLinkPills(
+    layout: TextLayoutResult,
+    start: Int,
+    end: Int,
+    bg: Color,
+    corner: Float,
+    horizontalPad: Float,
+    verticalShrink: Float
+) {
+    if (end <= start) return
+    val first = layout.getLineForOffset(start)
+    val last = layout.getLineForOffset(end - 1)
+    for (line in first..last) {
+        val lineStartChar = maxOf(start, layout.getLineStart(line))
+        val lineEndChar = minOf(end, layout.getLineEnd(line, visibleEnd = true))
+        if (lineEndChar <= lineStartChar) continue
+        val leftPx = layout.getHorizontalPosition(lineStartChar, true)
+        val rightPx = layout.getHorizontalPosition(lineEndChar, true)
+        val topPx = layout.getLineTop(line)
+        val bottomPx = layout.getLineBottom(line)
+        drawRoundRect(
+            color = bg,
+            topLeft = Offset(
+                x = leftPx - horizontalPad,
+                y = topPx + verticalShrink
+            ),
+            size = Size(
+                width = rightPx - leftPx + horizontalPad * 2,
+                height = bottomPx - topPx - verticalShrink * 2
+            ),
+            cornerRadius = CornerRadius(corner, corner)
+        )
     }
-    return InlineRendered(annotated, inlineContent)
 }
 
 // =====================================================================
@@ -399,27 +434,32 @@ internal fun inlineRender(
 fun MarkdownText(
     markdown: String,
     modifier: Modifier = Modifier,
-    contentPadding: PaddingValues = PaddingValues(0.dp)
+    contentPadding: PaddingValues = PaddingValues(0.dp),
+    onOpenUrl: (String) -> Unit = {}
 ) {
     val baseColor = LocalContentColor.current
     val accent = MaterialTheme.colorScheme.primary
-    val linkBg = MaterialTheme.colorScheme.surfaceContainerHigh
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    // Stronger, dark-mode-aware link background — Claude-style warm
+    // pill in light, warm brown in dark. Visible at a glance.
+    val linkBg = if (isDark) Color(0xFF3D3324) else Color(0xFFE8D9B5)
     val blocks = remember(markdown) { parseBlocks(markdown) }
 
     Column(modifier.padding(contentPadding)) {
         for (b in blocks) {
             when (b) {
-                is Block.Heading -> Heading(b.level, b.text, baseColor, accent, linkBg)
-                is Block.Paragraph -> Paragraph(b.text, baseColor, accent, linkBg)
-                is Block.BulletItem -> Bullet(b.depth, b.text, baseColor, accent, linkBg)
-                is Block.NumberedItem -> Numbered(b.depth, b.number, b.text, baseColor, accent, linkBg)
-                is Block.TaskItem -> TaskItem(b.depth, b.text, b.checked, baseColor, accent, linkBg)
-                is Block.Quote -> Quote(b.lines, baseColor, accent, linkBg)
+                is Block.Heading -> Heading(b.level, b.text, baseColor, accent, linkBg, onOpenUrl)
+                is Block.Paragraph -> Paragraph(b.text, baseColor, accent, linkBg, onOpenUrl)
+                is Block.BulletItem -> Bullet(b.depth, b.text, baseColor, accent, linkBg, onOpenUrl)
+                is Block.NumberedItem ->
+                    Numbered(b.depth, b.number, b.text, baseColor, accent, linkBg, onOpenUrl)
+                is Block.TaskItem ->
+                    TaskItem(b.depth, b.text, b.checked, baseColor, accent, linkBg, onOpenUrl)
+                is Block.Quote -> Quote(b.lines, baseColor, accent, linkBg, onOpenUrl)
                 is Block.CodeBlock -> CodeBlock(b.lang, b.code, baseColor, isDark)
                 is Block.Mermaid -> MermaidBlock(b.source, baseColor, accent)
                 is Block.MathBlock -> MathBlockBox(b.source, baseColor)
-                is Block.Table -> TableBlock(b.header, b.rows, baseColor, accent, linkBg)
+                is Block.Table -> TableBlock(b.header, b.rows, baseColor, accent, linkBg, onOpenUrl)
                 Block.Divider -> SoftDivider(baseColor)
                 Block.Blank -> Spacer(Modifier.height(6.dp))
             }
@@ -428,29 +468,13 @@ fun MarkdownText(
 }
 
 @Composable
-private fun PillText(
-    rendered: InlineRendered,
-    style: TextStyle,
-    color: Color,
-    modifier: Modifier = Modifier
-) {
-    Text(
-        text = rendered.annotated,
-        style = style,
-        color = color,
-        inlineContent = rendered.inlineContent,
-        modifier = modifier
-    )
-}
-
-@Composable
-private fun Paragraph(text: String, baseColor: Color, accent: Color, linkBg: Color) {
-    val pillStyle = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium)
-    val rendered = inlineRender(text, baseColor, accent, linkBg, pillStyle)
+private fun Paragraph(text: String, baseColor: Color, accent: Color, linkBg: Color, onOpenUrl: (String) -> Unit) {
     PillText(
-        rendered = rendered,
+        annotated = inline(text, baseColor, accent),
         style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 26.sp),
         color = baseColor,
+        linkBg = linkBg,
+        onOpenUrl = onOpenUrl,
         modifier = Modifier.padding(vertical = 3.dp).fillMaxWidth()
     )
 }
@@ -465,7 +489,10 @@ private fun SoftDivider(baseColor: Color) {
 }
 
 @Composable
-private fun Heading(level: Int, text: String, baseColor: Color, accent: Color, linkBg: Color) {
+private fun Heading(
+    level: Int, text: String,
+    baseColor: Color, accent: Color, linkBg: Color, onOpenUrl: (String) -> Unit
+) {
     val style = when (level) {
         1 -> MaterialTheme.typography.headlineMedium
         2 -> MaterialTheme.typography.headlineSmall
@@ -474,23 +501,22 @@ private fun Heading(level: Int, text: String, baseColor: Color, accent: Color, l
         5 -> MaterialTheme.typography.titleSmall
         else -> MaterialTheme.typography.labelLarge
     }
-    val pillStyle = style.copy(fontWeight = FontWeight.Medium)
-    val rendered = inlineRender(text, baseColor, accent, linkBg, pillStyle)
     Spacer(Modifier.height(if (level <= 2) 10.dp else 6.dp))
     PillText(
-        rendered = rendered,
+        annotated = inline(text, baseColor, accent),
         style = style.copy(fontWeight = FontWeight.Bold),
-        color = baseColor
+        color = baseColor,
+        linkBg = linkBg,
+        onOpenUrl = onOpenUrl
     )
     Spacer(Modifier.height(if (level <= 2) 4.dp else 2.dp))
 }
 
 @Composable
-private fun Bullet(depth: Int, text: String, baseColor: Color, accent: Color, linkBg: Color) {
-    val rendered = inlineRender(
-        text, baseColor, accent, linkBg,
-        MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium)
-    )
+private fun Bullet(
+    depth: Int, text: String,
+    baseColor: Color, accent: Color, linkBg: Color, onOpenUrl: (String) -> Unit
+) {
     Row(
         modifier = Modifier.padding(start = (depth * 16).dp, top = 1.dp, bottom = 1.dp),
         verticalAlignment = Alignment.Top
@@ -504,19 +530,20 @@ private fun Bullet(depth: Int, text: String, baseColor: Color, accent: Color, li
         }
         Spacer(Modifier.width(2.dp))
         PillText(
-            rendered = rendered,
+            annotated = inline(text, baseColor, accent),
             style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 24.sp),
-            color = baseColor
+            color = baseColor,
+            linkBg = linkBg,
+            onOpenUrl = onOpenUrl
         )
     }
 }
 
 @Composable
-private fun Numbered(depth: Int, number: Int, text: String, baseColor: Color, accent: Color, linkBg: Color) {
-    val rendered = inlineRender(
-        text, baseColor, accent, linkBg,
-        MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium)
-    )
+private fun Numbered(
+    depth: Int, number: Int, text: String,
+    baseColor: Color, accent: Color, linkBg: Color, onOpenUrl: (String) -> Unit
+) {
     Row(
         modifier = Modifier.padding(start = (depth * 16).dp, top = 1.dp, bottom = 1.dp),
         verticalAlignment = Alignment.Top
@@ -530,9 +557,11 @@ private fun Numbered(depth: Int, number: Int, text: String, baseColor: Color, ac
             )
         }
         PillText(
-            rendered = rendered,
+            annotated = inline(text, baseColor, accent),
             style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 24.sp),
-            color = baseColor
+            color = baseColor,
+            linkBg = linkBg,
+            onOpenUrl = onOpenUrl
         )
     }
 }
@@ -540,12 +569,8 @@ private fun Numbered(depth: Int, number: Int, text: String, baseColor: Color, ac
 @Composable
 private fun TaskItem(
     depth: Int, text: String, checked: Boolean,
-    baseColor: Color, accent: Color, linkBg: Color
+    baseColor: Color, accent: Color, linkBg: Color, onOpenUrl: (String) -> Unit
 ) {
-    val rendered = inlineRender(
-        text, baseColor, accent, linkBg,
-        MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium)
-    )
     Row(
         modifier = Modifier.padding(start = (depth * 16).dp, top = 2.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -558,17 +583,22 @@ private fun TaskItem(
         )
         Spacer(Modifier.width(8.dp))
         PillText(
-            rendered = rendered,
+            annotated = inline(text, baseColor, accent),
             style = MaterialTheme.typography.bodyLarge.copy(
                 textDecoration = if (checked) TextDecoration.LineThrough else null
             ),
-            color = if (checked) baseColor.copy(alpha = 0.55f) else baseColor
+            color = if (checked) baseColor.copy(alpha = 0.55f) else baseColor,
+            linkBg = linkBg,
+            onOpenUrl = onOpenUrl
         )
     }
 }
 
 @Composable
-private fun Quote(lines: List<String>, baseColor: Color, accent: Color, linkBg: Color) {
+private fun Quote(
+    lines: List<String>,
+    baseColor: Color, accent: Color, linkBg: Color, onOpenUrl: (String) -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -584,17 +614,15 @@ private fun Quote(lines: List<String>, baseColor: Color, accent: Color, linkBg: 
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             lines.forEach { l ->
-                val rendered = inlineRender(
-                    l, baseColor, accent, linkBg,
-                    MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium)
-                )
                 PillText(
-                    rendered = rendered,
+                    annotated = inline(l, baseColor, accent),
                     style = MaterialTheme.typography.bodyLarge.copy(
                         fontStyle = FontStyle.Italic,
                         lineHeight = 24.sp
                     ),
-                    color = baseColor.copy(alpha = 0.78f)
+                    color = baseColor.copy(alpha = 0.78f),
+                    linkBg = linkBg,
+                    onOpenUrl = onOpenUrl
                 )
             }
         }
@@ -728,6 +756,8 @@ private fun MermaidBlock(source: String, baseColor: Color, accent: Color) {
 
 @Composable
 private fun FlowNodeBox(node: FlowNode, baseColor: Color, accent: Color) {
+    val cs = MaterialTheme.colorScheme
+    val isDark = cs.background.luminance() < 0.5f
     val shape: RoundedCornerShape = when (node.type) {
         "start", "end" -> RoundedCornerShape(50)
         "condition" -> RoundedCornerShape(4.dp)
@@ -736,7 +766,9 @@ private fun FlowNodeBox(node: FlowNode, baseColor: Color, accent: Color) {
     val bg = when (node.type) {
         "start" -> accent.copy(alpha = 0.18f)
         "end" -> accent.copy(alpha = 0.10f)
-        "condition" -> Color(0xFFFFE08A).copy(alpha = 0.45f)
+        "condition" ->
+            if (isDark) Color(0xFF55481E).copy(alpha = 0.85f)
+            else Color(0xFFFFE08A).copy(alpha = 0.55f)
         else -> baseColor.copy(alpha = 0.10f)
     }
     Box(
@@ -757,52 +789,35 @@ private fun FlowNodeBox(node: FlowNode, baseColor: Color, accent: Color) {
 private data class FlowNode(
     val id: String,
     val label: String,
-    val type: String,           // "start" / "end" / "condition" / "op"
+    val type: String,
     val outEdgeLabel: String?
 )
 
 private val MermaidEdgeRegex = Regex(
     "([A-Za-z0-9_]+)(?:\\[([^\\]]+)])?\\s*-->(?:\\|([^|]+)\\|)?\\s*([A-Za-z0-9_]+)(?:\\[([^\\]]+)])?"
 )
-private val FlowDefRegex = Regex(
-    "^([A-Za-z0-9_]+)\\s*=>\\s*([A-Za-z]+)\\s*:\\s*(.+)$"
-)
-private val FlowChainRegex = Regex("([A-Za-z0-9_]+(?:\\([^)]+\\))?)")
+private val FlowDefRegex = Regex("^([A-Za-z0-9_]+)\\s*=>\\s*([A-Za-z]+)\\s*:\\s*(.+)$")
 
-/**
- * Lenient flow-chart parser. Handles:
- *  - Mermaid:        `A --> B`, `A[Label] --> B[Label]`, `A -->|edge| B`
- *  - flowchart.js:   `id=>type: label`, then chains like `a->b->c`,
- *                    `cond(yes)->target` (conditional branch).
- *  Branches are flattened into a linear chain — branching topologies
- *  fall back to the source order.
- */
 private fun parseFlow(source: String): List<FlowNode> {
     val labels = linkedMapOf<String, String>()
     val types = mutableMapOf<String, String>()
     val edges = mutableListOf<Triple<String, String, String?>>()
-
     for (raw in source.lines()) {
         val line = raw.trim()
         if (line.isBlank()) continue
         if (line.startsWith("flowchart") || line.startsWith("graph")) continue
-        // flowchart.js definition
         val def = FlowDefRegex.matchEntire(line)
         if (def != null) {
             val id = def.groupValues[1]; val type = def.groupValues[2].lowercase()
             val label = def.groupValues[3].trim()
-            labels[id] = label
-            types[id] = type
-            continue
+            labels[id] = label; types[id] = type; continue
         }
-        // flowchart.js chains using `->`
         if (line.contains("->") && !line.contains("-->")) {
             val parts = line.split("->").map { it.trim() }
-            for ((idx, raw0) in parts.withIndex()) {
+            for (idx in parts.indices) {
                 if (idx == parts.lastIndex) break
-                val from = parts[idx]; val to = parts[idx + 1]
-                val (fromId, edgeLabel) = parseBranchPart(from)
-                val (toId, _) = parseBranchPart(to)
+                val (fromId, edgeLabel) = parseBranchPart(parts[idx])
+                val (toId, _) = parseBranchPart(parts[idx + 1])
                 if (fromId.isNotBlank() && toId.isNotBlank()) {
                     labels.putIfAbsent(fromId, fromId)
                     labels.putIfAbsent(toId, toId)
@@ -811,7 +826,6 @@ private fun parseFlow(source: String): List<FlowNode> {
             }
             continue
         }
-        // Mermaid arrow
         val m = MermaidEdgeRegex.find(line)
         if (m != null) {
             val a = m.groupValues[1]; val aLabel = m.groupValues[2].ifBlank { a }
@@ -838,12 +852,9 @@ private fun parseFlow(source: String): List<FlowNode> {
     return ordered
 }
 
-/** flowchart.js branches look like `cond(yes)`; extract id + branch label. */
 private fun parseBranchPart(part: String): Pair<String, String?> {
     val m = Regex("^([A-Za-z0-9_]+)(?:\\(([^)]+)\\))?$").matchEntire(part)
-    return if (m != null) {
-        m.groupValues[1] to m.groupValues[2].ifBlank { null }
-    } else part to null
+    return if (m != null) m.groupValues[1] to m.groupValues[2].ifBlank { null } else part to null
 }
 
 @Composable
@@ -852,7 +863,8 @@ private fun TableBlock(
     rows: List<List<String>>,
     baseColor: Color,
     accent: Color,
-    linkBg: Color
+    linkBg: Color,
+    onOpenUrl: (String) -> Unit
 ) {
     val lineColor = baseColor.copy(alpha = 0.18f)
     val cellBg = baseColor.copy(alpha = 0.04f)
@@ -866,11 +878,13 @@ private fun TableBlock(
             .background(cellBg)
     ) {
         Box(Modifier.fillMaxWidth().background(headerBg)) {
-            TableRow(header.padEnd(cols), baseColor, accent, linkBg, isHeader = true, lineColor = lineColor)
+            TableRow(header.padEnd(cols), baseColor, accent, linkBg, onOpenUrl,
+                isHeader = true, lineColor = lineColor)
         }
         rows.forEach { r ->
             HorizontalDivider(thickness = 0.5.dp, color = lineColor)
-            TableRow(r.padEnd(cols), baseColor, accent, linkBg, isHeader = false, lineColor = lineColor)
+            TableRow(r.padEnd(cols), baseColor, accent, linkBg, onOpenUrl,
+                isHeader = false, lineColor = lineColor)
         }
     }
 }
@@ -884,13 +898,10 @@ private fun TableRow(
     baseColor: Color,
     accent: Color,
     linkBg: Color,
+    onOpenUrl: (String) -> Unit,
     isHeader: Boolean,
     lineColor: Color
 ) {
-    // IntrinsicSize.Min makes the row only as tall as its tallest cell's
-    // min intrinsic height. fillMaxHeight() on the column dividers then
-    // gives them full row coverage — no more half-height vertical lines
-    // when a cell wraps.
     Row(
         Modifier
             .fillMaxWidth()
@@ -911,15 +922,15 @@ private fun TableRow(
                     .padding(horizontal = 10.dp, vertical = if (isHeader) 9.dp else 7.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
-                val pillStyle = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium)
-                val rendered = inlineRender(c, baseColor, accent, linkBg, pillStyle)
                 PillText(
-                    rendered = rendered,
+                    annotated = inline(c, baseColor, accent),
                     style = if (isHeader)
                         MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
                     else
                         MaterialTheme.typography.bodyMedium,
-                    color = baseColor
+                    color = baseColor,
+                    linkBg = linkBg,
+                    onOpenUrl = onOpenUrl
                 )
             }
         }
