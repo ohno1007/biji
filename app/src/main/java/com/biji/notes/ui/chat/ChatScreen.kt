@@ -128,38 +128,52 @@ sealed interface ChatItem {
     data class Plain(val message: Message) : ChatItem {
         override val key: Any get() = "p-${message.id}"
     }
-    /** Inline "Searched for X" chip for a web_search tool result. */
-    data class SearchChip(val message: Message) : ChatItem {
-        override val key: Any get() = "s-${message.id}"
+    /** One or more consecutive "Searched for X" chips rendered together
+     *  with tight (4dp) internal spacing instead of the default 18dp
+     *  used between regular chat rows. */
+    data class SearchGroup(val messages: List<Message>) : ChatItem {
+        override val key: Any get() = "sg-${messages.first().id}-${messages.last().id}"
     }
 }
 
 /**
- * Walk through the message list in chronological order. Tool results
- * become inline [ChatItem.SearchChip] entries (web_search only — read_url
- * is hidden because its article body is already folded into the assistant
- * answer that follows). The silent assistant carrier rows that own the
- * `tool_calls` array don't render their own bubble.
+ * Walk through the message list in chronological order, batching every
+ * run of consecutive web_search tool-results into one
+ * [ChatItem.SearchGroup] so the chips render tightly stacked (like a
+ * reasoning toggle and its body) rather than with the chat's default
+ * 18dp gap between unrelated turns.
+ *
+ * read_url and other tool kinds are silently dropped — the article body
+ * is already folded into the next assistant answer.
  */
 internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
     val out = mutableListOf<ChatItem>()
+    val pending = mutableListOf<Message>()
+    fun flush() {
+        if (pending.isNotEmpty()) {
+            out += ChatItem.SearchGroup(pending.toList())
+            pending.clear()
+        }
+    }
     for (m in messages) {
         if (m.archived) continue
+        val isSearch = m.kind == MessageKind.TOOL_RESULT && runCatching {
+            Lite.parseToJsonElement(m.toolData.orEmpty())
+                .jsonObject["kind"]?.jsonPrimitive?.contentOrNull
+        }.getOrNull() == Tools.WEB_SEARCH
         when {
-            m.kind == MessageKind.TOOL_RESULT -> {
-                val kind = runCatching {
-                    Lite.parseToJsonElement(m.toolData.orEmpty())
-                        .jsonObject["kind"]?.jsonPrimitive?.contentOrNull
-                }.getOrNull()
-                if (kind == Tools.WEB_SEARCH) out += ChatItem.SearchChip(m)
-                // read_url and any other tool: hidden from the chat log
-            }
+            isSearch -> pending += m
+            m.kind == MessageKind.TOOL_RESULT -> Unit  // non-search tools hidden
             // Silent assistant carrier (only tool_calls, no text & no reasoning) — hidden.
             m.role == Role.ASSISTANT && m.toolData != null &&
                 m.content.isBlank() && m.reasoning.isNullOrBlank() -> Unit
-            else -> out += ChatItem.Plain(m)
+            else -> {
+                flush()
+                out += ChatItem.Plain(m)
+            }
         }
     }
+    flush()
     return out
 }
 
@@ -223,12 +237,12 @@ fun ChatScreen(
     LaunchedEffect(workflow) {
         if (workflow.isNotEmpty()) lastWorkflow = workflow
     }
-    // Measure the workflow panel so the LazyColumn can leave room for
-    // it — otherwise the chat content scrolls underneath the floating
-    // panel and gets visually clipped.
+    // The Column below holds (optional) WorkflowPanel + Composer. Its
+    // measured height becomes the LazyColumn's bottom reserve so chat
+    // content never scrolls underneath either piece.
     val density = LocalDensity.current
     var workflowPanelHeight by remember { mutableStateOf(0.dp) }
-    val workflowReserve = if (workflow.isNotEmpty()) workflowPanelHeight + 8.dp else 0.dp
+    val dockReserve = workflowPanelHeight + 8.dp
 
     Box(Modifier.fillMaxSize().imePadding()) {
         LazyColumn(
@@ -237,7 +251,7 @@ fun ChatScreen(
             contentPadding = PaddingValues(
                 start = 18.dp, end = 18.dp,
                 top = TopFadeHeight + 12.dp,
-                bottom = ComposerArea + 16.dp + workflowReserve
+                bottom = dockReserve
             ),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
@@ -249,8 +263,13 @@ fun ChatScreen(
                     when (item) {
                         is ChatItem.Plain ->
                             MessageItem(m = item.message, onOpenUrl = vm::openWebUrl)
-                        is ChatItem.SearchChip ->
-                            SearchedForChip(message = item.message, onOpenUrl = vm::openWebUrl)
+                        is ChatItem.SearchGroup -> {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                item.messages.forEach { m ->
+                                    SearchedForChip(message = m, onOpenUrl = vm::openWebUrl)
+                                }
+                            }
+                        }
                     }
                 }
                 if (toolStatus != null) {
@@ -295,12 +314,11 @@ fun ChatScreen(
             }
         }
 
-        // Composer with optional shared-element bounds. When the chat
-        // screen enters from the conversation-list, the bottom-nav pill's
-        // bounds morph into this Composer; when leaving, the Composer's
-        // bounds morph back into the nav pill.
+        // Workflow + Composer stacked in a single bottom-anchored Column
+        // so the panel always sits flush on top of the composer (rather
+        // than at a fixed `bottom = ComposerArea` offset, which left a
+        // visible gap between the two).
         val composerModifier = Modifier
-            .align(Alignment.BottomCenter)
             .navigationBarsPadding()
             .padding(horizontal = 12.dp, vertical = 10.dp)
         val sharedModifier =
@@ -316,50 +334,49 @@ fun ChatScreen(
                     )
                 }
             } else Modifier
-        // Workflow status panel — hangs above the composer for the
-        // duration of a multi-step tool run. Auto-hides when empty.
-        // Always feeds the panel the *last* non-empty list so the exit
-        // animation has something to render.
-        AnimatedVisibility(
-            visible = workflow.isNotEmpty(),
-            enter = fadeIn(tween(180)) +
-                slideInVertically(initialOffsetY = { it / 2 }),
-            exit = fadeOut(tween(140)) +
-                androidx.compose.animation.slideOutVertically(targetOffsetY = { it / 2 }),
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = ComposerArea + 4.dp)
+                .fillMaxWidth()
                 .onSizeChanged { sz ->
+                    // Track the *combined* workflow + composer footprint so
+                    // the chat scroll content leaves enough room above it.
                     workflowPanelHeight = with(density) { sz.height.toDp() }
                 }
         ) {
-            val toShow = if (workflow.isNotEmpty()) workflow else lastWorkflow
-            WorkflowPanel(steps = toShow)
+            androidx.compose.animation.AnimatedVisibility(
+                visible = workflow.isNotEmpty(),
+                enter = fadeIn(tween(180)) +
+                    slideInVertically(initialOffsetY = { it / 2 }),
+                exit = fadeOut(tween(140)) +
+                    androidx.compose.animation.slideOutVertically(targetOffsetY = { it / 2 })
+            ) {
+                val toShow = if (workflow.isNotEmpty()) workflow else lastWorkflow
+                WorkflowPanel(steps = toShow)
+            }
+            Composer(
+                value = input,
+                onValueChange = { input = it },
+                model = settings.model,
+                thinking = convoThinking || settings.model == MODEL_REASONER,
+                sending = streaming,
+                onSend = {
+                    if (input.isNotBlank() && !streaming) {
+                        vm.send(input); input = ""
+                    }
+                },
+                onStop = vm::cancelStream,
+                onOpenModelSheet = { modelPickerOpen = true },
+                onVoice = {
+                    val granted = ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (granted) vm.startVoice() else micPerm.launch(Manifest.permission.RECORD_AUDIO)
+                },
+                modelPickerVisible = modelPickerOpen,
+                sharedTransitionScope = sharedTransitionScope,
+                modifier = composerModifier.then(sharedModifier)
+            )
         }
-
-        Composer(
-            value = input,
-            onValueChange = { input = it },
-            model = settings.model,
-            thinking = convoThinking || settings.model == MODEL_REASONER,
-            sending = streaming,
-            onSend = {
-                if (input.isNotBlank() && !streaming) {
-                    vm.send(input); input = ""
-                }
-            },
-            onStop = vm::cancelStream,
-            onOpenModelSheet = { modelPickerOpen = true },
-            onVoice = {
-                val granted = ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                    android.content.pm.PackageManager.PERMISSION_GRANTED
-                if (granted) vm.startVoice() else micPerm.launch(Manifest.permission.RECORD_AUDIO)
-            },
-            modelPickerVisible = modelPickerOpen,
-            sharedTransitionScope = sharedTransitionScope,
-            modifier = composerModifier.then(sharedModifier)
-        )
 
         // Model picker sheet (shared composable in ModelPickerSheet.kt).
         if (modelSheetOpen) {

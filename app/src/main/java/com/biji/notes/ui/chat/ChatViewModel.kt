@@ -349,6 +349,69 @@ class ChatViewModel(
             }
             _toolStatus.value = null
         }
+        // Fell off the end of the loop while the model was still
+        // requesting more tools. Force a final tools-less synthesis pass
+        // so the user gets a real answer instead of silence.
+        forceFinalSynthesis(convoId)
+    }
+
+    /**
+     * Last-resort pass after `runChatTurn` exhausts its tool-call budget.
+     * Re-sends the full conversation history with `tools = null` plus a
+     * one-shot system nudge instructing the model to wrap up, so the
+     * user always gets a textual answer even when the model would have
+     * happily kept calling tools forever.
+     */
+    private suspend fun forceFinalSynthesis(convoId: Long) {
+        val s = settings.value
+        val base = buildRequestMessages(convoId, "")
+        val nudge = ChatMessageDto(
+            role = Role.SYSTEM,
+            content = "已达到本轮工具调用上限。请基于上面已有的工具结果直接给出最终答复，不要再调用任何工具。"
+        )
+        val placeholderId = chat.addMessage(convoId, Role.ASSISTANT, "")
+        val contentBuf = StringBuilder()
+        val reasoningBuf = StringBuilder()
+        var sawError: String? = null
+        var lastUsageTotal: Long = -1L
+        client.stream(
+            baseUrl = s.baseUrl,
+            apiKey = s.apiKey,
+            model = s.model,
+            messages = base + nudge,
+            temperature = s.temperature,
+            tools = null
+        ).collect { ev ->
+            when (ev) {
+                is ChatEvent.Delta -> {
+                    contentBuf.append(ev.content)
+                    chat.updateAssistantStream(
+                        placeholderId,
+                        contentBuf.toString(),
+                        reasoningBuf.takeIf { it.isNotEmpty() }?.toString()
+                    )
+                }
+                is ChatEvent.Reasoning -> {
+                    reasoningBuf.append(ev.content)
+                    chat.updateAssistantStream(
+                        placeholderId,
+                        contentBuf.toString(),
+                        reasoningBuf.toString()
+                    )
+                }
+                is ChatEvent.Usage -> { lastUsageTotal = ev.total }
+                is ChatEvent.Error -> { sawError = ev.message }
+                else -> Unit
+            }
+        }
+        if (lastUsageTotal > 0) chat.setContextTokens(convoId, lastUsageTotal)
+        if (contentBuf.isEmpty() && reasoningBuf.isEmpty()) {
+            chat.deleteMessage(placeholderId)
+            _streamError.value = sawError
+                ?: "工具循环达到上限，模型仍未输出最终答复。请重试或换一个 prompt。"
+        } else if (sawError != null) {
+            _streamError.value = sawError
+        }
     }
 
     /** Friendly per-step label rendered inside the workflow panel. */
@@ -628,7 +691,12 @@ class ChatViewModel(
     }
 
     companion object {
-        private const val MAX_ITERS = 4
+        // Max number of tool-call rounds before we force a tools-less
+        // final-synthesis pass. Bumped from 4 → 8 because some prompts
+        // legitimately need several searches in a row (e.g. "查一下
+        // 特朗普现在在哪里" tends to fire 3-5 successive web_search
+        // calls before the model has enough to summarise).
+        private const val MAX_ITERS = 8
         private const val COMPACT_THRESHOLD = 0.78
 
         // Realistic per-model context windows. Cover every variant the
