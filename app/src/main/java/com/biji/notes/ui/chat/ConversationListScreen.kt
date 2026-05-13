@@ -99,12 +99,15 @@ fun ConversationListScreen(
             )
         }
     ) { inner ->
+        val topFadeHeight = 28.dp
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     start = 16.dp, end = 16.dp,
-                    top = inner.calculateTopPadding(),
+                    // Leave room for the soft fade overlay so the first card
+                    // never sits behind the cream gradient at rest.
+                    top = inner.calculateTopPadding() + topFadeHeight,
                     bottom = inner.calculateBottomPadding() +
                         contentPadding.calculateBottomPadding() + 24.dp
                 ),
@@ -124,6 +127,7 @@ fun ConversationListScreen(
                 }
             }
             ConvoTopEdgeFade(
+                height = topFadeHeight,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = inner.calculateTopPadding())
@@ -339,12 +343,12 @@ private fun formatDate(ts: Long): String =
     SimpleDateFormat("MM/dd HH:mm", Locale.getDefault()).format(Date(ts))
 
 @Composable
-private fun ConvoTopEdgeFade(modifier: Modifier = Modifier) {
+private fun ConvoTopEdgeFade(modifier: Modifier = Modifier, height: androidx.compose.ui.unit.Dp = 28.dp) {
     val bg = MaterialTheme.colorScheme.background
     Box(
         modifier
             .fillMaxWidth()
-            .height(36.dp)
+            .height(height)
             .background(
                 Brush.verticalGradient(
                     0.0f to bg,

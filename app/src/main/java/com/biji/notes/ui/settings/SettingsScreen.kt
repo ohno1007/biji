@@ -140,13 +140,14 @@ fun SettingsScreen(
             )
         }
     ) { inner ->
+        val topFadeHeight = 28.dp
         Box(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 start = SectionEdge,
                 end = SectionEdge,
-                top = inner.calculateTopPadding(),
+                top = inner.calculateTopPadding() + topFadeHeight,
                 bottom = inner.calculateBottomPadding() +
                     contentPadding.calculateBottomPadding() + 24.dp
             ),
@@ -335,6 +336,7 @@ fun SettingsScreen(
         // Soft top fade right under the LargeTopAppBar — same gradient
         // as the chat screen so content gently dissolves as it scrolls up.
         TopEdgeFade(
+            height = topFadeHeight,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(top = inner.calculateTopPadding())
@@ -344,12 +346,12 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun TopEdgeFade(modifier: Modifier = Modifier) {
+private fun TopEdgeFade(modifier: Modifier = Modifier, height: androidx.compose.ui.unit.Dp = 28.dp) {
     val bg = MaterialTheme.colorScheme.background
     Box(
         modifier
             .fillMaxWidth()
-            .height(36.dp)
+            .height(height)
             .background(
                 Brush.verticalGradient(
                     0.0f to bg,

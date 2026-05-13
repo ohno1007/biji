@@ -355,6 +355,12 @@ class ChatViewModel(
         m.role == Role.ASSISTANT && m.toolData != null -> ChatMessageDto(
             role = Role.ASSISTANT,
             content = m.content,
+            // v4-flash and other thinking-mode proxies require the
+            // reasoning_content to be echoed on the assistant turn that
+            // owns the tool_calls — otherwise the next request fails
+            // with `HTTP 400 · The reasoning_content in the thinking
+            // mode must be passed back to the API.`
+            reasoningContent = if (keepReasoning && !m.reasoning.isNullOrBlank()) m.reasoning else null,
             toolCalls = decodeToolCalls(m.toolData)
         )
         m.role == Role.ASSISTANT && m.content.isBlank() && m.toolData == null -> null
