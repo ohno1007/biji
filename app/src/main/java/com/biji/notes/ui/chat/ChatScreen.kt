@@ -88,12 +88,18 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -163,7 +169,7 @@ fun ChatScreen(
         // top/bottom fades can sample it through a Gaussian blur. Below
         // API 31 the layer still works, just without the blur — and the
         // gradient alone produces a clean solid-fade.
-        val backdrop = androidx.compose.ui.graphics.layer.rememberGraphicsLayer()
+        val backdrop = rememberGraphicsLayer()
         Box(
             Modifier
                 .fillMaxSize()
@@ -317,7 +323,7 @@ private val ComposerArea = 172.dp
  */
 @Composable
 private fun BlurFade(
-    backdrop: androidx.compose.ui.graphics.layer.GraphicsLayer,
+    backdrop: GraphicsLayer,
     isBottom: Boolean,
     heightTotal: androidx.compose.ui.unit.Dp,
     modifier: Modifier = Modifier
@@ -340,10 +346,7 @@ private fun BlurFade(
     }
     val blurEffect = remember {
         if (android.os.Build.VERSION.SDK_INT >= 31) {
-            androidx.compose.ui.graphics.BlurEffect(
-                30f, 30f,
-                androidx.compose.ui.graphics.TileMode.Clamp
-            )
+            BlurEffect(30f, 30f, TileMode.Clamp)
         } else null
     }
 
@@ -365,9 +368,7 @@ private fun BlurFade(
                 }
                 .drawBehind {
                     val ty = if (isBottom) -(backdrop.size.height.toFloat() - size.height) else 0f
-                    androidx.compose.ui.graphics.drawscope.translate(top = ty) {
-                        drawLayer(backdrop)
-                    }
+                    translate(top = ty) { drawLayer(backdrop) }
                 }
         )
         // Mask pass: alpha gradient that fades the blurred layer into bg.
