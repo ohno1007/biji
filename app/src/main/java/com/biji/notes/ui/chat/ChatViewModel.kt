@@ -623,11 +623,16 @@ class ChatViewModel(
         private const val MAX_ITERS = 4
         private const val COMPACT_THRESHOLD = 0.78
 
-        // All current DeepSeek models share a 1M-token context window per
-        // the official docs. Third-party proxies may advertise less, but
-        // we keep 1M as the sane default so the auto-compaction ring
-        // doesn't fill up before it needs to.
-        private fun contextLimitFor(model: String): Long = 1_000_000L
+        // Realistic per-model context windows. Official DeepSeek chat /
+        // reasoner are 64K; v4-flash advertises 128K. Using 1M (the
+        // marketing number) made the ring stay flat-0 forever — drop to
+        // the actual usable window so the indicator earns its space.
+        private fun contextLimitFor(model: String): Long = when {
+            model.contains("v4-flash", ignoreCase = true) -> 128_000L
+            model.contains("reasoner", ignoreCase = true) -> 64_000L
+            model.contains("deepseek-chat", ignoreCase = true) -> 64_000L
+            else -> 64_000L
+        }
 
         fun factory(
             chat: ChatRepository,

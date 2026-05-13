@@ -814,6 +814,10 @@ private fun Composer(
             onValueChange = onValueChange,
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
             cursorBrush = SolidColor(cs.primary),
+            // Cap visible lines so long input grows vertically up to 6 rows
+            // and then scrolls internally — the composer's bounding box width
+            // never balloons with the text length.
+            maxLines = 6,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 14.dp, vertical = 12.dp),

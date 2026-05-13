@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckBox
 import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -26,7 +27,11 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,22 +47,35 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.biji.notes.ui.glass.bouncyClickable
+import kotlinx.coroutines.delay
 
 /**
  * Lightweight Markdown renderer with Claude-style typography.
  *
- * Supported:
+ * Supported block types:
  *  - ATX headings #..######
- *  - Paragraphs (with hard line break on trailing two spaces or backslash)
- *  - Bulleted (*, -, +) and ordered (1.) lists, single-level nesting
- *  - Task lists `- [ ]` / `- [x]`
- *  - Blockquotes `>` (multiline)
- *  - Fenced code ``` with optional language tag and copy button
+ *  - Paragraphs (auto-merge consecutive non-special lines)
+ *  - Bulleted (*, -, +) and ordered lists, two-space nesting, task lists
+ *  - Blockquotes `>` (multi-line)
+ *  - Fenced code with optional language tag, syntax highlight + copy button
  *  - Horizontal rules `---` / `***` / `___`
  *  - GFM pipe tables  | a | b | / |---|---|
- *  - Inline: **bold**, *italic*, ~~strike~~, `code`, [text](url)
- *  - Auto-link bare http(s) URLs
+ *  - ``` mermaid blocks rendered as a minimal flowchart
+ *  - $$math$$ blocks (basic LaTeX → unicode)
+ *
+ * Supported inline:
+ *  - **bold**, *italic* / _italic_, ***bold-italic***
+ *  - ~~strikethrough~~, ==highlighted==
+ *  - `inline code`, $inline math$
+ *  - [link text](url) — rendered with a soft beige pill background
+ *  - auto-link of bare http(s) URLs
  */
+
+// =====================================================================
+// AST
+// =====================================================================
+
 private sealed interface Block {
     data class Heading(val level: Int, val text: String) : Block
     data class Paragraph(val text: String) : Block
@@ -66,12 +84,15 @@ private sealed interface Block {
     data class NumberedItem(val depth: Int, val number: Int, val text: String) : Block
     data class Quote(val lines: List<String>) : Block
     data class CodeBlock(val lang: String, val code: String) : Block
+    data class Mermaid(val source: String) : Block
+    data class MathBlock(val source: String) : Block
     data class Table(val header: List<String>, val rows: List<List<String>>) : Block
     data object Divider : Block
     data object Blank : Block
 }
 
 private val FenceRegex = Regex("^```([\\w+-]*)\\s*$")
+private val MathFenceRegex = Regex("^\\$\\$\\s*$")
 private val HrRegex = Regex("^(-{3,}|_{3,}|\\*{3,})\\s*$")
 private val HeadingRegex = Regex("^(#{1,6})\\s+(.*)$")
 private val OrderedRegex = Regex("^(\\d+)\\.\\s+(.*)$")
@@ -87,7 +108,7 @@ private fun indentDepth(line: String): Int {
         i++
         count++
     }
-    return count / 2 // 2 spaces per level
+    return count / 2
 }
 
 private fun parseBlocks(source: String): List<Block> {
@@ -108,7 +129,21 @@ private fun parseBlocks(source: String): List<Block> {
             continue
         }
 
-        // Fenced code
+        // $$ ... $$ math block
+        if (MathFenceRegex.matches(trimmed)) {
+            val buf = StringBuilder()
+            i++
+            while (i < lines.size && !MathFenceRegex.matches(lines[i].trimStart())) {
+                buf.appendLine(lines[i])
+                i++
+            }
+            if (i < lines.size) i++
+            out += Block.MathBlock(buf.toString().trimEnd('\n'))
+            orderedCounters.clear()
+            continue
+        }
+
+        // Fenced code or mermaid
         val fence = FenceRegex.matchEntire(trimmed)
         if (fence != null) {
             val lang = fence.groupValues[1]
@@ -119,20 +154,25 @@ private fun parseBlocks(source: String): List<Block> {
                 i++
             }
             if (i < lines.size) i++
-            out += Block.CodeBlock(lang, buf.toString().trimEnd('\n'))
+            val body = buf.toString().trimEnd('\n')
+            out += if (lang.equals("mermaid", ignoreCase = true)) {
+                Block.Mermaid(body)
+            } else {
+                Block.CodeBlock(lang, body)
+            }
             orderedCounters.clear()
             continue
         }
 
         // Horizontal rule
-        if (HrRegex.matches(line.trimStart())) {
+        if (HrRegex.matches(trimmed)) {
             out += Block.Divider
             i++
             orderedCounters.clear()
             continue
         }
 
-        // GFM table — header row followed by separator row
+        // GFM table
         if (TablePipeRow.matches(line) &&
             i + 1 < lines.size && TableSeparator.matches(lines[i + 1].trimEnd())
         ) {
@@ -158,7 +198,7 @@ private fun parseBlocks(source: String): List<Block> {
             continue
         }
 
-        // Blockquote (consume consecutive `> ` lines)
+        // Blockquote
         if (trimmed.startsWith(">")) {
             val quoteBuf = mutableListOf<String>()
             while (i < lines.size && lines[i].trimStart().startsWith(">")) {
@@ -170,7 +210,7 @@ private fun parseBlocks(source: String): List<Block> {
             continue
         }
 
-        // Task list `- [ ] foo`
+        // Task list
         val task = TaskRegex.matchEntire(trimmed)
         if (task != null) {
             val checked = task.groupValues[1].lowercase() == "x"
@@ -189,7 +229,7 @@ private fun parseBlocks(source: String): List<Block> {
             continue
         }
 
-        // Bullet list
+        // Bullet
         val bullet = BulletRegex.matchEntire(trimmed)
         if (bullet != null) {
             out += Block.BulletItem(depth, bullet.groupValues[1].trim())
@@ -198,20 +238,21 @@ private fun parseBlocks(source: String): List<Block> {
             continue
         }
 
-        // Paragraph — accumulate consecutive non-empty/non-special lines into one
+        // Paragraph
         val paraBuf = StringBuilder(line)
         i++
         while (i < lines.size) {
             val next = lines[i]
             val nt = next.trimEnd()
             if (nt.isBlank()) break
-            if (nt.trimStart().let {
-                    it.startsWith("#") || it.startsWith("- ") || it.startsWith("* ") ||
-                        it.startsWith("+ ") || it.startsWith("> ") || it.startsWith("```") ||
-                        HrRegex.matches(it) || OrderedRegex.matches(it) ||
-                        TablePipeRow.matches(nt)
-                }) break
-            paraBuf.append('\n').append(next.trimEnd())
+            val nts = nt.trimStart()
+            if (nts.startsWith("#") || nts.startsWith("- ") || nts.startsWith("* ") ||
+                nts.startsWith("+ ") || nts.startsWith("> ") || nts.startsWith("```") ||
+                nts.startsWith("$$") ||
+                HrRegex.matches(nts) || OrderedRegex.matches(nts) ||
+                TablePipeRow.matches(nt)
+            ) break
+            paraBuf.append('\n').append(nt)
             i++
         }
         out += Block.Paragraph(paraBuf.toString())
@@ -229,13 +270,29 @@ private fun splitTableRow(line: String): List<String> =
 
 private val UrlRegex = Regex("https?://[\\w\\-./%?=&#:+~]+")
 
-private fun inline(source: String, baseColor: Color, accent: Color): AnnotatedString =
+private fun inline(source: String, baseColor: Color, accent: Color, linkBg: Color): AnnotatedString =
     buildAnnotatedString {
         var i = 0
         val s = source
         while (i < s.length) {
-            // Hard line break: trailing two spaces or backslash before newline
             if (s[i] == '\n') { append('\n'); i++; continue }
+            // Inline math $...$
+            if (s[i] == '$' && (i + 1 < s.length && s[i + 1] != '$')) {
+                val end = s.indexOf('$', i + 1)
+                if (end != -1 && end > i + 1) {
+                    val raw = s.substring(i + 1, end)
+                    withStyle(
+                        SpanStyle(
+                            fontFamily = FontFamily.Serif,
+                            fontStyle = FontStyle.Italic,
+                            color = baseColor.copy(alpha = 0.92f),
+                            background = baseColor.copy(alpha = 0.06f)
+                        )
+                    ) { append(latexToUnicode(raw)) }
+                    i = end + 1
+                    continue
+                }
+            }
             // Inline code
             if (s[i] == '`') {
                 val end = s.indexOf('`', i + 1)
@@ -252,16 +309,13 @@ private fun inline(source: String, baseColor: Color, accent: Color): AnnotatedSt
                     continue
                 }
             }
-            // Bold + italic combos: ***x***
+            // Bold+italic ***x***
             if (i + 2 < s.length && s[i] == '*' && s[i + 1] == '*' && s[i + 2] == '*') {
                 val end = s.indexOf("***", i + 3)
                 if (end != -1) {
-                    withStyle(
-                        SpanStyle(
-                            fontWeight = FontWeight.Bold,
-                            fontStyle = FontStyle.Italic
-                        )
-                    ) { append(inline(s.substring(i + 3, end), baseColor, accent)) }
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
+                        append(inline(s.substring(i + 3, end), baseColor, accent, linkBg))
+                    }
                     i = end + 3
                     continue
                 }
@@ -271,19 +325,19 @@ private fun inline(source: String, baseColor: Color, accent: Color): AnnotatedSt
                 val end = s.indexOf("**", i + 2)
                 if (end != -1) {
                     withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                        append(inline(s.substring(i + 2, end), baseColor, accent))
+                        append(inline(s.substring(i + 2, end), baseColor, accent, linkBg))
                     }
                     i = end + 2
                     continue
                 }
             }
-            // Italic with _ or *
+            // Italic *x* / _x_
             if (s[i] == '*' || s[i] == '_') {
                 val ch = s[i]
                 val end = s.indexOf(ch, i + 1)
                 if (end != -1 && end > i + 1) {
                     withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                        append(inline(s.substring(i + 1, end), baseColor, accent))
+                        append(inline(s.substring(i + 1, end), baseColor, accent, linkBg))
                     }
                     i = end + 1
                     continue
@@ -294,13 +348,27 @@ private fun inline(source: String, baseColor: Color, accent: Color): AnnotatedSt
                 val end = s.indexOf("~~", i + 2)
                 if (end != -1) {
                     withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
-                        append(inline(s.substring(i + 2, end), baseColor, accent))
+                        append(inline(s.substring(i + 2, end), baseColor, accent, linkBg))
                     }
                     i = end + 2
                     continue
                 }
             }
-            // Markdown link
+            // Highlight ==x==
+            if (i + 1 < s.length && s[i] == '=' && s[i + 1] == '=') {
+                val end = s.indexOf("==", i + 2)
+                if (end != -1) {
+                    withStyle(
+                        SpanStyle(
+                            background = Color(0xFFFFF3B0),
+                            color = Color(0xFF1A1A1F)
+                        )
+                    ) { append(inline(s.substring(i + 2, end), baseColor, accent, linkBg)) }
+                    i = end + 2
+                    continue
+                }
+            }
+            // Markdown link [text](url)
             if (s[i] == '[') {
                 val closeBracket = s.indexOf(']', i + 1)
                 if (closeBracket != -1 && closeBracket + 1 < s.length && s[closeBracket + 1] == '(') {
@@ -309,9 +377,13 @@ private fun inline(source: String, baseColor: Color, accent: Color): AnnotatedSt
                         val text = s.substring(i + 1, closeBracket)
                         val url = s.substring(closeBracket + 2, closeParen)
                         pushStringAnnotation("URL", url)
-                        withStyle(
-                            SpanStyle(color = accent, textDecoration = TextDecoration.Underline)
-                        ) { append(inline(text, baseColor, accent)) }
+                        // Beige pill-ish background + accent text — no underline,
+                        // small leading/trailing space so the bg reads as a chip.
+                        withStyle(SpanStyle(background = linkBg, color = accent, fontWeight = FontWeight.Medium)) {
+                            append(' ')
+                            append(text)
+                            append(' ')
+                        }
                         pop()
                         i = closeParen + 1
                         continue
@@ -323,9 +395,11 @@ private fun inline(source: String, baseColor: Color, accent: Color): AnnotatedSt
                 val m = UrlRegex.matchAt(s, i)
                 if (m != null) {
                     pushStringAnnotation("URL", m.value)
-                    withStyle(
-                        SpanStyle(color = accent, textDecoration = TextDecoration.Underline)
-                    ) { append(m.value) }
+                    withStyle(SpanStyle(background = linkBg, color = accent, fontWeight = FontWeight.Medium)) {
+                        append(' ')
+                        append(m.value)
+                        append(' ')
+                    }
                     pop()
                     i += m.value.length
                     continue
@@ -348,32 +422,29 @@ fun MarkdownText(
 ) {
     val baseColor = LocalContentColor.current
     val accent = MaterialTheme.colorScheme.primary
+    // Soft cream pill background for links — matches the chat surface palette.
+    val linkBg = MaterialTheme.colorScheme.surfaceContainerHigh
     val blocks = remember(markdown) { parseBlocks(markdown) }
 
     Column(modifier.padding(contentPadding)) {
         for (b in blocks) {
             when (b) {
-                is Block.Heading -> Heading(b.level, b.text, baseColor, accent)
-                is Block.Paragraph ->
-                    Text(
-                        inline(b.text, baseColor, accent),
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            lineHeight = 26.sp
-                        ),
-                        color = baseColor,
-                        modifier = Modifier.padding(vertical = 3.dp)
-                    )
-                is Block.BulletItem -> Bullet(b.depth, b.text, baseColor, accent)
-                is Block.NumberedItem -> Numbered(b.depth, b.number, b.text, baseColor, accent)
-                is Block.TaskItem -> TaskItem(b.depth, b.text, b.checked, baseColor, accent)
-                is Block.Quote -> Quote(b.lines, baseColor, accent)
-                is Block.CodeBlock -> CodeBlock(b.lang, b.code, baseColor)
-                is Block.Table -> Table(b.header, b.rows, baseColor, accent)
-                Block.Divider -> HorizontalDivider(
-                    modifier = Modifier.padding(vertical = 10.dp),
-                    thickness = 0.5.dp,
-                    color = baseColor.copy(alpha = 0.2f)
+                is Block.Heading -> Heading(b.level, b.text, baseColor, accent, linkBg)
+                is Block.Paragraph -> Text(
+                    inline(b.text, baseColor, accent, linkBg),
+                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 26.sp),
+                    color = baseColor,
+                    modifier = Modifier.padding(vertical = 3.dp)
                 )
+                is Block.BulletItem -> Bullet(b.depth, b.text, baseColor, accent, linkBg)
+                is Block.NumberedItem -> Numbered(b.depth, b.number, b.text, baseColor, accent, linkBg)
+                is Block.TaskItem -> TaskItem(b.depth, b.text, b.checked, baseColor, accent, linkBg)
+                is Block.Quote -> Quote(b.lines, baseColor, accent, linkBg)
+                is Block.CodeBlock -> CodeBlock(b.lang, b.code, baseColor)
+                is Block.Mermaid -> MermaidBlock(b.source, baseColor, accent)
+                is Block.MathBlock -> MathBlock(b.source, baseColor)
+                is Block.Table -> TableBlock(b.header, b.rows, baseColor, accent, linkBg)
+                Block.Divider -> SoftDivider(baseColor)
                 Block.Blank -> Spacer(Modifier.height(6.dp))
             }
         }
@@ -381,7 +452,16 @@ fun MarkdownText(
 }
 
 @Composable
-private fun Heading(level: Int, text: String, baseColor: Color, accent: Color) {
+private fun SoftDivider(baseColor: Color) {
+    HorizontalDivider(
+        modifier = Modifier.padding(vertical = 10.dp),
+        thickness = 0.5.dp,
+        color = baseColor.copy(alpha = 0.18f)
+    )
+}
+
+@Composable
+private fun Heading(level: Int, text: String, baseColor: Color, accent: Color, linkBg: Color) {
     val style = when (level) {
         1 -> MaterialTheme.typography.headlineMedium
         2 -> MaterialTheme.typography.headlineSmall
@@ -392,7 +472,7 @@ private fun Heading(level: Int, text: String, baseColor: Color, accent: Color) {
     }
     Spacer(Modifier.height(if (level <= 2) 10.dp else 6.dp))
     Text(
-        inline(text, baseColor, accent),
+        inline(text, baseColor, accent, linkBg),
         style = style.copy(fontWeight = FontWeight.Bold),
         color = baseColor
     )
@@ -400,7 +480,7 @@ private fun Heading(level: Int, text: String, baseColor: Color, accent: Color) {
 }
 
 @Composable
-private fun Bullet(depth: Int, text: String, baseColor: Color, accent: Color) {
+private fun Bullet(depth: Int, text: String, baseColor: Color, accent: Color, linkBg: Color) {
     Row(
         modifier = Modifier.padding(start = (depth * 16).dp, top = 1.dp, bottom = 1.dp),
         verticalAlignment = Alignment.Top
@@ -414,7 +494,7 @@ private fun Bullet(depth: Int, text: String, baseColor: Color, accent: Color) {
         }
         Spacer(Modifier.width(2.dp))
         Text(
-            inline(text, baseColor, accent),
+            inline(text, baseColor, accent, linkBg),
             style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 24.sp),
             color = baseColor
         )
@@ -422,7 +502,7 @@ private fun Bullet(depth: Int, text: String, baseColor: Color, accent: Color) {
 }
 
 @Composable
-private fun Numbered(depth: Int, number: Int, text: String, baseColor: Color, accent: Color) {
+private fun Numbered(depth: Int, number: Int, text: String, baseColor: Color, accent: Color, linkBg: Color) {
     Row(
         modifier = Modifier.padding(start = (depth * 16).dp, top = 1.dp, bottom = 1.dp),
         verticalAlignment = Alignment.Top
@@ -436,7 +516,7 @@ private fun Numbered(depth: Int, number: Int, text: String, baseColor: Color, ac
             )
         }
         Text(
-            inline(text, baseColor, accent),
+            inline(text, baseColor, accent, linkBg),
             style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 24.sp),
             color = baseColor
         )
@@ -444,7 +524,10 @@ private fun Numbered(depth: Int, number: Int, text: String, baseColor: Color, ac
 }
 
 @Composable
-private fun TaskItem(depth: Int, text: String, checked: Boolean, baseColor: Color, accent: Color) {
+private fun TaskItem(
+    depth: Int, text: String, checked: Boolean,
+    baseColor: Color, accent: Color, linkBg: Color
+) {
     Row(
         modifier = Modifier.padding(start = (depth * 16).dp, top = 2.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -457,7 +540,7 @@ private fun TaskItem(depth: Int, text: String, checked: Boolean, baseColor: Colo
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            inline(text, baseColor, accent),
+            inline(text, baseColor, accent, linkBg),
             style = MaterialTheme.typography.bodyLarge.copy(
                 textDecoration = if (checked) TextDecoration.LineThrough else null
             ),
@@ -467,7 +550,7 @@ private fun TaskItem(depth: Int, text: String, checked: Boolean, baseColor: Colo
 }
 
 @Composable
-private fun Quote(lines: List<String>, baseColor: Color, accent: Color) {
+private fun Quote(lines: List<String>, baseColor: Color, accent: Color, linkBg: Color) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -483,7 +566,7 @@ private fun Quote(lines: List<String>, baseColor: Color, accent: Color) {
         Column(Modifier.weight(1f)) {
             lines.forEach { l ->
                 Text(
-                    inline(l, baseColor, accent),
+                    inline(l, baseColor, accent, linkBg),
                     style = MaterialTheme.typography.bodyLarge.copy(
                         fontStyle = FontStyle.Italic,
                         lineHeight = 24.sp
@@ -499,59 +582,63 @@ private fun Quote(lines: List<String>, baseColor: Color, accent: Color) {
 private fun CodeBlock(lang: String, code: String, baseColor: Color) {
     val cs = MaterialTheme.colorScheme
     val clipboard = LocalClipboardManager.current
+    var copied by remember(code) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1500)
+            copied = false
+        }
+    }
+    val borderColor = baseColor.copy(alpha = 0.15f)
+    val containerColor = baseColor.copy(alpha = 0.05f)
+
     Column(
         Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(baseColor.copy(alpha = 0.06f))
+            .clip(RoundedCornerShape(16.dp))
+            .background(containerColor)
     ) {
-        if (lang.isNotBlank()) {
+        // Header: language label + functional copy button.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(baseColor.copy(alpha = 0.04f))
+                .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                lang.ifBlank { "code" },
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = baseColor.copy(alpha = 0.55f),
+                modifier = Modifier.weight(1f)
+            )
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 12.dp, end = 6.dp, top = 6.dp),
+                    .clip(RoundedCornerShape(50))
+                    .bouncyClickable(pressedScale = 0.96f) {
+                        clipboard.setText(AnnotatedString(code))
+                        copied = true
+                    }
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    lang,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontFamily = FontFamily.Monospace
-                    ),
-                    color = baseColor.copy(alpha = 0.55f),
-                    modifier = Modifier.weight(1f)
+                Icon(
+                    if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                    contentDescription = "复制",
+                    modifier = Modifier.size(12.dp),
+                    tint = if (copied) cs.primary else baseColor.copy(alpha = 0.65f)
                 )
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Rounded.ContentCopy,
-                        contentDescription = null,
-                        modifier = Modifier
-                            .size(12.dp)
-                            .clip(RoundedCornerShape(50))
-                            .padding(end = 4.dp)
-                            .also {
-                                // tap target handled by row click below — keep icon non-clickable for now
-                            },
-                        tint = baseColor.copy(alpha = 0.55f)
-                    )
-                    Text(
-                        "复制",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = baseColor.copy(alpha = 0.55f),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .padding(horizontal = 2.dp)
-                            .also { }
-                    )
-                }
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    if (copied) "已复制" else "复制",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (copied) cs.primary else baseColor.copy(alpha = 0.65f),
+                    fontWeight = FontWeight.Medium
+                )
             }
         }
-        // Code lines — horizontal scroll for long lines.
+        HorizontalDivider(thickness = 0.5.dp, color = borderColor)
         val hScroll = rememberScrollState()
         Box(
             Modifier
@@ -560,57 +647,153 @@ private fun CodeBlock(lang: String, code: String, baseColor: Color) {
                 .padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
             Text(
-                code,
+                SyntaxHighlight.colorize(code, lang, baseColor),
                 fontFamily = FontFamily.Monospace,
                 fontSize = 13.sp,
                 color = baseColor
             )
         }
     }
-    // Tap anywhere on code body to copy
-    androidx.compose.runtime.LaunchedEffect(code) {
-        // Copy action is wired below as a simple invisible click row.
-    }
-    Row(
-        modifier = Modifier
+}
+
+@Composable
+private fun MathBlock(source: String, baseColor: Color) {
+    val text = latexToUnicode(source).trim()
+    Box(
+        Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp)
-            .clip(RoundedCornerShape(50)),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(vertical = 6.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(baseColor.copy(alpha = 0.05f))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center
     ) {
         Text(
-            "",
-            modifier = Modifier
-                .clip(RoundedCornerShape(50))
-                .padding(2.dp)
-                .also {
-                    // hidden actor — we rely on the code block area copy chip above
-                    clipboard // touch ref to avoid unused warning
-                }
+            text,
+            fontFamily = FontFamily.Serif,
+            fontStyle = FontStyle.Italic,
+            color = baseColor,
+            style = MaterialTheme.typography.titleMedium
         )
     }
 }
 
 @Composable
-private fun Table(header: List<String>, rows: List<List<String>>, baseColor: Color, accent: Color) {
+private fun MermaidBlock(source: String, baseColor: Color, accent: Color) {
     val borderColor = baseColor.copy(alpha = 0.18f)
-    val cols = (listOf(header) + rows).maxOf { it.size }
+    val nodes = parseMermaid(source)
+    if (nodes.isEmpty()) {
+        // Fall back to rendering as code if we couldn't parse a flow.
+        CodeBlock(lang = "mermaid", code = source, baseColor = baseColor)
+        return
+    }
     Column(
         Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(baseColor.copy(alpha = 0.04f))
+            .padding(horizontal = 14.dp, vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        TableRow(
-            header.padEnd(cols),
-            baseColor, accent,
-            isHeader = true,
-            borderColor = borderColor
-        )
+        nodes.forEachIndexed { idx, node ->
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(accent.copy(alpha = 0.12f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    node.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = baseColor,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            if (idx < nodes.lastIndex) {
+                Text(
+                    if (node.edgeLabel.isNullOrBlank()) "↓" else "↓ ${node.edgeLabel}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = baseColor.copy(alpha = 0.55f),
+                    modifier = Modifier.padding(vertical = 2.dp)
+                )
+            }
+        }
+    }
+}
+
+private data class MermaidNode(val id: String, val label: String, val edgeLabel: String?)
+
+private val MermaidNodeRegex = Regex("([A-Za-z0-9_]+)(?:\\[([^\\]]+)])?")
+private val MermaidEdgeRegex = Regex(
+    "([A-Za-z0-9_]+)(?:\\[([^\\]]+)])?\\s*-->(?:\\|([^|]+)\\|)?\\s*([A-Za-z0-9_]+)(?:\\[([^\\]]+)])?"
+)
+
+/** Very small mermaid parser: handles a linear chain of `A --> B`,
+ *  `A[Label] --> B[Label]`, `A -->|edge| B`. Branching is flattened. */
+private fun parseMermaid(source: String): List<MermaidNode> {
+    val labels = linkedMapOf<String, String>()
+    val edges = mutableListOf<Triple<String, String, String?>>()
+    for (raw in source.lines()) {
+        val line = raw.trim()
+        if (line.isBlank()) continue
+        if (line.startsWith("flowchart") || line.startsWith("graph") || line.startsWith("---")) continue
+        val m = MermaidEdgeRegex.find(line) ?: continue
+        val a = m.groupValues[1]
+        val aLabel = m.groupValues[2].ifBlank { a }
+        val edgeLabel = m.groupValues[3].ifBlank { null }
+        val b = m.groupValues[4]
+        val bLabel = m.groupValues[5].ifBlank { b }
+        labels.putIfAbsent(a, aLabel)
+        labels.putIfAbsent(b, bLabel)
+        edges += Triple(a, b, edgeLabel)
+    }
+    if (edges.isEmpty()) return emptyList()
+    val ordered = mutableListOf<MermaidNode>()
+    val seen = mutableSetOf<String>()
+    for ((from, to, edge) in edges) {
+        if (seen.add(from)) ordered += MermaidNode(from, labels[from] ?: from, edge)
+        else if (ordered.isNotEmpty()) ordered[ordered.lastIndex] =
+            ordered.last().copy(edgeLabel = edge ?: ordered.last().edgeLabel)
+        if (seen.add(to)) ordered += MermaidNode(to, labels[to] ?: to, null)
+    }
+    return ordered
+}
+
+@Composable
+private fun TableBlock(
+    header: List<String>,
+    rows: List<List<String>>,
+    baseColor: Color,
+    accent: Color,
+    linkBg: Color
+) {
+    // Unified colour for the outline + all internal dividers; outline
+    // sits flush with the rounded outer corners by clipping the column.
+    val lineColor = baseColor.copy(alpha = 0.18f)
+    val cellBg = baseColor.copy(alpha = 0.04f)
+    val headerBg = baseColor.copy(alpha = 0.08f)
+    val cols = (listOf(header) + rows).maxOf { it.size }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(cellBg)
+    ) {
+        // Header row
+        Box(Modifier.fillMaxWidth().background(headerBg)) {
+            TableRow(
+                header.padEnd(cols),
+                baseColor, accent, linkBg,
+                isHeader = true,
+                lineColor = lineColor
+            )
+        }
         rows.forEach { r ->
-            HorizontalDivider(thickness = 0.5.dp, color = borderColor)
-            TableRow(r.padEnd(cols), baseColor, accent, isHeader = false, borderColor = borderColor)
+            HorizontalDivider(thickness = 0.5.dp, color = lineColor)
+            TableRow(r.padEnd(cols), baseColor, accent, linkBg, isHeader = false, lineColor = lineColor)
         }
     }
 }
@@ -623,8 +806,9 @@ private fun TableRow(
     cells: List<String>,
     baseColor: Color,
     accent: Color,
+    linkBg: Color,
     isHeader: Boolean,
-    borderColor: Color
+    lineColor: Color
 ) {
     Row(Modifier.fillMaxWidth()) {
         cells.forEachIndexed { idx, c ->
@@ -632,18 +816,18 @@ private fun TableRow(
                 Box(
                     Modifier
                         .width(0.5.dp)
-                        .height(if (isHeader) 36.dp else 32.dp)
-                        .background(borderColor)
+                        .height(if (isHeader) 38.dp else 34.dp)
+                        .background(lineColor)
                 )
             }
             Box(
                 Modifier
                     .weight(1f)
-                    .padding(horizontal = 10.dp, vertical = if (isHeader) 8.dp else 6.dp),
+                    .padding(horizontal = 10.dp, vertical = if (isHeader) 9.dp else 7.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
                 Text(
-                    inline(c, baseColor, accent),
+                    inline(c, baseColor, accent, linkBg),
                     style = if (isHeader)
                         MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
                     else
