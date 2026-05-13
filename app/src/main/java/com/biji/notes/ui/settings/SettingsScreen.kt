@@ -253,10 +253,10 @@ fun SettingsScreen(
                         InsetDivider()
                         ToggleRow(
                             icon = Icons.Outlined.AutoAwesome,
-                            title = "快捷切到 Reasoner",
-                            subtitle = "等同于把模型设为 deepseek-reasoner",
-                            checked = settings.thinking,
-                            onChange = vm::setThinking
+                            title = "默认深度思考",
+                            subtitle = "新建对话时自动开启<think>提示，已存在的对话不影响",
+                            checked = settings.defaultThinking,
+                            onChange = vm::setDefaultThinking
                         )
                     }
                 }

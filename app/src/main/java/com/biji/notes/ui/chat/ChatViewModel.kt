@@ -171,6 +171,9 @@ class ChatViewModel(
     fun newConversation(open: Boolean = true) {
         viewModelScope.launch {
             val id = chat.createConversation(model = settings.value.model)
+            // Inherit the persistent default-thinking flag so a new chat
+            // starts pre-toggled.
+            if (settings.value.defaultThinking) chat.setThinking(id, true)
             if (open) _activeConvoId.value = id
         }
     }
@@ -565,7 +568,12 @@ class ChatViewModel(
     fun setApiKey(value: String) = viewModelScope.launch { settingsRepo.setApiKey(value) }
     fun setBaseUrl(value: String) = viewModelScope.launch { settingsRepo.setBaseUrl(value) }
     fun setModel(value: String) = viewModelScope.launch { settingsRepo.setModel(value) }
-    fun setThinking(on: Boolean) = viewModelScope.launch { settingsRepo.setThinking(on) }
+    /** Toggle the *persistent* default "deep thinking" flag — applies to
+     *  every new conversation. Per-conversation override is still
+     *  available via [setConversationThinking]. */
+    fun setDefaultThinking(on: Boolean) = viewModelScope.launch {
+        settingsRepo.setDefaultThinking(on)
+    }
     fun setSystemPrompt(v: String) = viewModelScope.launch { settingsRepo.setSystemPrompt(v) }
     fun setTemperature(v: Float) = viewModelScope.launch { settingsRepo.setTemperature(v) }
     fun setWebSearch(v: Boolean) = viewModelScope.launch { settingsRepo.setWebSearch(v) }
@@ -623,15 +631,25 @@ class ChatViewModel(
         private const val MAX_ITERS = 4
         private const val COMPACT_THRESHOLD = 0.78
 
-        // Realistic per-model context windows. Official DeepSeek chat /
-        // reasoner are 64K; v4-flash advertises 128K. Using 1M (the
-        // marketing number) made the ring stay flat-0 forever — drop to
-        // the actual usable window so the indicator earns its space.
-        private fun contextLimitFor(model: String): Long = when {
-            model.contains("v4-flash", ignoreCase = true) -> 128_000L
-            model.contains("reasoner", ignoreCase = true) -> 64_000L
-            model.contains("deepseek-chat", ignoreCase = true) -> 64_000L
-            else -> 64_000L
+        // Realistic per-model context windows. Cover every variant the
+        // user might land on — `model` here is the raw model id reported
+        // by the chosen API (e.g. "deepseek-chat", "deepseek-v3", "v4-flash",
+        // "deepseek-reasoner-v4", etc.). Anything that can't be matched
+        // gets a conservative 64 K so the ring still reads correctly
+        // instead of being permanently rounded to 0 %.
+        private fun contextLimitFor(model: String): Long {
+            val m = model.lowercase()
+            return when {
+                "v4-flash" in m || "v4_flash" in m -> 128_000L
+                "v4" in m -> 128_000L                           // DeepSeek-V4 family
+                "v3" in m -> 64_000L                            // DeepSeek-V3
+                "v2.5" in m || "v2_5" in m -> 32_000L
+                "v2" in m -> 32_000L
+                "reasoner" in m || "r1" in m -> 64_000L
+                "deepseek-chat" in m -> 64_000L
+                "coder" in m -> 16_000L                         // older coder snap
+                else -> 64_000L
+            }
         }
 
         fun factory(

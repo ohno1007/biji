@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import com.biji.notes.data.Conversation
 import com.biji.notes.data.MODEL_REASONER
 import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.ui.graphics.Brush
 import com.biji.notes.ui.glass.bouncyClickable
 import java.text.SimpleDateFormat
@@ -84,6 +85,11 @@ fun ConversationListScreen(
                     )
                 },
                 actions = {
+                    ThinkingToggleChip(
+                        active = settings.defaultThinking,
+                        onToggle = { vm.setDefaultThinking(!settings.defaultThinking) }
+                    )
+                    Spacer(Modifier.width(6.dp))
                     ClickableModelTag(
                         model = settings.model,
                         onClick = { modelSheetOpen = true }
@@ -147,6 +153,35 @@ fun ConversationListScreen(
             onToggleThinking = { /* no-op outside chat */ },
             onRefresh = vm::refreshModels,
             onDismiss = { modelSheetOpen = false }
+        )
+    }
+}
+
+@Composable
+private fun ThinkingToggleChip(active: Boolean, onToggle: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val bg = if (active) cs.primaryContainer else cs.surfaceContainer
+    val fg = if (active) cs.onPrimaryContainer else cs.onSurfaceVariant
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(bg)
+            .bouncyClickable(pressedScale = 0.95f, onClick = onToggle)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        androidx.compose.material3.Icon(
+            androidx.compose.material.icons.Icons.Outlined.AutoAwesome,
+            contentDescription = "深度思考",
+            modifier = Modifier.size(14.dp),
+            tint = fg
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            "深度思考",
+            style = MaterialTheme.typography.labelLarge,
+            color = fg,
+            fontWeight = FontWeight.SemiBold
         )
     }
 }

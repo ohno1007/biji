@@ -23,9 +23,16 @@ data class AppSettings(
     val temperature: Float = 1.0f,
     val webSearch: Boolean = true,
     val longMemory: Boolean = true,
-    val notify: Boolean = true
+    val notify: Boolean = true,
+    /** Whether *new* conversations are created with the `<think>` instruction
+     *  prepended. Independent from the active model — non-reasoner chats can
+     *  still opt into thinking mode. Persisted in DataStore. */
+    val defaultThinking: Boolean = false
 ) {
-    val thinking: Boolean get() = model == MODEL_REASONER
+    /** True if the *currently selected model* itself does thinking (i.e.
+     *  deepseek-reasoner). For per-conversation thinking, look at the
+     *  `Conversation.thinking` column. */
+    val modelIsReasoner: Boolean get() = model == MODEL_REASONER
 }
 
 class SettingsRepository(private val ctx: Context) {
@@ -39,6 +46,7 @@ class SettingsRepository(private val ctx: Context) {
         val WEB_SEARCH = booleanPreferencesKey("web_search")
         val LONG_MEMORY = booleanPreferencesKey("long_memory")
         val NOTIFY = booleanPreferencesKey("notify")
+        val DEFAULT_THINKING = booleanPreferencesKey("default_thinking")
     }
 
     val settings: Flow<AppSettings> = ctx.settingsStore.data.map { p ->
@@ -50,7 +58,8 @@ class SettingsRepository(private val ctx: Context) {
             temperature = p[K.TEMPERATURE]?.toFloatOrNull() ?: 1.0f,
             webSearch = p[K.WEB_SEARCH] ?: true,
             longMemory = p[K.LONG_MEMORY] ?: true,
-            notify = p[K.NOTIFY] ?: true
+            notify = p[K.NOTIFY] ?: true,
+            defaultThinking = p[K.DEFAULT_THINKING] ?: false
         )
     }
 
@@ -63,7 +72,6 @@ class SettingsRepository(private val ctx: Context) {
     suspend fun setModel(v: String) {
         ctx.settingsStore.edit { it[K.MODEL] = v.trim().ifBlank { MODEL_CHAT } }
     }
-    suspend fun setThinking(on: Boolean) = setModel(if (on) MODEL_REASONER else MODEL_CHAT)
     suspend fun setSystemPrompt(v: String) {
         ctx.settingsStore.edit { it[K.SYSTEM_PROMPT] = v }
     }
@@ -73,4 +81,7 @@ class SettingsRepository(private val ctx: Context) {
     suspend fun setWebSearch(v: Boolean) { ctx.settingsStore.edit { it[K.WEB_SEARCH] = v } }
     suspend fun setLongMemory(v: Boolean) { ctx.settingsStore.edit { it[K.LONG_MEMORY] = v } }
     suspend fun setNotify(v: Boolean) { ctx.settingsStore.edit { it[K.NOTIFY] = v } }
+    suspend fun setDefaultThinking(v: Boolean) {
+        ctx.settingsStore.edit { it[K.DEFAULT_THINKING] = v }
+    }
 }
