@@ -111,6 +111,55 @@ import kotlinx.coroutines.launch
 /** Shared-element key for the bottom dock (nav pill ↔ chat composer). */
 const val DOCK_SHARED_KEY = "biji-bottom-dock"
 
+/** A single visible row in the chat log. Tool results that arrive
+ *  back-to-back are batched into one [Workflow] item so they read as a
+ *  single Codex-style sequence rather than a stack of full-width cards. */
+sealed interface ChatItem {
+    val key: Any
+    data class Plain(val message: Message) : ChatItem {
+        override val key: Any get() = "p-${message.id}"
+    }
+    data class Workflow(val entries: List<Message>) : ChatItem {
+        override val key: Any get() = "wf-${entries.first().id}-${entries.last().id}"
+    }
+}
+
+/**
+ * Walk through the message list in chronological order, batching every
+ * run of consecutive `TOOL_RESULT` messages into a single workflow. The
+ * silent assistant carrier rows that own the `tool_calls` array don't
+ * render as their own bubble but they're left in the stream so the
+ * grouper can detect a workflow already in flight.
+ */
+internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
+    val out = mutableListOf<ChatItem>()
+    val pending = mutableListOf<Message>()
+    fun flush() {
+        if (pending.isNotEmpty()) {
+            out += ChatItem.Workflow(pending.toList())
+            pending.clear()
+        }
+    }
+    for (m in messages) {
+        if (m.archived) continue
+        when {
+            m.kind == MessageKind.TOOL_RESULT -> pending += m
+            // Silent assistant carrier (only tool_calls, no text & no
+            // reasoning) — keep the workflow open.
+            m.role == Role.ASSISTANT && m.toolData != null &&
+                m.content.isBlank() && m.reasoning.isNullOrBlank() -> Unit
+            // Anything visible (user bubble, summary, assistant content/
+            // reasoning, errors etc.) breaks the workflow.
+            else -> {
+                flush()
+                out += ChatItem.Plain(m)
+            }
+        }
+    }
+    flush()
+    return out
+}
+
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.animation.ExperimentalSharedTransitionApi::class)
 @Composable
 fun ChatScreen(
@@ -174,8 +223,14 @@ fun ChatScreen(
             if (messages.isEmpty()) {
                 item { EmptyChatHint() }
             } else {
-                items(messages, key = { it.id }) { m ->
-                    MessageItem(m = m, onOpenUrl = vm::openWebUrl)
+                val rendered = groupChatItems(messages)
+                items(rendered, key = { it.key }) { item ->
+                    when (item) {
+                        is ChatItem.Plain ->
+                            MessageItem(m = item.message, onOpenUrl = vm::openWebUrl)
+                        is ChatItem.Workflow ->
+                            WorkflowCard(entries = item.entries, onOpenUrl = vm::openWebUrl)
+                    }
                 }
                 if (toolStatus != null) {
                     item { StatusPill(text = toolStatus!!) }

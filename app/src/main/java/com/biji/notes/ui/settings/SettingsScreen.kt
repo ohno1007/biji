@@ -377,8 +377,9 @@ private fun Group(content: @Composable () -> Unit) {
 
 @Composable
 private fun InsetDivider() {
+    // Full-width hairline divider — no inset, no indent past the icon column.
+    // (User asked for the line to be drawn all the way across.)
     HorizontalDivider(
-        modifier = Modifier.padding(start = 56.dp),
         thickness = 0.5.dp,
         color = MaterialTheme.colorScheme.outlineVariant
     )
@@ -496,7 +497,14 @@ private fun ToggleRow(
     onChange: (Boolean) -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    BaseRow(icon = icon, title = title, subtitle = subtitle) {
+    // The whole row flips the switch (with the standard MD3 ripple on the
+    // full row surface). The Switch still works as a direct target.
+    BaseRow(
+        icon = icon,
+        title = title,
+        subtitle = subtitle,
+        onClick = { onChange(!checked) }
+    ) {
         Switch(
             checked = checked,
             onCheckedChange = onChange,
