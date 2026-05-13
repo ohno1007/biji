@@ -23,6 +23,7 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlurEffect
@@ -41,13 +42,6 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-/**
- * State holder shared between the backdrop and the glass surfaces. The
- * [backdrop] layer captures the live pixels of the screen background each
- * frame; glass surfaces re-draw it with a [BlurEffect] applied and translated
- * by their own root offset, so the slice of background directly behind each
- * surface shows through – real backdrop blur, not a painted gradient.
- */
 @Stable
 class LiquidGlassState internal constructor(
     val backdrop: GraphicsLayer
@@ -79,12 +73,24 @@ fun LiquidGlassScaffold(
     }
 }
 
+/**
+ * Real liquid glass: the shared backdrop graphics layer is re-drawn with a
+ * runtime [BlurEffect] applied, translated by the surface's onscreen offset
+ * so the slice of background directly behind this surface shows through.
+ * On top of the live blur we paint:
+ *  - a faint tint wash (kept very transparent so the picture stays visible),
+ *  - a top-down sheen for the curved-glass highlight,
+ *  - a soft radial kicker on one corner,
+ *  - a brush-stroked rim border that brightens at the top edge, mimicking
+ *    the chromatic refraction of light bending around the bezel.
+ */
 fun Modifier.liquidGlass(
     state: LiquidGlassState?,
-    shape: Shape = RoundedCornerShape(24.dp),
-    blurRadius: Dp = 32.dp,
-    tint: Color = Color.White.copy(alpha = 0.22f),
-    borderColor: Color = Color.White.copy(alpha = 0.55f)
+    shape: Shape = RoundedCornerShape(28.dp),
+    blurRadius: Dp = 40.dp,
+    tint: Color = Color.White.copy(alpha = 0.10f),
+    cornerRadius: Dp = 28.dp,
+    rim: Boolean = true
 ): Modifier = this
     .clip(shape)
     .composed {
@@ -100,6 +106,7 @@ fun Modifier.liquidGlass(
             }
             .drawWithCache {
                 val px = blurRadius.toPx().coerceAtLeast(0.1f)
+                val r = cornerRadius.toPx()
                 onDrawBehind {
                     if (size.width <= 0f || size.height <= 0f) return@onDrawBehind
 
@@ -107,33 +114,70 @@ fun Modifier.liquidGlass(
                     translate(left = -offset.x, top = -offset.y) {
                         drawLayer(backdrop)
                     }
+
+                    // Faint frosted tint.
                     drawRect(tint)
+
+                    // Top-down vertical sheen: bright sliver at the top edge,
+                    // mid-fade through the body, faint glow at the bottom.
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            0.00f to Color.White.copy(alpha = 0.32f),
+                            0.18f to Color.White.copy(alpha = 0.06f),
+                            0.55f to Color.Transparent,
+                            0.92f to Color.White.copy(alpha = 0.05f),
+                            1.00f to Color.White.copy(alpha = 0.14f)
+                        )
+                    )
+
+                    // Diagonal specular kicker.
                     drawRect(
                         brush = Brush.linearGradient(
-                            0.0f to Color.White.copy(alpha = 0.35f),
-                            0.45f to Color.White.copy(alpha = 0.06f),
+                            0.0f to Color.White.copy(alpha = 0.18f),
+                            0.5f to Color.Transparent,
                             1.0f to Color.Transparent,
                             start = Offset.Zero,
-                            end = Offset(size.width * 0.9f, size.height * 0.9f)
+                            end = Offset(size.width * 0.55f, size.height * 0.55f)
                         )
                     )
-                    drawRect(
-                        brush = Brush.radialGradient(
-                            0.0f to Color.White.copy(alpha = 0.18f),
-                            1.0f to Color.Transparent,
-                            center = Offset(size.width * 0.85f, size.height * 0.95f),
-                            radius = maxOf(size.width, size.height) * 0.6f
+
+                    if (rim) {
+                        // Chromatic-feel rim: gradient stroke that runs from
+                        // very bright at the top through translucent at the
+                        // sides and a soft glow at the bottom – the look of
+                        // light refracting around the bezel.
+                        val rimBrush = Brush.linearGradient(
+                            0.00f to Color.White.copy(alpha = 0.90f),
+                            0.35f to Color.White.copy(alpha = 0.35f),
+                            0.65f to Color.White.copy(alpha = 0.20f),
+                            1.00f to Color.White.copy(alpha = 0.55f),
+                            start = Offset(size.width * 0.5f, 0f),
+                            end = Offset(size.width * 0.5f, size.height)
                         )
-                    )
-                    drawRect(color = borderColor, style = Stroke(width = 1.5f))
+                        drawRoundRect(
+                            brush = rimBrush,
+                            cornerRadius = CornerRadius(r, r),
+                            style = Stroke(width = 1.5f)
+                        )
+                        // Inner inset rim, slightly darker, gives that
+                        // "double-pane" depth.
+                        drawRoundRect(
+                            brush = Brush.linearGradient(
+                                0f to Color.White.copy(alpha = 0.22f),
+                                1f to Color.Transparent,
+                                start = Offset.Zero,
+                                end = Offset(0f, size.height * 0.35f)
+                            ),
+                            topLeft = Offset(2f, 2f),
+                            size = Size(size.width - 4f, size.height - 4f),
+                            cornerRadius = CornerRadius(r - 2f, r - 2f),
+                            style = Stroke(width = 0.8f)
+                        )
+                    }
                 }
             }
     }
 
-/**
- * Animated colorful canvas behind the glass. The runtime backdrop blur picks
- * these pixels up and stirs them, which is what gives the glass its life.
- */
 @Composable
 fun AnimatedAuroraBackground(
     modifier: Modifier = Modifier,
@@ -202,10 +246,10 @@ fun AnimatedAuroraBackground(
 private fun defaultAuroraColors(): List<Color> {
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
     return if (dark) listOf(
-        Color(0xFF0B0B1F), Color(0xFF1A1336),
-        Color(0xFF5B3FA8), Color(0xFFC04A8A), Color(0xFF2F7DCC)
+        Color(0xFF0A0820), Color(0xFF1A1240),
+        Color(0xFF6B3FCC), Color(0xFFE05599), Color(0xFF2F8EE0)
     ) else listOf(
-        Color(0xFFE7E1FF), Color(0xFFFFE2EE),
-        Color(0xFFB7A8FF), Color(0xFFFFB1D2), Color(0xFFA9DFFF)
+        Color(0xFFDEE5FF), Color(0xFFFFE0EE),
+        Color(0xFF9F8CFF), Color(0xFFFFA1C9), Color(0xFF8AD2FF)
     )
 }
