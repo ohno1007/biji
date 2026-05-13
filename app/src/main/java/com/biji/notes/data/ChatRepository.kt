@@ -9,6 +9,7 @@ class ChatRepository(private val dao: ChatDao) {
 
     suspend fun getConversation(id: Long): Conversation? = dao.getConversation(id)
     suspend fun getMessages(id: Long): List<Message> = dao.getMessages(id)
+    suspend fun getLiveMessages(id: Long): List<Message> = dao.getLiveMessages(id)
 
     suspend fun createConversation(title: String = "新对话", model: String): Long {
         val now = System.currentTimeMillis()
@@ -21,6 +22,9 @@ class ChatRepository(private val dao: ChatDao) {
     suspend fun touch(id: Long) = dao.touchConversation(id)
     suspend fun deleteConversation(id: Long) = dao.deleteConversation(id)
 
+    suspend fun setContextTokens(id: Long, tokens: Long) = dao.setContextTokens(id, tokens)
+    suspend fun setThinking(id: Long, on: Boolean) = dao.setConvoThinking(id, on)
+
     suspend fun addMessage(
         convoId: Long,
         role: String,
@@ -28,7 +32,8 @@ class ChatRepository(private val dao: ChatDao) {
         reasoning: String? = null,
         kind: String = MessageKind.TEXT,
         toolData: String? = null,
-        toolCallId: String? = null
+        toolCallId: String? = null,
+        createdAt: Long = System.currentTimeMillis()
     ): Long {
         val id = dao.insertMessage(
             Message(
@@ -38,7 +43,8 @@ class ChatRepository(private val dao: ChatDao) {
                 reasoning = reasoning,
                 kind = kind,
                 toolData = toolData,
-                toolCallId = toolCallId
+                toolCallId = toolCallId,
+                createdAt = createdAt
             )
         )
         dao.touchConversation(convoId)
@@ -49,9 +55,8 @@ class ChatRepository(private val dao: ChatDao) {
         dao.updateMessageBody(id, content, reasoning)
 
     suspend fun setToolData(id: Long, data: String?) = dao.setToolData(id, data)
+    suspend fun archive(ids: List<Long>) { if (ids.isNotEmpty()) dao.archiveMessages(ids) }
 
-    /** Returns the latest N text messages across all conversations,
-     *  used to seed the BM25 long-term-memory index. */
     suspend fun getCorpus(limit: Int = 5000): List<Message> =
         dao.getRecentForIndex(limit).filter { it.kind == MessageKind.TEXT }
 }

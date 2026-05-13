@@ -23,6 +23,9 @@ class BijiApp : Application() {
     val toolExecutor: ToolExecutor by lazy { ToolExecutor(webSearchService) }
     val memoryService: MemoryService by lazy { MemoryService(chatRepository) }
     val chatNotifier: ChatNotifier by lazy { ChatNotifier(this) }
+    val voiceRecognizer: com.biji.notes.voice.VoiceRecognizer by lazy {
+        com.biji.notes.voice.VoiceRecognizer(this)
+    }
 
     @Volatile private var foreground: Boolean = false
     fun isForeground(): Boolean = foreground

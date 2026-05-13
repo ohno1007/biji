@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -100,6 +101,10 @@ fun SettingsScreen(
             vm.setTemperature(temperature)
         }
     }
+
+    // Pull the latest model list automatically whenever the settings screen
+    // becomes visible (and credentials look workable).
+    LaunchedEffect(settings.apiKey, settings.baseUrl) { vm.ensureModelsLoaded() }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
@@ -313,29 +318,30 @@ fun SettingsScreen(
 // Building blocks
 // =====================================================================
 
+/**
+ * A logical group with no shared background — each child row paints its
+ * own [rowBackground] and the surrounding background colour bleeds through
+ * the gap between them. That's the "镂空分隔" the user asked for: dividers
+ * are pure negative space, never lines.
+ */
 @Composable
 private fun Group(content: @Composable () -> Unit) {
-    val cs = MaterialTheme.colorScheme
     Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(GroupShape)
-            .background(cs.surfaceContainer)
+        Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) { content() }
 }
 
-/**
- * Inset hairline divider, exactly matching the iOS look in image 1 –
- * starts past the leading icon column, never touches the rounded edges of
- * the group card.
- */
+private val rowShape = RoundedCornerShape(16.dp)
+
+@Composable
+private fun rowBackground(): Color = MaterialTheme.colorScheme.surfaceContainer
+
 @Composable
 private fun InsetDivider() {
-    HorizontalDivider(
-        modifier = Modifier.padding(start = 60.dp),
-        thickness = 0.5.dp,
-        color = MaterialTheme.colorScheme.outlineVariant
-    )
+    // Kept as a no-op alias so existing call sites compile; the visual
+    // separation now comes from the verticalArrangement spacing in Group().
+    Spacer(Modifier.height(0.dp))
 }
 
 /**
@@ -357,6 +363,8 @@ private fun BaseRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(rowShape)
+            .background(rowBackground())
             .then(clickable)
             .heightIn(min = minHeight)
             .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -407,6 +415,8 @@ private fun KeyValueRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(rowShape)
+            .background(rowBackground())
             .then(clickable)
             .heightIn(min = minHeight)
             .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -492,6 +502,8 @@ private fun SliderRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(rowShape)
+            .background(rowBackground())
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -549,6 +561,8 @@ private fun BalanceRow(state: BalanceState, onRefresh: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 64.dp)
+            .clip(rowShape)
+            .background(rowBackground())
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -604,7 +618,13 @@ private fun ModelListInline(
 ) {
     val cs = MaterialTheme.colorScheme
     val all = (listOf(MODEL_CHAT, MODEL_REASONER) + list).distinct()
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(rowShape)
+            .background(rowBackground())
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "选择模型",

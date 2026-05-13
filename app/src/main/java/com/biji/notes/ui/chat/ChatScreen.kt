@@ -1,5 +1,8 @@
 package com.biji.notes.ui.chat
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -11,6 +14,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,13 +25,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -42,18 +46,26 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.GraphicEq
-import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetState
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -71,7 +83,11 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,8 +99,10 @@ import com.biji.notes.data.MessageKind
 import com.biji.notes.data.Role
 import com.biji.notes.ui.glass.bouncyClickable
 import com.biji.notes.ui.markdown.MarkdownText
+import com.biji.notes.voice.VoiceState
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     vm: ChatViewModel,
@@ -98,10 +116,26 @@ fun ChatScreen(
     val conversations by vm.conversations.collectAsState()
     val title = conversations.firstOrNull { it.id == convoId }?.title ?: "DeepSeek"
     val toolStatus by vm.toolStatus.collectAsState()
+    val compactStatus by vm.compactStatus.collectAsState()
+    val ctxUsage by vm.contextUsage.collectAsState()
+    val modelsState by vm.models.collectAsState()
+    val voiceState by vm.voiceState.collectAsState()
+    val voiceVisible by vm.voiceVisible.collectAsState()
+    val ctx = LocalContext.current
+    val convoThinking = conversations.firstOrNull { it.id == convoId }?.thinking == true
 
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    var modelSheetOpen by remember { mutableStateOf(false) }
+
+    // Pull a fresh models list as soon as we land on a chat screen.
+    LaunchedEffect(settings.apiKey, settings.baseUrl) { vm.ensureModelsLoaded() }
+
+    // Microphone permission launcher.
+    val micPerm = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) vm.startVoice() }
 
     LaunchedEffect(messages.size, streaming) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
@@ -115,20 +149,12 @@ fun ChatScreen(
         }
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .imePadding()
-    ) {
-        // 1. Messages list – fills the entire screen, content padded so it
-        //    appears to slide *behind* the floating top title and the
-        //    floating composer.
+    Box(Modifier.fillMaxSize().imePadding()) {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                start = 18.dp,
-                end = 18.dp,
+                start = 18.dp, end = 18.dp,
                 top = TopFadeHeight + 12.dp,
                 bottom = ComposerArea + 16.dp
             ),
@@ -141,7 +167,10 @@ fun ChatScreen(
                     MessageItem(m = m, onOpenUrl = vm::openWebUrl)
                 }
                 if (toolStatus != null) {
-                    item { ToolStatusPill(text = toolStatus!!) }
+                    item { StatusPill(text = toolStatus!!) }
+                }
+                if (compactStatus != null) {
+                    item { StatusPill(text = compactStatus!!) }
                 }
                 if (error != null) {
                     item { ErrorRow(message = error!!, onDismiss = vm::dismissError) }
@@ -149,26 +178,21 @@ fun ChatScreen(
             }
         }
 
-        // 2. Top fade: cream-coloured vertical gradient that messages
-        //    scroll into / out of, so they appear to dissolve behind the
-        //    title row.
         TopFade(modifier = Modifier.align(Alignment.TopCenter))
 
-        // 3. The title row sits on top of that fade.
         TopBar(
             title = title,
+            usage = ctxUsage,
             onBack = onBack,
+            onTapRing = { /* could expand a sheet with details */ },
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
                 .padding(horizontal = 8.dp, vertical = 6.dp)
         )
 
-        // 4. Bottom fade: covers the area where the floating composer sits
-        //    so messages dissolve behind the composer as you scroll.
         BottomFade(modifier = Modifier.align(Alignment.BottomCenter))
 
-        // 5. Scroll-to-bottom puck, hovers just above the composer.
         AnimatedVisibility(
             visible = !isNearBottom && messages.isNotEmpty(),
             enter = fadeIn() + scaleIn(initialScale = 0.6f),
@@ -178,19 +202,15 @@ fun ChatScreen(
                 .padding(bottom = ComposerArea - 16.dp)
         ) {
             ScrollToBottomButton {
-                scope.launch {
-                    listState.animateScrollToItem(messages.size - 1)
-                }
+                scope.launch { listState.animateScrollToItem(messages.size - 1) }
             }
         }
 
-        // 6. The composer floats with margin on all sides; the navbar inset
-        //    is honoured so the cream background shows through underneath
-        //    on devices with gesture nav ("镂空").
         Composer(
             value = input,
             onValueChange = { input = it },
             model = settings.model,
+            thinking = convoThinking || settings.model == MODEL_REASONER,
             sending = streaming,
             onSend = {
                 if (input.isNotBlank() && !streaming) {
@@ -198,12 +218,46 @@ fun ChatScreen(
                 }
             },
             onStop = vm::cancelStream,
-            onPickModel = vm::setModel,
+            onOpenModelSheet = { modelSheetOpen = true },
+            onVoice = {
+                val granted = ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (granted) vm.startVoice() else micPerm.launch(Manifest.permission.RECORD_AUDIO)
+            },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(horizontal = 12.dp, vertical = 10.dp)
         )
+
+        // Model picker sheet.
+        if (modelSheetOpen) {
+            ModelPickerSheet(
+                models = modelsState.list.map { it.id },
+                loading = modelsState.loading,
+                error = modelsState.error,
+                currentModel = settings.model,
+                convoThinking = convoThinking,
+                onPick = { vm.setModel(it); modelSheetOpen = false },
+                onToggleThinking = vm::setConversationThinking,
+                onRefresh = vm::refreshModels,
+                onDismiss = { modelSheetOpen = false }
+            )
+        }
+
+        // Voice input sheet.
+        if (voiceVisible) {
+            VoiceSheet(
+                state = voiceState,
+                onConfirm = { transcript ->
+                    input = if (input.isBlank()) transcript else "$input $transcript"
+                    vm.dismissVoice()
+                },
+                onCancel = vm::cancelVoice,
+                onDismiss = vm::dismissVoice,
+                onRetry = vm::startVoice
+            )
+        }
     }
 }
 
@@ -213,16 +267,10 @@ fun ChatScreen(
 
 private val TopFadeHeight = 96.dp
 private val BottomFadeHeight = 180.dp
-
-/**
- * Composer occupies roughly two rows + padding; this is the slug the
- * message list reserves at the bottom so the last bubble doesn't tuck
- * under the floating composer.
- */
-private val ComposerArea = 168.dp
+private val ComposerArea = 172.dp
 
 // =====================================================================
-// Fade / glow overlays
+// Fade / Top bar
 // =====================================================================
 
 @Composable
@@ -261,19 +309,16 @@ private fun BottomFade(modifier: Modifier = Modifier) {
 
 @Composable
 private fun WindowInsetsTopHeight(): androidx.compose.ui.unit.Dp {
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val insets = WindowInsets.statusBars
-    return with(density) { insets.getTop(density).toDp() }
+    val density = LocalDensity.current
+    return with(density) { WindowInsets.statusBars.getTop(density).toDp() }
 }
-
-// =====================================================================
-// Top bar (image 2: hamburger + title + more)
-// =====================================================================
 
 @Composable
 private fun TopBar(
     title: String,
+    usage: ContextUsage,
     onBack: () -> Unit,
+    onTapRing: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
@@ -295,11 +340,7 @@ private fun TopBar(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
-        IconBtn(
-            icon = Icons.Outlined.MoreHoriz,
-            contentDescription = "更多",
-            onClick = { /* reserved */ }
-        )
+        ContextRing(usage = usage, onClick = onTapRing)
     }
 }
 
@@ -326,22 +367,78 @@ private fun IconBtn(
     }
 }
 
+/**
+ * MD3-flavoured two-segment hollow ring that displays current context-window
+ * usage. The bright arc covers the used fraction, the muted arc the rest;
+ * a small angular gap separates them ("镂空双段圆环"). Tapping shows a
+ * compact stats line.
+ */
+@Composable
+private fun ContextRing(usage: ContextUsage, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val fraction by animateFloatAsState(
+        targetValue = usage.fraction,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "ringFrac"
+    )
+    val warn = fraction > 0.78f
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .bouncyClickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(26.dp)) {
+            val stroke = 2.6f * density
+            val gap = 12f
+            val usedColor = if (warn) cs.error else cs.primary
+            val restColor = cs.outlineVariant
+            val usedSweep = (fraction * (360f - gap * 2)).coerceAtLeast(0f)
+            val restSweep = (360f - gap * 2 - usedSweep).coerceAtLeast(0f)
+            // Used arc
+            drawArc(
+                color = usedColor,
+                startAngle = -90f + gap,
+                sweepAngle = usedSweep,
+                useCenter = false,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+            // Remaining arc
+            drawArc(
+                color = restColor,
+                startAngle = -90f + gap + usedSweep + gap,
+                sweepAngle = restSweep,
+                useCenter = false,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+        }
+        Text(
+            "${(fraction * 100).toInt()}",
+            style = MaterialTheme.typography.labelLarge.copy(fontSize = androidx.compose.ui.unit.TextUnit(9f, androidx.compose.ui.unit.TextUnitType.Sp)),
+            color = if (warn) cs.error else cs.onSurfaceVariant,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
 // =====================================================================
 // Messages
 // =====================================================================
 
 @Composable
 private fun MessageItem(m: Message, onOpenUrl: (String) -> Unit) {
-    // Tool-call placeholder records (assistant content empty + tool_data
-    // present) carry the chat-protocol payload only; the *tool result*
-    // rows below render the actual UI.
-    if (m.role == Role.ASSISTANT && m.kind == com.biji.notes.data.MessageKind.TEXT &&
+    if (m.archived) return
+    if (m.kind == MessageKind.CONTEXT_SUMMARY) {
+        ArchivedSummary(m)
+        return
+    }
+    if (m.role == Role.ASSISTANT && m.kind == MessageKind.TEXT &&
         m.content.isBlank() && m.reasoning.isNullOrBlank() && m.toolData == null) {
         return
     }
     if (m.role == Role.ASSISTANT && m.toolData != null && m.content.isBlank()) {
-        // tool_call carrier – no UI; the tool_result row that follows will
-        // render the search results.
+        // tool_call carrier – UI is the following tool_result row
         return
     }
     if (m.kind == MessageKind.TOOL_RESULT) {
@@ -375,26 +472,27 @@ private fun MessageItem(m: Message, onOpenUrl: (String) -> Unit) {
 }
 
 @Composable
-private fun ToolStatusPill(text: String) {
+private fun ArchivedSummary(m: Message) {
     val cs = MaterialTheme.colorScheme
     Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(cs.surfaceContainerHigh)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(cs.surfaceContainerLow)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        androidx.compose.material3.CircularProgressIndicator(
+        Icon(
+            Icons.Outlined.AutoAwesome,
+            contentDescription = null,
             modifier = Modifier.size(14.dp),
-            strokeWidth = 2.dp,
-            color = cs.primary
+            tint = cs.primary
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text,
+            "早期对话已自动向量化压缩",
             style = MaterialTheme.typography.labelLarge,
-            color = cs.onSurface,
-            fontWeight = FontWeight.SemiBold
+            color = cs.onSurfaceVariant
         )
     }
 }
@@ -402,12 +500,15 @@ private fun ToolStatusPill(text: String) {
 @Composable
 private fun UserBubble(content: String) {
     val cs = MaterialTheme.colorScheme
+    // Distinct user-bubble colour – noticeably deeper than the
+    // surfaceContainerHigh used by other surface chips.
+    val bg = if (isLight()) Color(0xFFE0DACE) else Color(0xFF2D2D33)
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
         Box(
             modifier = Modifier
                 .widthIn(max = 300.dp)
                 .clip(RoundedCornerShape(22.dp))
-                .background(cs.surfaceContainerHigh)
+                .background(bg)
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
             Text(
@@ -418,6 +519,10 @@ private fun UserBubble(content: String) {
         }
     }
 }
+
+@Composable
+private fun isLight(): Boolean = MaterialTheme.colorScheme.background.luminance() > 0.5f
+private fun Color.luminance(): Float = 0.2126f * red + 0.7152f * green + 0.0722f * blue
 
 @Composable
 private fun AssistantBlock(m: Message) {
@@ -548,10 +653,12 @@ private fun Composer(
     value: String,
     onValueChange: (String) -> Unit,
     model: String,
+    thinking: Boolean,
     sending: Boolean,
     onSend: () -> Unit,
     onStop: () -> Unit,
-    onPickModel: (String) -> Unit,
+    onOpenModelSheet: () -> Unit,
+    onVoice: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
@@ -593,12 +700,12 @@ private fun Composer(
                 onClick = { /* reserved */ }
             )
             Spacer(Modifier.width(6.dp))
-            ModelMenuChip(model = model, onPick = onPickModel)
+            ComposerModelChip(model = model, thinking = thinking, onClick = onOpenModelSheet)
             Spacer(Modifier.weight(1f))
             CircleAction(
-                icon = Icons.Outlined.GraphicEq,
-                contentDescription = "语音",
-                onClick = { /* reserved */ }
+                icon = Icons.Rounded.Mic,
+                contentDescription = "语音输入",
+                onClick = onVoice
             )
             Spacer(Modifier.width(6.dp))
             SendDot(
@@ -635,83 +742,43 @@ private fun CircleAction(
 }
 
 @Composable
-private fun ModelMenuChip(model: String, onPick: (String) -> Unit) {
+private fun ComposerModelChip(model: String, thinking: Boolean, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    var open by remember { mutableStateOf(false) }
-    val isReasoner = model == MODEL_REASONER
-    val bg = if (isReasoner) cs.primaryContainer else cs.surfaceContainerHigh
-    val fg = if (isReasoner) cs.onPrimaryContainer else cs.onSurface
-
-    Box {
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(50))
-                .background(bg)
-                .bouncyClickable { open = true }
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (isReasoner) {
-                Icon(
-                    Icons.Outlined.AutoAwesome,
-                    contentDescription = null,
-                    modifier = Modifier.size(13.dp),
-                    tint = fg
-                )
-                Spacer(Modifier.width(4.dp))
-            }
-            Text(
-                model.removePrefix("deepseek-"),
-                style = MaterialTheme.typography.labelLarge,
-                color = fg,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.width(2.dp))
+    val bg = if (thinking) cs.primaryContainer else cs.surfaceContainerHigh
+    val fg = if (thinking) cs.onPrimaryContainer else cs.onSurface
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(bg)
+            .bouncyClickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (thinking) {
             Icon(
-                Icons.Rounded.ExpandMore,
+                Icons.Outlined.AutoAwesome,
                 contentDescription = null,
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(13.dp),
                 tint = fg
             )
+            Spacer(Modifier.width(4.dp))
         }
-        DropdownMenu(
-            expanded = open,
-            onDismissRequest = { open = false }
-        ) {
-            ModelMenuItem(
-                label = "deepseek-chat",
-                checked = model == MODEL_CHAT,
-                onClick = { onPick(MODEL_CHAT); open = false }
-            )
-            ModelMenuItem(
-                label = "deepseek-reasoner · 思考",
-                checked = model == MODEL_REASONER,
-                onClick = { onPick(MODEL_REASONER); open = false }
-            )
-        }
+        Text(
+            model.removePrefix("deepseek-"),
+            style = MaterialTheme.typography.labelLarge,
+            color = fg,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.width(2.dp))
+        Icon(
+            Icons.Rounded.ExpandMore,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = fg
+        )
     }
-}
-
-@Composable
-private fun ModelMenuItem(label: String, checked: Boolean, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(label, modifier = Modifier.weight(1f))
-                if (checked) {
-                    Icon(
-                        Icons.Rounded.Check,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-        },
-        onClick = onClick
-    )
 }
 
 @Composable
@@ -764,6 +831,287 @@ private fun SendDot(
 }
 
 // =====================================================================
+// Model picker bottom sheet
+// =====================================================================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelPickerSheet(
+    models: List<String>,
+    loading: Boolean,
+    error: String?,
+    currentModel: String,
+    convoThinking: Boolean,
+    onPick: (String) -> Unit,
+    onToggleThinking: (Boolean) -> Unit,
+    onRefresh: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val cs = MaterialTheme.colorScheme
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = cs.surface
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "选择模型",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = cs.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .bouncyClickable(onClick = onRefresh)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (loading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = cs.primary
+                            )
+                        } else {
+                            Icon(
+                                Icons.Rounded.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = cs.primary
+                            )
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "刷新",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = cs.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            // Thinking mode toggle that travels with the convo.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(cs.surfaceContainer)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Outlined.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = cs.primary
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "思考 / 输出模式",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = cs.onSurface,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        if (currentModel == MODEL_REASONER) "Reasoner 默认展示推理"
+                        else "对非推理模型追加 <think>…</think> 指令",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = convoThinking || currentModel == MODEL_REASONER,
+                    onCheckedChange = onToggleThinking,
+                    enabled = currentModel != MODEL_REASONER,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = cs.primary,
+                        uncheckedThumbColor = Color.White,
+                        uncheckedTrackColor = cs.surfaceContainerHighest,
+                        checkedBorderColor = Color.Transparent,
+                        uncheckedBorderColor = Color.Transparent
+                    )
+                )
+            }
+
+            Spacer(Modifier.height(14.dp))
+
+            val builtin = listOf(MODEL_CHAT, MODEL_REASONER)
+            val all = (builtin + models).distinct()
+
+            all.forEach { id ->
+                val selected = id == currentModel
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .bouncyClickable(pressedScale = 0.985f) { onPick(id) }
+                        .padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        id,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = cs.onSurface,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (selected) {
+                        Icon(
+                            Icons.Rounded.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = cs.primary
+                        )
+                    }
+                }
+            }
+            error?.let {
+                Spacer(Modifier.height(8.dp))
+                Text("拉取失败：$it", style = MaterialTheme.typography.labelLarge, color = cs.error)
+            }
+        }
+    }
+}
+
+// =====================================================================
+// Voice sheet
+// =====================================================================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VoiceSheet(
+    state: VoiceState,
+    onConfirm: (String) -> Unit,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = cs.surface
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            val (icon, text) = when (state) {
+                is VoiceState.Idle -> Icons.Rounded.Mic to "等待开始…"
+                is VoiceState.Listening -> Icons.Rounded.Mic to (state.partial.ifBlank { "在听…" })
+                is VoiceState.Result -> Icons.Outlined.AutoAwesome to state.text
+                is VoiceState.Error -> Icons.Rounded.Mic to state.message
+            }
+            val pulse by animateFloatAsState(
+                targetValue = if (state is VoiceState.Listening) 1.08f else 1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessLow
+                ),
+                label = "pulse"
+            )
+            Box(
+                Modifier
+                    .size(72.dp)
+                    .scale(pulse)
+                    .clip(CircleShape)
+                    .background(cs.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(34.dp),
+                    tint = cs.onPrimaryContainer
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = cs.onSurface
+            )
+            Spacer(Modifier.height(22.dp))
+            Row {
+                SheetButton(
+                    label = "取消",
+                    color = cs.surfaceContainerHigh,
+                    onColor = cs.onSurface,
+                    onClick = onCancel,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(10.dp))
+                when (state) {
+                    is VoiceState.Result -> SheetButton(
+                        label = "确认填入",
+                        color = cs.tertiary,
+                        onColor = cs.onTertiary,
+                        onClick = { onConfirm(state.text) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    is VoiceState.Error -> SheetButton(
+                        label = "重试",
+                        color = cs.primary,
+                        onColor = cs.onPrimary,
+                        onClick = onRetry,
+                        modifier = Modifier.weight(1f)
+                    )
+                    is VoiceState.Listening -> SheetButton(
+                        label = "停止",
+                        color = cs.tertiary,
+                        onColor = cs.onTertiary,
+                        onClick = onCancel,
+                        modifier = Modifier.weight(1f)
+                    )
+                    else -> SheetButton(
+                        label = "开始",
+                        color = cs.primary,
+                        onColor = cs.onPrimary,
+                        onClick = onRetry,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetButton(
+    label: String,
+    color: Color,
+    onColor: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(color)
+            .bouncyClickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.titleMedium,
+            color = onColor,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+// =====================================================================
 // Misc
 // =====================================================================
 
@@ -788,12 +1136,37 @@ private fun ScrollToBottomButton(onClick: () -> Unit) {
 }
 
 @Composable
+private fun StatusPill(text: String) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(cs.surfaceContainerHigh)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(14.dp),
+            strokeWidth = 2.dp,
+            color = cs.primary
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            color = cs.onSurface,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+@Composable
 private fun ErrorRow(message: String, onDismiss: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(cs.error.copy(alpha = 0.12f))
             .bouncyClickable(pressedScale = 0.99f, onClick = onDismiss)
             .padding(horizontal = 14.dp, vertical = 12.dp),
@@ -833,7 +1206,7 @@ private fun EmptyChatHint() {
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            "在底部聊天栏的模型胶囊里可以切换 deepseek-chat / reasoner。",
+            "在底部聊天栏的模型胶囊里可以切换模型与思考模式；点 🎤 可以语音输入。",
             style = MaterialTheme.typography.bodyMedium,
             color = cs.onSurfaceVariant
         )

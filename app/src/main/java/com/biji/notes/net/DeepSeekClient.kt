@@ -31,6 +31,7 @@ sealed interface ChatEvent {
     data class Delta(val content: String) : ChatEvent
     data class Reasoning(val content: String) : ChatEvent
     data class ToolCalls(val calls: List<ToolCall>) : ChatEvent
+    data class Usage(val prompt: Long, val completion: Long, val total: Long) : ChatEvent
     data object Done : ChatEvent
     data class Error(val message: String) : ChatEvent
 }
@@ -38,6 +39,7 @@ sealed interface ChatEvent {
 data class ChatMessageDto(
     val role: String,
     val content: String? = null,
+    val reasoningContent: String? = null,
     val toolCalls: List<ToolCall>? = null,
     val toolCallId: String? = null
 )
@@ -180,6 +182,9 @@ class DeepSeekClient {
         val obj = buildJsonObject {
             put("model", model)
             put("stream", stream)
+            if (stream) {
+                put("stream_options", buildJsonObject { put("include_usage", true) })
+            }
             if (temperature != null && !model.contains("reason", ignoreCase = true)) {
                 put("temperature", temperature.toDouble())
             }
@@ -198,6 +203,10 @@ class DeepSeekClient {
         put("role", m.role)
         // Reasoner doesn't accept null content. Always supply a string.
         put("content", m.content ?: "")
+        // Some non-official proxies (e.g. v4-flash) require reasoning_content
+        // to be echoed back when present; official DeepSeek strips it.
+        // Caller decides per request via baseUrl heuristic.
+        m.reasoningContent?.takeIf { it.isNotBlank() }?.let { put("reasoning_content", it) }
         if (!m.toolCalls.isNullOrEmpty()) {
             put("tool_calls", buildJsonArray {
                 m.toolCalls.forEach { c ->
@@ -249,6 +258,17 @@ class DeepSeekClient {
     ) {
         runCatching {
             val obj = json.parseToJsonElement(data).jsonObject
+            // Usage may appear on the last chunk (or alongside choices) when
+            // stream_options.include_usage = true. Emit it whenever present.
+            obj["usage"]?.jsonObject?.let { u ->
+                emit(
+                    ChatEvent.Usage(
+                        prompt = u["prompt_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L,
+                        completion = u["completion_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L,
+                        total = u["total_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L
+                    )
+                )
+            }
             val choice = obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject ?: return@runCatching
             val delta = choice["delta"]?.jsonObject ?: choice["message"]?.jsonObject
             if (delta != null) {
@@ -268,6 +288,15 @@ class DeepSeekClient {
     ) {
         runCatching {
             val obj = json.parseToJsonElement(text).jsonObject
+            obj["usage"]?.jsonObject?.let { u ->
+                emit(
+                    ChatEvent.Usage(
+                        prompt = u["prompt_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L,
+                        completion = u["completion_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L,
+                        total = u["total_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L
+                    )
+                )
+            }
             val choice = obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject
             if (choice == null) {
                 emit(ChatEvent.Error("响应不是合法的 chat.completion 结构"))
@@ -281,6 +310,37 @@ class DeepSeekClient {
             msg?.get("tool_calls")?.jsonArray?.let { toolBuf.absorb(it) }
         }.onFailure {
             emit(ChatEvent.Error("响应解析失败：${it.message ?: it.javaClass.simpleName}"))
+        }
+    }
+
+    /** Plain non-streaming completion used for context compaction. */
+    suspend fun complete(
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        system: String,
+        user: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val msgs = listOf(
+                ChatMessageDto(role = "system", content = system),
+                ChatMessageDto(role = "user", content = user)
+            )
+            val payload = buildRequestBody(model, msgs, 0.4f, stream = false, tools = null)
+            val req = Request.Builder()
+                .url(chatUrl(baseUrl))
+                .header("Authorization", "Bearer $apiKey")
+                .post(payload.toRequestBody("application/json".toMediaType()))
+                .build()
+            http.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error(formatHttpError(resp.code, text))
+                val obj = json.parseToJsonElement(text).jsonObject
+                obj["choices"]?.jsonArray?.firstOrNull()
+                    ?.jsonObject?.get("message")?.jsonObject
+                    ?.get("content")?.jsonPrimitive?.contentOrNull
+                    ?.trim().orEmpty()
+            }
         }
     }
 

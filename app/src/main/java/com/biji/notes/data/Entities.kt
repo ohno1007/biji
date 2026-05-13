@@ -12,7 +12,20 @@ data class Conversation(
     val title: String = "新对话",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
-    val model: String = "deepseek-chat"
+    val model: String = "deepseek-chat",
+
+    /** Rolling token total of the last API response for this conversation,
+     *  i.e. how many tokens we just put through the model. Used to drive the
+     *  context-usage ring and the auto-compaction trigger. */
+    @ColumnInfo(name = "context_tokens", defaultValue = "0")
+    val contextTokens: Long = 0,
+
+    /** Per-conversation flag: explicitly request the model to reveal
+     *  reasoning. For deepseek-reasoner this is always true (it can't be
+     *  disabled). For deepseek-chat / proxy models, we add a system
+     *  instruction. */
+    @ColumnInfo(name = "thinking", defaultValue = "0")
+    val thinking: Boolean = false
 )
 
 object Role {
@@ -23,14 +36,13 @@ object Role {
 }
 
 object MessageKind {
-    /** Plain user/assistant/system text. */
     const val TEXT = "text"
-
-    /** An assistant message whose only purpose is to carry tool_calls JSON. */
     const val TOOL_CALL = "tool_call"
-
-    /** A tool-role message whose content is the tool's structured result. */
     const val TOOL_RESULT = "tool_result"
+    /** Model-generated compaction of older messages, replacing them in the
+     *  API request. Persisted as a system-role message so it counts toward
+     *  context without polluting normal history rendering. */
+    const val CONTEXT_SUMMARY = "context_summary"
 }
 
 @Entity(
@@ -53,16 +65,17 @@ data class Message(
     @ColumnInfo(name = "reasoning") val reasoning: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
 
-    /** [MessageKind] discriminator – defaults to TEXT for back-compat. */
     @ColumnInfo(name = "kind", defaultValue = MessageKind.TEXT)
     val kind: String = MessageKind.TEXT,
 
-    /** Tool-call JSON (when [kind] == TOOL_CALL) or tool-result JSON
-     *  (when [kind] == TOOL_RESULT). null for plain text messages. */
     @ColumnInfo(name = "tool_data")
     val toolData: String? = null,
 
-    /** For tool messages, links back to the original tool_call id. */
     @ColumnInfo(name = "tool_call_id")
-    val toolCallId: String? = null
+    val toolCallId: String? = null,
+
+    /** True when this message has been compacted into a CONTEXT_SUMMARY and
+     *  should be skipped when building API requests (still visible in UI). */
+    @ColumnInfo(name = "archived", defaultValue = "0")
+    val archived: Boolean = false
 )

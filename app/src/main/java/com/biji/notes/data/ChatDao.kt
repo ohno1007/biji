@@ -28,6 +28,12 @@ interface ChatDao {
     @Query("UPDATE conversations SET updatedAt = :now WHERE id = :id")
     suspend fun touchConversation(id: Long, now: Long = System.currentTimeMillis())
 
+    @Query("UPDATE conversations SET context_tokens = :tokens WHERE id = :id")
+    suspend fun setContextTokens(id: Long, tokens: Long)
+
+    @Query("UPDATE conversations SET thinking = :on WHERE id = :id")
+    suspend fun setConvoThinking(id: Long, on: Boolean)
+
     @Query("DELETE FROM conversations WHERE id = :id")
     suspend fun deleteConversation(id: Long)
 
@@ -36,6 +42,9 @@ interface ChatDao {
 
     @Query("SELECT * FROM messages WHERE conversationId = :id ORDER BY createdAt ASC, id ASC")
     suspend fun getMessages(id: Long): List<Message>
+
+    @Query("SELECT * FROM messages WHERE conversationId = :id AND archived = 0 ORDER BY createdAt ASC, id ASC")
+    suspend fun getLiveMessages(id: Long): List<Message>
 
     @Insert
     suspend fun insertMessage(m: Message): Long
@@ -46,12 +55,15 @@ interface ChatDao {
     @Query("UPDATE messages SET content = :content, reasoning = :reasoning WHERE id = :id")
     suspend fun updateMessageBody(id: Long, content: String, reasoning: String?)
 
+    @Query("UPDATE messages SET tool_data = :data WHERE id = :id")
+    suspend fun setToolData(id: Long, data: String?)
+
+    @Query("UPDATE messages SET archived = 1 WHERE id IN (:ids)")
+    suspend fun archiveMessages(ids: List<Long>)
+
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun deleteMessage(id: Long)
 
-    @Query("SELECT * FROM messages ORDER BY createdAt DESC LIMIT :limit")
+    @Query("SELECT * FROM messages WHERE archived = 0 ORDER BY createdAt DESC LIMIT :limit")
     suspend fun getRecentForIndex(limit: Int = 5000): List<Message>
-
-    @Query("UPDATE messages SET tool_data = :data WHERE id = :id")
-    suspend fun setToolData(id: Long, data: String?)
 }

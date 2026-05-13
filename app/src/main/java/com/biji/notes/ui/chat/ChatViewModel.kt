@@ -20,6 +20,8 @@ import com.biji.notes.net.ToolCall
 import com.biji.notes.net.ToolExecutor
 import com.biji.notes.net.Tools
 import com.biji.notes.notif.ChatNotifier
+import com.biji.notes.voice.VoiceRecognizer
+import com.biji.notes.voice.VoiceState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +30,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -48,6 +51,14 @@ data class BalanceState(
     val error: String? = null
 )
 
+data class ContextUsage(
+    val tokens: Long = 0L,
+    val limit: Long = DEFAULT_LIMIT
+) {
+    val fraction: Float get() = if (limit <= 0L) 0f else (tokens.toFloat() / limit).coerceIn(0f, 1f)
+    companion object { const val DEFAULT_LIMIT = 64_000L }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(
     private val chat: ChatRepository,
@@ -56,6 +67,7 @@ class ChatViewModel(
     private val memory: MemoryService,
     private val toolExec: ToolExecutor,
     private val notifier: ChatNotifier,
+    private val voice: VoiceRecognizer,
     private val isForeground: () -> Boolean
 ) : ViewModel() {
 
@@ -92,9 +104,31 @@ class ChatViewModel(
     private val _openWebUrl = MutableStateFlow<String?>(null)
     val openWebUrl: StateFlow<String?> = _openWebUrl.asStateFlow()
 
+    val voiceState: StateFlow<VoiceState> = voice.state
+    private val _voiceVisible = MutableStateFlow(false)
+    val voiceVisible: StateFlow<Boolean> = _voiceVisible.asStateFlow()
+
+    /** Current conversation's tracked token usage, fed by the model's
+     *  reported `usage` after every turn. */
+    val contextUsage: StateFlow<ContextUsage> = _activeConvoId
+        .flatMapLatest { id ->
+            if (id == null) flowOf(ContextUsage())
+            else conversations.map { list ->
+                val c = list.firstOrNull { it.id == id }
+                ContextUsage(
+                    tokens = c?.contextTokens ?: 0L,
+                    limit = contextLimitFor(c?.model ?: settings.value.model)
+                )
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ContextUsage())
+
+    private val _compactStatus = MutableStateFlow<String?>(null)
+    val compactStatus: StateFlow<String?> = _compactStatus.asStateFlow()
+
     private var streamJob: Job? = null
 
-    // -- Navigation ---------------------------------------------------------
+    // ---- Navigation -------------------------------------------------------
 
     fun openConversation(id: Long) { _activeConvoId.value = id }
     fun clearActive() { _activeConvoId.value = null }
@@ -123,16 +157,36 @@ class ChatViewModel(
         _toolStatus.value = null
     }
 
-    // -- Sending ------------------------------------------------------------
+    // ---- Voice ------------------------------------------------------------
+
+    fun startVoice() {
+        if (!voice.available()) {
+            voice.reset()
+            return
+        }
+        _voiceVisible.value = true
+        voice.start()
+    }
+
+    fun stopVoice() { voice.stop() }
+    fun cancelVoice() {
+        voice.cancel()
+        _voiceVisible.value = false
+    }
+    fun dismissVoice() {
+        voice.reset()
+        _voiceVisible.value = false
+    }
+
+    // ---- Sending ----------------------------------------------------------
 
     fun send(userText: String) {
         val text = userText.trim()
         if (text.isEmpty()) return
-        val s = settings.value
 
         streamJob = viewModelScope.launch {
             val convoId = _activeConvoId.value ?: run {
-                val id = chat.createConversation(model = s.model)
+                val id = chat.createConversation(model = settings.value.model)
                 _activeConvoId.value = id
                 id
             }
@@ -144,23 +198,18 @@ class ChatViewModel(
             _toolStatus.value = null
 
             try {
+                maybeCompactContext(convoId)
                 runChatTurn(convoId, userTurnText = text)
             } finally {
                 _isStreaming.value = false
                 _toolStatus.value = null
             }
 
-            // Auto-title once we actually have an answer.
             maybeSummarizeTitle(convoId)
             maybeNotify(convoId)
         }
     }
 
-    /**
-     * Drive one user turn through the model, including any tool-call rounds.
-     * The model can request tools (web_search / read_url), we run them, then
-     * feed the results back and keep streaming. Capped at MAX_ITERS.
-     */
     private suspend fun runChatTurn(convoId: Long, userTurnText: String) {
         val s = settings.value
         var iters = 0
@@ -171,6 +220,7 @@ class ChatViewModel(
             val contentBuf = StringBuilder()
             val reasoningBuf = StringBuilder()
             var toolCalls: List<ToolCall> = emptyList()
+            var lastUsageTotal: Long = -1L
 
             client.stream(
                 baseUrl = s.baseUrl,
@@ -197,28 +247,21 @@ class ChatViewModel(
                             reasoningBuf.toString()
                         )
                     }
-                    is ChatEvent.ToolCalls -> {
-                        toolCalls = ev.calls
-                    }
+                    is ChatEvent.ToolCalls -> { toolCalls = ev.calls }
+                    is ChatEvent.Usage -> { lastUsageTotal = ev.total }
                     ChatEvent.Done -> Unit
-                    is ChatEvent.Error -> {
-                        _streamError.value = ev.message
-                    }
+                    is ChatEvent.Error -> { _streamError.value = ev.message }
                 }
+            }
+
+            if (lastUsageTotal > 0) {
+                chat.setContextTokens(convoId, lastUsageTotal)
             }
 
             if (toolCalls.isEmpty()) return
 
-            // Persist the assistant-with-tool_calls record by upgrading the
-            // placeholder we just streamed into (which is empty content +
-            // possibly some reasoning).
             chat.setToolData(placeholderId, encodeToolCalls(toolCalls))
-            // Tag the placeholder as a tool_call message so we can format the
-            // history correctly next iteration.
-            // (Cheap update: re-insert via setToolData + we treat any
-            //  assistant message with toolData as a tool_call.)
 
-            // Execute each tool sequentially, persisting a tool-result row.
             for (call in toolCalls) {
                 _toolStatus.value = friendlyToolStatus(call)
                 val (forModel, uiJson) = runCatching { toolExec.run(call) }
@@ -238,23 +281,25 @@ class ChatViewModel(
                 )
             }
             _toolStatus.value = null
-            // Loop back: model will see the tool results and continue.
         }
     }
 
-    /** Build the messages payload for one stream() call from the convo's
-     *  current state in the DB, augmented with the long-term memory
-     *  fragment and the user-configured system prompt. */
     private suspend fun buildRequestMessages(
         convoId: Long,
         userTurnText: String
     ): List<ChatMessageDto> {
         val s = settings.value
-        val history = chat.getMessages(convoId)
-        val dtos = history.mapNotNull(::toDto)
+        val convo = chat.getConversation(convoId)
+        val live = chat.getLiveMessages(convoId)
+
+        val keepReasoning = !s.baseUrl.contains("api.deepseek.com", ignoreCase = true)
+        val dtos = live.mapNotNull { toDto(it, keepReasoning) }
 
         val systemBlocks = mutableListOf<String>()
         if (s.systemPrompt.isNotBlank()) systemBlocks += s.systemPrompt
+        if (convo?.thinking == true && s.model.contains("reason").not()) {
+            systemBlocks += "请先在 <think>…</think> 中详细列出你的推理过程，再给最终答案。"
+        }
         if (s.longMemory) {
             val hits = memory.retrieve(userTurnText, excludeConvoId = convoId, k = 3)
             memory.memoryPrompt(hits)?.let { systemBlocks += it }
@@ -270,24 +315,82 @@ class ChatViewModel(
         return listOfNotNull(systemDto) + dtos
     }
 
-    private fun toDto(m: Message): ChatMessageDto? = when {
+    private fun toDto(m: Message, keepReasoning: Boolean): ChatMessageDto? = when {
         m.kind == MessageKind.TOOL_RESULT -> ChatMessageDto(
             role = Role.TOOL,
             content = m.content,
             toolCallId = m.toolCallId
         )
-        // An assistant message with toolData stored is the tool-call record:
-        // re-emit it with the tool_calls field set.
         m.role == Role.ASSISTANT && m.toolData != null -> ChatMessageDto(
             role = Role.ASSISTANT,
             content = m.content,
             toolCalls = decodeToolCalls(m.toolData)
         )
-        // Skip the empty assistant placeholder while we're rebuilding history
-        // for a re-call after tools: the live placeholder lives in DB but is
-        // the one being streamed *into*. It always sits at the tail.
         m.role == Role.ASSISTANT && m.content.isBlank() && m.toolData == null -> null
-        else -> ChatMessageDto(role = m.role, content = m.content)
+        else -> ChatMessageDto(
+            role = m.role,
+            content = m.content,
+            reasoningContent = if (keepReasoning && m.role == Role.ASSISTANT &&
+                !m.reasoning.isNullOrBlank()
+            ) m.reasoning else null
+        )
+    }
+
+    /** When the context window starts to fill up, summarise the older half
+     *  of the conversation into a single CONTEXT_SUMMARY message and mark
+     *  the originals as archived. The compacted summary then becomes the
+     *  prefix of subsequent API calls. */
+    private suspend fun maybeCompactContext(convoId: Long) {
+        val s = settings.value
+        if (s.apiKey.isBlank()) return
+        val convo = chat.getConversation(convoId) ?: return
+        val limit = contextLimitFor(convo.model)
+        if (convo.contextTokens.toDouble() < limit * COMPACT_THRESHOLD) return
+
+        val live = chat.getLiveMessages(convoId)
+        val candidates = live.filter {
+            it.kind == MessageKind.TEXT && (it.role == Role.USER || it.role == Role.ASSISTANT)
+        }
+        if (candidates.size < 8) return
+
+        val keepN = 4
+        val toArchive = candidates.dropLast(keepN)
+        if (toArchive.size < 2) return
+
+        _compactStatus.value = "上下文已 ${(convo.contextTokens.toDouble() / limit * 100).toInt()}%, 正在向量化早期内容…"
+        val transcript = toArchive.joinToString("\n\n") { m ->
+            val who = when (m.role) {
+                Role.USER -> "用户"
+                Role.ASSISTANT -> "助手"
+                else -> m.role
+            }
+            "$who: ${m.content.take(800)}"
+        }
+
+        val summary = client.complete(
+            baseUrl = s.baseUrl,
+            apiKey = s.apiKey,
+            model = "deepseek-chat",
+            system = "请把下面这段多轮对话压缩成一段不超过 500 字的客观摘要，" +
+                "保留关键事实、已确认的偏好、未决的问题与代办，去除寒暄。直接输出摘要正文，不要加标题。",
+            user = transcript
+        ).getOrNull()?.takeIf { it.isNotBlank() }
+
+        _compactStatus.value = null
+        if (summary.isNullOrBlank()) return
+
+        chat.archive(toArchive.map { it.id })
+        val firstTs = toArchive.first().createdAt - 1
+        chat.addMessage(
+            convoId = convoId,
+            role = Role.SYSTEM,
+            content = "【早期对话摘要】\n$summary",
+            kind = MessageKind.CONTEXT_SUMMARY,
+            createdAt = firstTs
+        )
+        // Reset token estimate; the next API call will rewrite it from `usage`.
+        chat.setContextTokens(convoId, summary.length.toLong() / 2)
+        memory.invalidate()
     }
 
     private fun encodeToolCalls(calls: List<ToolCall>): String {
@@ -328,10 +431,8 @@ class ChatViewModel(
         val s = settings.value
         if (s.apiKey.isBlank()) return
         val convo = chat.getConversation(convoId) ?: return
-        if (convo.title != "新对话" &&
-            !convo.title.startsWith(convo.title.take(8))) return
+        if (convo.title != "新对话") return
 
-        // We summarise only when there's a real (user + assistant) turn pair.
         val turns = chat.getMessages(convoId).filter { it.kind == MessageKind.TEXT }
         val firstUser = turns.firstOrNull { it.role == Role.USER }?.content ?: return
         val firstAssistant = turns.firstOrNull { it.role == Role.ASSISTANT && it.content.isNotBlank() }
@@ -361,7 +462,7 @@ class ChatViewModel(
 
     fun dismissError() { _streamError.value = null }
 
-    // ---- Settings actions ------------------------------------------------
+    // ---- Settings / models ------------------------------------------------
 
     fun setApiKey(value: String) = viewModelScope.launch { settingsRepo.setApiKey(value) }
     fun setBaseUrl(value: String) = viewModelScope.launch { settingsRepo.setBaseUrl(value) }
@@ -373,8 +474,17 @@ class ChatViewModel(
     fun setLongMemory(v: Boolean) = viewModelScope.launch { settingsRepo.setLongMemory(v) }
     fun setNotify(v: Boolean) = viewModelScope.launch { settingsRepo.setNotify(v) }
 
+    fun setConversationThinking(on: Boolean) {
+        val id = _activeConvoId.value ?: return
+        viewModelScope.launch { chat.setThinking(id, on) }
+    }
+
     fun refreshModels() {
         val s = settings.value
+        if (s.apiKey.isBlank()) {
+            _models.value = ModelsState(loading = false, list = emptyList(), error = "未配置 API Key")
+            return
+        }
         _models.value = _models.value.copy(loading = true, error = null)
         viewModelScope.launch {
             val result = client.listModels(s.baseUrl, s.apiKey)
@@ -383,6 +493,15 @@ class ChatViewModel(
                 onFailure = { ModelsState(loading = false, list = _models.value.list, error = it.message) }
             )
         }
+    }
+
+    /** Auto-refresh models if the cached list is stale. Safe to call on
+     *  screen open. */
+    fun ensureModelsLoaded() {
+        val s = _models.value
+        if (s.loading) return
+        if (s.list.isNotEmpty()) return
+        refreshModels()
     }
 
     fun refreshBalance() {
@@ -397,8 +516,20 @@ class ChatViewModel(
         }
     }
 
+    override fun onCleared() {
+        super.onCleared()
+        voice.destroy()
+    }
+
     companion object {
         private const val MAX_ITERS = 4
+        private const val COMPACT_THRESHOLD = 0.78
+
+        private fun contextLimitFor(model: String): Long = when {
+            model.contains("reason", ignoreCase = true) -> 64_000L
+            model.contains("v4-flash", ignoreCase = true) -> 32_000L
+            else -> 64_000L
+        }
 
         fun factory(
             chat: ChatRepository,
@@ -407,11 +538,14 @@ class ChatViewModel(
             memory: MemoryService,
             toolExec: ToolExecutor,
             notifier: ChatNotifier,
+            voice: VoiceRecognizer,
             isForeground: () -> Boolean
         ) = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                ChatViewModel(chat, settings, client, memory, toolExec, notifier, isForeground) as T
+                ChatViewModel(
+                    chat, settings, client, memory, toolExec, notifier, voice, isForeground
+                ) as T
         }
     }
 }

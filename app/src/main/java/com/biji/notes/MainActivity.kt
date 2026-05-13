@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
                         memory = app.memoryService,
                         toolExec = app.toolExecutor,
                         notifier = app.chatNotifier,
+                        voice = app.voiceRecognizer,
                         isForeground = app::isForeground
                     )
                 )
