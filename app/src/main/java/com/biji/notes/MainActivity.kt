@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -255,70 +256,63 @@ private fun NavSlot(
     modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
-    // Outer slot just centres the item — NO ripple here.
+    val pillSpring = spring<androidx.compose.ui.unit.IntSize>(
+        dampingRatio = Spring.DampingRatioMediumBouncy,
+        stiffness = Spring.StiffnessMediumLow
+    )
+    val colorSpec = androidx.compose.animation.core.tween<androidx.compose.ui.graphics.Color>(
+        durationMillis = 220
+    )
+    val bg by androidx.compose.animation.animateColorAsState(
+        targetValue = if (selected) cs.primary else androidx.compose.ui.graphics.Color.Transparent,
+        animationSpec = colorSpec,
+        label = "navBg"
+    )
+    val iconTint by androidx.compose.animation.animateColorAsState(
+        targetValue = if (selected) cs.onPrimary else cs.onSurfaceVariant,
+        animationSpec = colorSpec,
+        label = "navIcon"
+    )
     Box(
-        modifier = modifier
-            .padding(horizontal = 4.dp, vertical = 6.dp),
+        modifier = modifier.padding(horizontal = 4.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
-        // Animated container: pill when selected, circle when not. The ripple
-        // is bound to the visible shape, not the invisible slot.
-        AnimatedContent(
-            targetState = selected,
-            transitionSpec = {
-                val spec = spring<Float>(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                )
-                (fadeIn(tween(180)) + scaleIn(initialScale = 0.85f, animationSpec = spec))
-                    .togetherWith(fadeOut(tween(140)) +
-                        androidx.compose.animation.scaleOut(targetScale = 0.85f, animationSpec = spec))
-                    .using(SizeTransform(clip = false) { _, _ ->
-                        spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    })
-            },
-            label = "navSlot"
-        ) { isSelected ->
-            if (isSelected) {
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(cs.primary)
-                        .bouncyClickable(pressedScale = 0.94f, onClick = onClick)
-                        .padding(horizontal = 20.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        activeIcon,
-                        contentDescription = label,
-                        modifier = Modifier.size(18.dp),
-                        tint = cs.onPrimary
-                    )
+        // A single capsule whose width grows/shrinks horizontally as the
+        // label appears/disappears. Background + icon tint cross-fade so the
+        // transition is one continuous "pill expanding out of the icon".
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(bg)
+                .bouncyClickable(pressedScale = 0.94f, onClick = onClick)
+                .padding(horizontal = if (selected) 18.dp else 14.dp, vertical = 10.dp)
+                .animateContentSize(animationSpec = pillSpring),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (selected) activeIcon else inactiveIcon,
+                contentDescription = label,
+                modifier = Modifier.size(if (selected) 18.dp else 22.dp),
+                tint = iconTint
+            )
+            AnimatedVisibility(
+                visible = selected,
+                enter = androidx.compose.animation.expandHorizontally(
+                    animationSpec = pillSpring,
+                    expandFrom = Alignment.Start
+                ) + fadeIn(tween(180)),
+                exit = androidx.compose.animation.shrinkHorizontally(
+                    animationSpec = pillSpring,
+                    shrinkTowards = Alignment.Start
+                ) + fadeOut(tween(120))
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Spacer(Modifier.size(6.dp))
                     Text(
                         label,
                         style = MaterialTheme.typography.labelLarge,
                         color = cs.onPrimary,
                         fontWeight = FontWeight.SemiBold
-                    )
-                }
-            } else {
-                Box(
-                    Modifier
-                        .padding(horizontal = 8.dp, vertical = 6.dp)
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .bouncyClickable(pressedScale = 0.92f, onClick = onClick),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        inactiveIcon,
-                        contentDescription = label,
-                        modifier = Modifier.size(22.dp),
-                        tint = cs.onSurfaceVariant
                     )
                 }
             }
