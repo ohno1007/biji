@@ -104,11 +104,24 @@ class DeepSeekClient {
                     val contentType = (response.header("Content-Type") ?: "").lowercase()
 
                     val toolBuf = ToolCallBuffer()
-                    if (contentType.contains("event-stream")) {
-                        readSse(body.source(), toolBuf, this@callbackFlow::trySend)
-                    } else {
-                        val text = body.string()
-                        emitCompleteJson(text, toolBuf, this@callbackFlow::trySend)
+                    when {
+                        contentType.contains("event-stream") ->
+                            readSse(body.source(), toolBuf, this@callbackFlow::trySend)
+                        // Some proxies stream NDJSON / chunked JSON-lines instead
+                        // of real SSE. Sniff and parse line-by-line.
+                        contentType.contains("ndjson") ||
+                            contentType.contains("jsonl") ||
+                            contentType.contains("application/stream+json") ->
+                            readNdjson(body.source(), toolBuf, this@callbackFlow::trySend)
+                        else -> {
+                            val text = body.string()
+                            if (text.lineSequence().take(4).any { it.trimStart().startsWith("data:") }) {
+                                // SSE mislabelled as text/plain or application/json.
+                                readSseFromString(text, toolBuf, this@callbackFlow::trySend)
+                            } else {
+                                emitCompleteJson(text, toolBuf, this@callbackFlow::trySend)
+                            }
+                        }
                     }
                     val calls = toolBuf.build()
                     if (calls.isNotEmpty()) trySend(ChatEvent.ToolCalls(calls))
@@ -201,15 +214,22 @@ class DeepSeekClient {
 
     private fun messageToJson(m: ChatMessageDto): JsonObject = buildJsonObject {
         put("role", m.role)
-        // Reasoner doesn't accept null content. Always supply a string.
-        put("content", m.content ?: "")
+        // OpenAI/DeepSeek spec: when an assistant message has tool_calls and
+        // no actual text, content must be null/omitted; sending "" makes some
+        // strict proxies reject the whole request (-> empty response).
+        val hasToolCalls = !m.toolCalls.isNullOrEmpty()
+        val text = m.content
+        when {
+            hasToolCalls && text.isNullOrBlank() -> { /* omit content entirely */ }
+            else -> put("content", text ?: "")
+        }
         // Some non-official proxies (e.g. v4-flash) require reasoning_content
         // to be echoed back when present; official DeepSeek strips it.
         // Caller decides per request via baseUrl heuristic.
         m.reasoningContent?.takeIf { it.isNotBlank() }?.let { put("reasoning_content", it) }
-        if (!m.toolCalls.isNullOrEmpty()) {
+        if (hasToolCalls) {
             put("tool_calls", buildJsonArray {
-                m.toolCalls.forEach { c ->
+                m.toolCalls!!.forEach { c ->
                     add(buildJsonObject {
                         put("id", c.id)
                         put("type", "function")
@@ -238,16 +258,63 @@ class DeepSeekClient {
         while (true) {
             val line = src.readUtf8Line() ?: break
             if (line.isEmpty()) {
-                val data = buf.toString()
-                buf.clear()
-                if (data.isEmpty()) continue
-                if (data == "[DONE]") return
-                parseStreamChunk(data, toolBuf, emit)
+                if (flushSseBuffer(buf, toolBuf, emit)) return
             } else if (line.startsWith("data:")) {
                 val payload = line.removePrefix("data:").trimStart()
                 if (buf.isNotEmpty()) buf.append('\n')
                 buf.append(payload)
             }
+            // Other lines (`event:`, `id:`, `retry:`, `:` comments) are ignored.
+        }
+        // EOF without trailing blank line: flush whatever's pending so the
+        // last chunk isn't lost (some proxies skip the terminating CRLFCRLF).
+        flushSseBuffer(buf, toolBuf, emit)
+    }
+
+    /** Returns true if the event was `[DONE]` and the caller should stop. */
+    private fun flushSseBuffer(
+        buf: StringBuilder,
+        toolBuf: ToolCallBuffer,
+        emit: (ChatEvent) -> Unit
+    ): Boolean {
+        val data = buf.toString()
+        buf.clear()
+        if (data.isEmpty()) return false
+        if (data == "[DONE]") return true
+        parseStreamChunk(data, toolBuf, emit)
+        return false
+    }
+
+    private fun readSseFromString(
+        text: String,
+        toolBuf: ToolCallBuffer,
+        emit: (ChatEvent) -> Unit
+    ) {
+        val buf = StringBuilder()
+        for (line in text.lineSequence()) {
+            if (line.isEmpty()) {
+                if (flushSseBuffer(buf, toolBuf, emit)) return
+            } else if (line.startsWith("data:")) {
+                val payload = line.removePrefix("data:").trimStart()
+                if (buf.isNotEmpty()) buf.append('\n')
+                buf.append(payload)
+            }
+        }
+        flushSseBuffer(buf, toolBuf, emit)
+    }
+
+    private fun readNdjson(
+        src: okio.BufferedSource,
+        toolBuf: ToolCallBuffer,
+        emit: (ChatEvent) -> Unit
+    ) {
+        while (true) {
+            val line = src.readUtf8Line() ?: break
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) continue
+            if (trimmed == "[DONE]" || trimmed == "data: [DONE]") return
+            val payload = if (trimmed.startsWith("data:")) trimmed.removePrefix("data:").trim() else trimmed
+            parseStreamChunk(payload, toolBuf, emit)
         }
     }
 
@@ -258,6 +325,14 @@ class DeepSeekClient {
     ) {
         runCatching {
             val obj = json.parseToJsonElement(data).jsonObject
+            // Some proxies surface upstream errors as `{"error":{"message":"…"}}`
+            // inside an otherwise-200 stream chunk. Forward them so the user
+            // sees the real reason instead of "model returned nothing".
+            obj["error"]?.jsonObject?.let { err ->
+                val msg = err["message"]?.jsonPrimitive?.contentOrNull ?: err.toString()
+                emit(ChatEvent.Error(msg))
+                return@runCatching
+            }
             // Usage may appear on the last chunk (or alongside choices) when
             // stream_options.include_usage = true. Emit it whenever present.
             obj["usage"]?.jsonObject?.let { u ->
@@ -278,6 +353,10 @@ class DeepSeekClient {
                 if (!content.isNullOrEmpty()) emit(ChatEvent.Delta(content))
                 delta["tool_calls"]?.jsonArray?.let { toolBuf.absorb(it) }
             }
+        }.onFailure { t ->
+            // Don't silently eat parse errors – they're exactly the ones that
+            // surface as a mysterious "model returned nothing".
+            emit(ChatEvent.Error("流块解析失败：${t.message ?: t.javaClass.simpleName}\n片段: ${data.take(160)}"))
         }
     }
 

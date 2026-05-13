@@ -3,17 +3,23 @@ package com.biji.notes.ui.chat
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -78,6 +84,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
@@ -85,6 +93,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -150,35 +159,54 @@ fun ChatScreen(
     }
 
     Box(Modifier.fillMaxSize().imePadding()) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                start = 18.dp, end = 18.dp,
-                top = TopFadeHeight + 12.dp,
-                bottom = ComposerArea + 16.dp
-            ),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+        // Backdrop layer: captures whatever the LazyColumn draws so the
+        // top/bottom fades can sample it through a Gaussian blur. Below
+        // API 31 the layer still works, just without the blur — and the
+        // gradient alone produces a clean solid-fade.
+        val backdrop = androidx.compose.ui.graphics.layer.rememberGraphicsLayer()
+        Box(
+            Modifier
+                .fillMaxSize()
+                .drawWithContent {
+                    backdrop.record { this@drawWithContent.drawContent() }
+                    drawLayer(backdrop)
+                }
         ) {
-            if (messages.isEmpty()) {
-                item { EmptyChatHint() }
-            } else {
-                items(messages, key = { it.id }) { m ->
-                    MessageItem(m = m, onOpenUrl = vm::openWebUrl)
-                }
-                if (toolStatus != null) {
-                    item { StatusPill(text = toolStatus!!) }
-                }
-                if (compactStatus != null) {
-                    item { StatusPill(text = compactStatus!!) }
-                }
-                if (error != null) {
-                    item { ErrorRow(message = error!!, onDismiss = vm::dismissError) }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 18.dp, end = 18.dp,
+                    top = TopFadeHeight + 12.dp,
+                    bottom = ComposerArea + 16.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(18.dp)
+            ) {
+                if (messages.isEmpty()) {
+                    item { EmptyChatHint() }
+                } else {
+                    items(messages, key = { it.id }) { m ->
+                        MessageItem(m = m, onOpenUrl = vm::openWebUrl)
+                    }
+                    if (toolStatus != null) {
+                        item { StatusPill(text = toolStatus!!) }
+                    }
+                    if (compactStatus != null) {
+                        item { StatusPill(text = compactStatus!!) }
+                    }
+                    if (error != null) {
+                        item { ErrorRow(message = error!!, onDismiss = vm::dismissError) }
+                    }
                 }
             }
         }
 
-        TopFade(modifier = Modifier.align(Alignment.TopCenter))
+        BlurFade(
+            backdrop = backdrop,
+            isBottom = false,
+            heightTotal = TopFadeHeight + WindowInsetsTopHeight(),
+            modifier = Modifier.align(Alignment.TopCenter)
+        )
 
         TopBar(
             title = title,
@@ -191,7 +219,12 @@ fun ChatScreen(
                 .padding(horizontal = 8.dp, vertical = 6.dp)
         )
 
-        BottomFade(modifier = Modifier.align(Alignment.BottomCenter))
+        BlurFade(
+            backdrop = backdrop,
+            isBottom = true,
+            heightTotal = BottomFadeHeight,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
 
         AnimatedVisibility(
             visible = !isNearBottom && messages.isNotEmpty(),
@@ -274,38 +307,76 @@ private val ComposerArea = 172.dp
 // Fade / Top bar
 // =====================================================================
 
+/**
+ * Frosted-glass fade overlay. Samples the underlying content from a
+ * recorded [GraphicsLayer] and renders it back through a Gaussian
+ * [androidx.compose.ui.graphics.BlurEffect] (API 31+), then layers an
+ * alpha-mask gradient on top so the blur dissolves into the background
+ * colour. Below API 31, [renderEffect] is left null — you still get a
+ * clean solid fade.
+ */
 @Composable
-private fun TopFade(modifier: Modifier = Modifier) {
+private fun BlurFade(
+    backdrop: androidx.compose.ui.graphics.layer.GraphicsLayer,
+    isBottom: Boolean,
+    heightTotal: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier
+) {
     val bg = MaterialTheme.colorScheme.background
-    Box(
-        modifier
-            .fillMaxWidth()
-            .height(TopFadeHeight + WindowInsetsTopHeight())
-            .background(
-                Brush.verticalGradient(
-                    0.0f to bg,
-                    0.55f to bg.copy(alpha = 0.92f),
-                    1.0f to bg.copy(alpha = 0f)
-                )
+    val maskBrush = if (isBottom) {
+        Brush.verticalGradient(
+            0.00f to bg.copy(alpha = 0f),
+            0.35f to bg.copy(alpha = 0.55f),
+            0.70f to bg.copy(alpha = 0.92f),
+            1.00f to bg
+        )
+    } else {
+        Brush.verticalGradient(
+            0.00f to bg,
+            0.30f to bg.copy(alpha = 0.92f),
+            0.65f to bg.copy(alpha = 0.55f),
+            1.00f to bg.copy(alpha = 0f)
+        )
+    }
+    val blurEffect = remember {
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            androidx.compose.ui.graphics.BlurEffect(
+                30f, 30f,
+                androidx.compose.ui.graphics.TileMode.Clamp
             )
-    )
-}
+        } else null
+    }
 
-@Composable
-private fun BottomFade(modifier: Modifier = Modifier) {
-    val bg = MaterialTheme.colorScheme.background
     Box(
         modifier
             .fillMaxWidth()
-            .height(BottomFadeHeight)
-            .background(
-                Brush.verticalGradient(
-                    0.0f to bg.copy(alpha = 0f),
-                    0.45f to bg.copy(alpha = 0.92f),
-                    1.0f to bg
-                )
-            )
-    )
+            .height(heightTotal)
+    ) {
+        // Backdrop pass: sample the recorded layer, clip to our bounds,
+        // apply Gaussian blur. The fade box only covers a slice of the
+        // screen, so for the bottom fade we translate the layer up so its
+        // bottom slice aligns with this box.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    clip = true
+                    renderEffect = blurEffect
+                }
+                .drawBehind {
+                    val ty = if (isBottom) -(backdrop.size.height.toFloat() - size.height) else 0f
+                    androidx.compose.ui.graphics.drawscope.translate(top = ty) {
+                        drawLayer(backdrop)
+                    }
+                }
+        )
+        // Mask pass: alpha gradient that fades the blurred layer into bg.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(maskBrush)
+        )
+    }
 }
 
 @Composable
@@ -369,20 +440,29 @@ private fun IconBtn(
 }
 
 /**
- * MD3-flavoured two-segment hollow ring that displays current context-window
- * usage. The bright arc covers the used fraction, the muted arc the rest;
- * a small angular gap separates them ("镂空双段圆环"). Tapping shows a
- * compact stats line.
+ * MD3 expressive determinate ring: thick rounded active arc + thick rounded
+ * track arc separated by the standard 4dp track-gap on each side. The track
+ * is *always* drawn (so the ring is visible even at 0%), the active arc
+ * grows clockwise from 12 o'clock. Tap = stats sheet (not wired yet).
+ *
+ * Spec source: m3.material.io / CircularProgressIndicator – gap 4dp,
+ * stroke ~4dp, rounded stroke cap.
  */
 @Composable
 private fun ContextRing(usage: ContextUsage, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val fraction by animateFloatAsState(
         targetValue = usage.fraction,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
         label = "ringFrac"
     )
     val warn = fraction > 0.78f
+    val activeColor = if (warn) cs.error else cs.primary
+    val trackColor = cs.surfaceContainerHighest
+
     Box(
         modifier = Modifier
             .size(40.dp)
@@ -390,33 +470,42 @@ private fun ContextRing(usage: ContextUsage, onClick: () -> Unit) {
             .bouncyClickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(26.dp)) {
-            val stroke = 2.6f * density
-            val gap = 12f
-            val usedColor = if (warn) cs.error else cs.primary
-            val restColor = cs.outlineVariant
-            val usedSweep = (fraction * (360f - gap * 2)).coerceAtLeast(0f)
-            val restSweep = (360f - gap * 2 - usedSweep).coerceAtLeast(0f)
-            // Used arc
-            drawArc(
-                color = usedColor,
-                startAngle = -90f + gap,
-                sweepAngle = usedSweep,
-                useCenter = false,
-                style = Stroke(width = stroke, cap = StrokeCap.Round)
-            )
-            // Remaining arc
-            drawArc(
-                color = restColor,
-                startAngle = -90f + gap + usedSweep + gap,
-                sweepAngle = restSweep,
-                useCenter = false,
-                style = Stroke(width = stroke, cap = StrokeCap.Round)
-            )
+        Canvas(modifier = Modifier.size(32.dp)) {
+            val stroke = 3.5.dp.toPx()
+            val gapDp = 4.dp.toPx()
+            // Convert linear track gap to degrees on the indicator circle.
+            val radius = (size.minDimension - stroke) / 2f
+            val gapDeg = (gapDp / radius) * (180f / Math.PI.toFloat())
+
+            val usedSweep = (fraction * 360f).coerceIn(0f, 360f)
+            // Active arc – grows clockwise from 12 o'clock.
+            if (usedSweep > 0.5f) {
+                drawArc(
+                    color = activeColor,
+                    startAngle = -90f,
+                    sweepAngle = usedSweep,
+                    useCenter = false,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
+            }
+            // Track arc – fills the rest, separated by gap on both sides.
+            val trackStart = -90f + usedSweep + gapDeg
+            val trackSweep = 360f - usedSweep - gapDeg * 2f
+            if (trackSweep > 0.5f) {
+                drawArc(
+                    color = trackColor,
+                    startAngle = trackStart,
+                    sweepAngle = trackSweep,
+                    useCenter = false,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
+            }
         }
         Text(
             "${(fraction * 100).toInt()}",
-            style = MaterialTheme.typography.labelLarge.copy(fontSize = androidx.compose.ui.unit.TextUnit(9f, androidx.compose.ui.unit.TextUnitType.Sp)),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = androidx.compose.ui.unit.TextUnit(10f, androidx.compose.ui.unit.TextUnitType.Sp)
+            ),
             color = if (warn) cs.error else cs.onSurfaceVariant,
             fontWeight = FontWeight.SemiBold
         )
@@ -747,31 +836,65 @@ private fun ComposerModelChip(model: String, thinking: Boolean, onClick: () -> U
     val cs = MaterialTheme.colorScheme
     val bg = if (thinking) cs.primaryContainer else cs.surfaceContainerHigh
     val fg = if (thinking) cs.onPrimaryContainer else cs.onSurface
+    // Reveal the thinking icon with a bouncy expand-in transition so flipping
+    // reasoner on/off animates the capsule width with content-aware tween.
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(50))
             .background(bg)
-            .bouncyClickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
+            .bouncyClickable(pressedScale = 0.94f, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp)
+            .animateContentSize(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (thinking) {
-            Icon(
-                Icons.Outlined.AutoAwesome,
-                contentDescription = null,
-                modifier = Modifier.size(13.dp),
-                tint = fg
-            )
-            Spacer(Modifier.width(4.dp))
+        AnimatedVisibility(
+            visible = thinking,
+            enter = fadeIn() + expandHorizontally(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                ),
+                expandFrom = Alignment.Start
+            ),
+            exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.Start)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(13.dp),
+                    tint = fg
+                )
+                Spacer(Modifier.width(4.dp))
+            }
         }
-        Text(
-            model.removePrefix("deepseek-"),
-            style = MaterialTheme.typography.labelLarge,
-            color = fg,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        AnimatedContent(
+            targetState = model.removePrefix("deepseek-"),
+            transitionSpec = {
+                (fadeIn(tween(160)) + slideInVertically(
+                    initialOffsetY = { it / 2 },
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )).togetherWith(fadeOut(tween(120)))
+            },
+            label = "modelName"
+        ) { name ->
+            Text(
+                name,
+                style = MaterialTheme.typography.labelLarge,
+                color = fg,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
         Spacer(Modifier.width(2.dp))
         Icon(
             Icons.Rounded.ExpandMore,

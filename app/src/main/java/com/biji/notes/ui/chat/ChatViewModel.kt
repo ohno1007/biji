@@ -279,10 +279,12 @@ class ChatViewModel(
             // If the stream produced nothing at all (no content, no reasoning,
             // no tool calls) — likely an API/proxy failure — remove the empty
             // placeholder so it doesn't pollute later request history, and
-            // surface the error pill to the user.
+            // surface the error pill to the user. Always prefer the concrete
+            // server error over the generic fallback.
             if (contentBuf.isEmpty() && reasoningBuf.isEmpty() && toolCalls.isEmpty()) {
                 chat.deleteMessage(placeholderId)
-                _streamError.value = sawError ?: "模型未返回内容（请检查 API Key、Base URL 或网络）"
+                _streamError.value = sawError
+                    ?: "模型未返回任何内容。请检查模型是否支持你当前选择的功能（联网工具、思考模式），或换个 Base URL/模型重试。"
                 return
             }
             if (sawError != null) _streamError.value = sawError
