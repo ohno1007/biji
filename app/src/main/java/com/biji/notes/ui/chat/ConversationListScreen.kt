@@ -18,9 +18,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeTopAppBar
@@ -29,8 +31,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.biji.notes.data.Conversation
+import com.biji.notes.data.MODEL_REASONER
 import com.biji.notes.ui.glass.bouncyClickable
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -55,7 +62,11 @@ fun ConversationListScreen(
 ) {
     val conversations by vm.conversations.collectAsState()
     val settings by vm.settings.collectAsState()
+    val modelsState by vm.models.collectAsState()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    var modelSheetOpen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(settings.apiKey, settings.baseUrl) { vm.ensureModelsLoaded() }
 
     Scaffold(
         modifier = Modifier
@@ -71,7 +82,10 @@ fun ConversationListScreen(
                     )
                 },
                 actions = {
-                    ModelTag(model = settings.model)
+                    ClickableModelTag(
+                        model = settings.model,
+                        onClick = { modelSheetOpen = true }
+                    )
                     Spacer(Modifier.width(8.dp))
                 },
                 scrollBehavior = scrollBehavior,
@@ -107,16 +121,33 @@ fun ConversationListScreen(
             }
         }
     }
+
+    if (modelSheetOpen) {
+        ModelPickerSheet(
+            models = modelsState.list.map { it.id },
+            loading = modelsState.loading,
+            error = modelsState.error,
+            currentModel = settings.model,
+            convoThinking = false,
+            showThinkingToggle = false,
+            onPick = { vm.setModel(it); modelSheetOpen = false },
+            onToggleThinking = { /* no-op outside chat */ },
+            onRefresh = vm::refreshModels,
+            onDismiss = { modelSheetOpen = false }
+        )
+    }
 }
 
 @Composable
-private fun ModelTag(model: String) {
+private fun ClickableModelTag(model: String, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(50))
             .background(cs.surfaceContainer)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .bouncyClickable(onClick = onClick)
+            .padding(start = 12.dp, end = 8.dp)
+            .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -124,6 +155,13 @@ private fun ModelTag(model: String) {
             style = MaterialTheme.typography.labelLarge,
             color = cs.onSurface,
             fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.width(2.dp))
+        Icon(
+            Icons.Rounded.ExpandMore,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = cs.onSurfaceVariant
         )
     }
 }
@@ -211,21 +249,15 @@ private fun ConversationRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    formatDate(convo.updatedAt),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = cs.onSurfaceVariant
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    convo.model.removePrefix("deepseek-"),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = cs.primary
-                )
-            }
+            Text(
+                formatDate(convo.updatedAt),
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurfaceVariant
+            )
         }
         Spacer(Modifier.width(8.dp))
+        ModelPill(model = convo.model)
+        Spacer(Modifier.width(6.dp))
         Box(
             Modifier
                 .size(36.dp)
@@ -240,6 +272,38 @@ private fun ConversationRow(
                 tint = cs.onSurfaceVariant
             )
         }
+    }
+}
+
+@Composable
+private fun ModelPill(model: String) {
+    val cs = MaterialTheme.colorScheme
+    val isReasoner = model == MODEL_REASONER
+    val bg = if (isReasoner) cs.primaryContainer else cs.surfaceContainerHigh
+    val fg = if (isReasoner) cs.onPrimaryContainer else cs.onSurface
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(bg)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (isReasoner) {
+            Icon(
+                Icons.Outlined.AutoAwesome,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+                tint = fg
+            )
+            Spacer(Modifier.width(4.dp))
+        }
+        Text(
+            model.removePrefix("deepseek-"),
+            style = MaterialTheme.typography.labelLarge,
+            color = fg,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
     }
 }
 

@@ -130,7 +130,24 @@ class ChatViewModel(
 
     // ---- Navigation -------------------------------------------------------
 
-    fun openConversation(id: Long) { _activeConvoId.value = id }
+    fun openConversation(id: Long) {
+        _activeConvoId.value = id
+        // One-shot cleanup of any phantom empty-assistant rows that earlier
+        // streams left behind (no content, no reasoning, no tool data). They
+        // would otherwise be invisible in the UI but still take up message
+        // slots in subsequent API requests.
+        viewModelScope.launch {
+            chat.getMessages(id)
+                .filter {
+                    it.role == Role.ASSISTANT &&
+                        it.kind == MessageKind.TEXT &&
+                        it.content.isBlank() &&
+                        it.reasoning.isNullOrBlank() &&
+                        it.toolData == null
+                }
+                .forEach { chat.deleteMessage(it.id) }
+        }
+    }
     fun clearActive() { _activeConvoId.value = null }
     fun openWebUrl(url: String) { _openWebUrl.value = url }
     fun closeWebUrl() { _openWebUrl.value = null }
@@ -221,6 +238,7 @@ class ChatViewModel(
             val reasoningBuf = StringBuilder()
             var toolCalls: List<ToolCall> = emptyList()
             var lastUsageTotal: Long = -1L
+            var sawError: String? = null
 
             client.stream(
                 baseUrl = s.baseUrl,
@@ -250,13 +268,24 @@ class ChatViewModel(
                     is ChatEvent.ToolCalls -> { toolCalls = ev.calls }
                     is ChatEvent.Usage -> { lastUsageTotal = ev.total }
                     ChatEvent.Done -> Unit
-                    is ChatEvent.Error -> { _streamError.value = ev.message }
+                    is ChatEvent.Error -> { sawError = ev.message }
                 }
             }
 
             if (lastUsageTotal > 0) {
                 chat.setContextTokens(convoId, lastUsageTotal)
             }
+
+            // If the stream produced nothing at all (no content, no reasoning,
+            // no tool calls) — likely an API/proxy failure — remove the empty
+            // placeholder so it doesn't pollute later request history, and
+            // surface the error pill to the user.
+            if (contentBuf.isEmpty() && reasoningBuf.isEmpty() && toolCalls.isEmpty()) {
+                chat.deleteMessage(placeholderId)
+                _streamError.value = sawError ?: "模型未返回内容（请检查 API Key、Base URL 或网络）"
+                return
+            }
+            if (sawError != null) _streamError.value = sawError
 
             if (toolCalls.isEmpty()) return
 
@@ -525,11 +554,11 @@ class ChatViewModel(
         private const val MAX_ITERS = 4
         private const val COMPACT_THRESHOLD = 0.78
 
-        private fun contextLimitFor(model: String): Long = when {
-            model.contains("reason", ignoreCase = true) -> 64_000L
-            model.contains("v4-flash", ignoreCase = true) -> 32_000L
-            else -> 64_000L
-        }
+        // All current DeepSeek models share a 1M-token context window per
+        // the official docs. Third-party proxies may advertise less, but
+        // we keep 1M as the sane default so the auto-compaction ring
+        // doesn't fill up before it needs to.
+        private fun contextLimitFor(model: String): Long = 1_000_000L
 
         fun factory(
             chat: ChatRepository,

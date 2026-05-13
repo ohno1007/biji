@@ -56,6 +56,7 @@ class ChatRepository(private val dao: ChatDao) {
 
     suspend fun setToolData(id: Long, data: String?) = dao.setToolData(id, data)
     suspend fun archive(ids: List<Long>) { if (ids.isNotEmpty()) dao.archiveMessages(ids) }
+    suspend fun deleteMessage(id: Long) = dao.deleteMessage(id)
 
     suspend fun getCorpus(limit: Int = 5000): List<Message> =
         dao.getRecentForIndex(limit).filter { it.kind == MessageKind.TEXT }

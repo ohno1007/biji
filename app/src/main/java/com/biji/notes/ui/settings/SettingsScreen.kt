@@ -319,29 +319,33 @@ fun SettingsScreen(
 // =====================================================================
 
 /**
- * A logical group with no shared background — each child row paints its
- * own [rowBackground] and the surrounding background colour bleeds through
- * the gap between them. That's the "镂空分隔" the user asked for: dividers
- * are pure negative space, never lines.
+ * iOS-style group card: a single rounded white surface that wraps its
+ * rows. Within the card, rows are separated by inset hairline dividers
+ * ([InsetDivider]); between cards is just gap, so the cream background
+ * "镂空" through.
  */
 @Composable
 private fun Group(content: @Composable () -> Unit) {
     Column(
-        Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        Modifier
+            .fillMaxWidth()
+            .clip(GroupShape)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
     ) { content() }
 }
 
-private val rowShape = RoundedCornerShape(16.dp)
+private val rowShape = androidx.compose.foundation.shape.RoundedCornerShape(0.dp)
 
 @Composable
-private fun rowBackground(): Color = MaterialTheme.colorScheme.surfaceContainer
+private fun rowBackground(): Color = androidx.compose.ui.graphics.Color.Transparent
 
 @Composable
 private fun InsetDivider() {
-    // Kept as a no-op alias so existing call sites compile; the visual
-    // separation now comes from the verticalArrangement spacing in Group().
-    Spacer(Modifier.height(0.dp))
+    HorizontalDivider(
+        modifier = Modifier.padding(start = 56.dp),
+        thickness = 0.5.dp,
+        color = MaterialTheme.colorScheme.outlineVariant
+    )
 }
 
 /**
