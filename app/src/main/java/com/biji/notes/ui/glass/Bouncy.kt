@@ -3,33 +3,33 @@ package com.biji.notes.ui.glass
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.indication
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.runtime.Composable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
 
 /**
- * Apple-flavoured "Q-elastic" press feedback. Scales the composable down on
- * touch and lets a low-stiffness bouncy spring settle it back, giving the
- * subtle overshoot iOS uses on icons, buttons and dock items.
+ * One-stop clickable: emits the standard MD3 ripple via [LocalIndication]
+ * **and** scales the composable down with a soft spring on press for that
+ * Apple "Q-elastic" feel. The two effects share an [MutableInteractionSource]
+ * so they stay perfectly in sync.
  */
-fun Modifier.bouncyPress(
-    pressedScale: Float = 0.93f,
-    transformOrigin: TransformOrigin = TransformOrigin.Center,
-    onClick: (() -> Unit)? = null
+fun Modifier.bouncyClickable(
+    enabled: Boolean = true,
+    role: Role? = Role.Button,
+    pressedScale: Float = 0.96f,
+    onClick: () -> Unit
 ): Modifier = composed {
-    var pressed by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (pressed) pressedScale else 1f,
+        targetValue = if (pressed && enabled) pressedScale else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMediumLow
@@ -40,24 +40,15 @@ fun Modifier.bouncyPress(
         .graphicsLayer {
             scaleX = scale
             scaleY = scale
-            this.transformOrigin = transformOrigin
         }
-        .pointerInput(onClick) {
-            detectTapGestures(
-                onPress = {
-                    pressed = true
-                    try {
-                        tryAwaitRelease()
-                    } finally {
-                        pressed = false
-                    }
-                },
-                onTap = { onClick?.invoke() }
-            )
-        }
+        .clickable(
+            enabled = enabled,
+            interactionSource = interaction,
+            indication = LocalIndication.current,
+            role = role,
+            onClick = onClick
+        )
 }
 
-fun bouncySpring() = spring<Float>(
-    dampingRatio = Spring.DampingRatioMediumBouncy,
-    stiffness = Spring.StiffnessMediumLow
-)
+/** Backwards-compat alias for the older name used across screens. */
+fun Modifier.bouncyPress(onClick: () -> Unit): Modifier = bouncyClickable(onClick = onClick)

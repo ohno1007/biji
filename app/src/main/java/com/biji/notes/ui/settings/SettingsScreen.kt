@@ -8,33 +8,39 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AccountBalanceWallet
-import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.outlined.AccountBalanceWallet
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Thermostat
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Key
-import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -44,24 +50,32 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.biji.notes.data.MODEL_CHAT
 import com.biji.notes.data.MODEL_REASONER
+import com.biji.notes.ui.chat.BalanceState
 import com.biji.notes.ui.chat.ChatViewModel
-import com.biji.notes.ui.glass.bouncyPress
-import com.biji.notes.ui.glass.cardContainerColor
-import com.biji.notes.ui.glass.cornerRadius
+import com.biji.notes.ui.glass.bouncyClickable
 import com.biji.notes.ui.glass.mdSurface
+import androidx.compose.foundation.background
 
+private val GroupShape = RoundedCornerShape(20.dp)
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(vm: ChatViewModel) {
+fun SettingsScreen(
+    vm: ChatViewModel,
+    contentPadding: PaddingValues
+) {
     val settings by vm.settings.collectAsState()
     val models by vm.models.collectAsState()
     val balance by vm.balance.collectAsState()
@@ -71,6 +85,7 @@ fun SettingsScreen(vm: ChatViewModel) {
     var systemPrompt by remember(settings.systemPrompt) { mutableStateOf(settings.systemPrompt) }
     var temperature by remember(settings.temperature) { mutableStateOf(settings.temperature) }
     var showKey by remember { mutableStateOf(false) }
+    var showModels by remember { mutableStateOf(false) }
 
     LaunchedEffect(apiKey) { if (apiKey != settings.apiKey) vm.setApiKey(apiKey) }
     LaunchedEffect(baseUrl) { if (baseUrl != settings.baseUrl) vm.setBaseUrl(baseUrl) }
@@ -83,256 +98,349 @@ fun SettingsScreen(vm: ChatViewModel) {
         }
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 16.dp, end = 16.dp,
-            top = 0.dp, bottom = 140.dp
-        ),
-        // Gap = divider. No drawn lines anywhere.
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item {
-            Spacer(Modifier.statusBarsPadding().height(8.dp))
-            Text(
-                "设置",
-                style = MaterialTheme.typography.displayLarge.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.padding(top = 16.dp, bottom = 6.dp)
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
+    Scaffold(
+        modifier = Modifier
+            .fillMaxSize()
+            .nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            LargeTopAppBar(
+                title = {
+                    Text(
+                        "设置",
+                        style = MaterialTheme.typography.displayLarge.copy(fontWeight = FontWeight.Bold)
+                    )
+                },
+                scrollBehavior = scrollBehavior,
+                colors = TopAppBarDefaults.largeTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    scrolledContainerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground
+                )
             )
         }
+    ) { inner ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = inner.calculateTopPadding(),
+                bottom = inner.calculateBottomPadding() +
+                    contentPadding.calculateBottomPadding() + 24.dp
+            ),
+            // Gap between groups = the "镂空" divider.
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
 
-        item {
-            Section(title = "DeepSeek 接入", icon = Icons.Rounded.Key) {
-                FieldRow("API Key") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) {
-                            if (apiKey.isEmpty()) {
-                                Text(
-                                    "sk-...",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            BasicTextField(
-                                value = apiKey,
-                                onValueChange = { apiKey = it },
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                    color = MaterialTheme.colorScheme.onSurface
-                                ),
-                                visualTransformation = if (showKey) VisualTransformation.None
-                                else PasswordVisualTransformation(),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                                modifier = Modifier.fillMaxWidth()
+            // ---- Group: DeepSeek 接入 -------------------------------------
+            item {
+                Group {
+                    KeyValueRow(
+                        icon = Icons.Outlined.Key,
+                        title = "API Key",
+                        trailing = {
+                            IconAction(
+                                icon = if (showKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                onClick = { showKey = !showKey }
                             )
                         }
-                        Spacer(Modifier.size(8.dp))
-                        IconChip(
-                            icon = if (showKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                            onClick = { showKey = !showKey }
+                    ) {
+                        BasicTextField(
+                            value = apiKey,
+                            onValueChange = { apiKey = it },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            visualTransformation = if (showKey) VisualTransformation.None
+                            else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            decorationBox = { inner ->
+                                if (apiKey.isEmpty()) {
+                                    Text(
+                                        "sk-...",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                                    )
+                                }
+                                inner()
+                            }
+                        )
+                    }
+                    InsetDivider()
+                    KeyValueRow(
+                        icon = Icons.Outlined.Cloud,
+                        title = "Base URL"
+                    ) {
+                        BasicTextField(
+                            value = baseUrl,
+                            onValueChange = { baseUrl = it },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
                         )
                     }
                 }
-                GapDivider()
-                FieldRow("Base URL") {
-                    BasicTextField(
-                        value = baseUrl,
-                        onValueChange = { baseUrl = it },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(
-                            color = MaterialTheme.colorScheme.onSurface
-                        ),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.fillMaxWidth()
+            }
+
+            // ---- Group: 余额 ----------------------------------------------
+            item {
+                Group { BalanceRow(state = balance, onRefresh = vm::refreshBalance) }
+            }
+
+            // ---- Group: 模型 ----------------------------------------------
+            item {
+                Group {
+                    NavRow(
+                        icon = Icons.Outlined.AutoAwesome,
+                        title = "模型",
+                        subtitle = settings.model,
+                        onClick = { showModels = !showModels }
                     )
-                }
-            }
-        }
-
-        item {
-            Section(title = "余额", icon = Icons.Rounded.AccountBalanceWallet) {
-                BalanceBlock(
-                    state = balance,
-                    onRefresh = vm::refreshBalance
-                )
-            }
-        }
-
-        item {
-            Section(title = "模型", icon = Icons.Rounded.AutoAwesome) {
-                ModelPickerHeader(
-                    selected = settings.model,
-                    loading = models.loading,
-                    onRefresh = vm::refreshModels
-                )
-                Spacer(Modifier.height(8.dp))
-
-                // Quick picks always present so users without /v1/models access
-                // can still operate the app.
-                val quick = listOf(MODEL_CHAT, MODEL_REASONER)
-                val remote = models.list.map { it.id }
-                val all = (quick + remote).distinct()
-
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    all.forEach { id ->
-                        ModelRow(
-                            id = id,
-                            selected = id == settings.model,
-                            onClick = { vm.setModel(id) }
+                    if (showModels) {
+                        InsetDivider()
+                        ModelListInline(
+                            current = settings.model,
+                            list = models.list.map { it.id },
+                            loading = models.loading,
+                            error = models.error,
+                            onPick = { vm.setModel(it) },
+                            onRefresh = vm::refreshModels
                         )
                     }
-                }
-                models.error?.let {
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        "拉取模型列表失败：$it",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-                GapDivider()
-                FieldRow("Temperature ${"%.2f".format(temperature)}") {
-                    Slider(
+                    InsetDivider()
+                    SliderRow(
+                        icon = Icons.Outlined.Thermostat,
+                        title = "Temperature",
                         value = temperature,
-                        onValueChange = { temperature = it },
-                        valueRange = 0f..1.5f,
-                        steps = 14,
-                        colors = SliderDefaults.colors(
-                            thumbColor = MaterialTheme.colorScheme.primary,
-                            activeTrackColor = MaterialTheme.colorScheme.primary,
-                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                        )
+                        onChange = { temperature = it }
+                    )
+                    InsetDivider()
+                    ToggleRow(
+                        icon = Icons.Outlined.AutoAwesome,
+                        title = "快捷切到 Reasoner",
+                        subtitle = "等同于把模型设为 deepseek-reasoner",
+                        checked = settings.thinking,
+                        onChange = vm::setThinking
                     )
                 }
-                GapDivider()
-                ToggleRow(
-                    title = "快捷切到 Reasoner",
-                    subtitle = "等同于把模型设为 deepseek-reasoner",
-                    checked = settings.thinking,
-                    onChange = vm::setThinking
-                )
             }
-        }
 
-        item {
-            Section(title = "系统提示词", icon = Icons.Rounded.Tune) {
-                Box(Modifier.fillMaxWidth()) {
-                    if (systemPrompt.isEmpty()) {
-                        Text(
-                            "可选：让模型扮演特定角色或遵循特定风格",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+            // ---- Group: 系统提示词 ----------------------------------------
+            item {
+                Group {
+                    KeyValueRow(
+                        icon = Icons.Outlined.Tune,
+                        title = "系统提示词",
+                        minHeight = 56.dp
+                    ) {
+                        BasicTextField(
+                            value = systemPrompt,
+                            onValueChange = { systemPrompt = it },
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            decorationBox = { inner ->
+                                if (systemPrompt.isEmpty()) {
+                                    Text(
+                                        "让模型扮演特定角色或风格",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                                    )
+                                }
+                                inner()
+                            }
                         )
                     }
-                    BasicTextField(
-                        value = systemPrompt,
-                        onValueChange = { systemPrompt = it },
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(
-                            color = MaterialTheme.colorScheme.onSurface
-                        ),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.fillMaxWidth()
-                    )
                 }
             }
-        }
 
-        item {
-            Section(title = "关于", icon = Icons.Rounded.Language) {
-                Text(
-                    "Biji · 1.1\n" +
-                        "DeepSeek 流式聊天 · OpenAI 兼容\n" +
-                        "/v1/chat/completions · /v1/models · /user/balance\n" +
-                        "Key 仅保存在本机 DataStore。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            // ---- Group: 关于 ----------------------------------------------
+            item {
+                Group {
+                    KeyValueRow(
+                        icon = Icons.Outlined.Info,
+                        title = "关于",
+                        subtitle = "Biji · 1.2 · DeepSeek 流式聊天"
+                    ) {}
+                }
             }
         }
     }
 }
 
+// =====================================================================
+// Building blocks
+// =====================================================================
+
 @Composable
-private fun Section(
-    title: String,
-    icon: ImageVector,
-    content: @Composable () -> Unit
-) {
+private fun Group(content: @Composable () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Column(
         Modifier
             .fillMaxWidth()
-            .mdSurface(cardContainerColor(1), RoundedCornerShape(cornerRadius()))
-            .padding(18.dp)
+            .clip(GroupShape)
+            .background(cs.surfaceContainer)
+    ) { content() }
+}
+
+/**
+ * Inset hairline divider, exactly matching the iOS look in image 1 –
+ * starts past the leading icon column, never touches the rounded edges of
+ * the group card.
+ */
+@Composable
+private fun InsetDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(start = 60.dp),
+        thickness = 0.5.dp,
+        color = MaterialTheme.colorScheme.outlineVariant
+    )
+}
+
+/**
+ * Standard row: leading icon + title (+ subtitle) + optional trailing slot
+ * (e.g. switch / chevron / inline editor).
+ */
+@Composable
+private fun BaseRow(
+    icon: ImageVector?,
+    title: String,
+    subtitle: String? = null,
+    minHeight: androidx.compose.ui.unit.Dp = 60.dp,
+    onClick: (() -> Unit)? = null,
+    trailing: @Composable () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val clickable = if (onClick != null) Modifier.bouncyClickable(pressedScale = 0.99f) { onClick() }
+    else Modifier
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(clickable)
+            .heightIn(min = minHeight)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(28.dp)
-                    .mdSurface(cs.primary, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp), tint = cs.onPrimary)
-            }
-            Spacer(Modifier.size(10.dp))
+        if (icon != null) {
+            Icon(
+                icon,
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = cs.onSurface
+            )
+            Spacer(Modifier.size(16.dp))
+        }
+        Column(Modifier.weight(1f)) {
             Text(
                 title,
                 style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = cs.onSurface
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium
             )
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = cs.onSurfaceVariant
+                )
+            }
         }
-        Spacer(Modifier.height(12.dp))
-        content()
+        trailing()
     }
 }
 
+/** Key-value: title above, inline editor / value spread across the row. */
 @Composable
-private fun FieldRow(label: String, content: @Composable () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+private fun KeyValueRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String? = null,
+    trailing: @Composable () -> Unit = {},
+    minHeight: androidx.compose.ui.unit.Dp = 60.dp,
+    onClick: (() -> Unit)? = null,
+    editor: @Composable () -> Unit = {}
+) {
+    val cs = MaterialTheme.colorScheme
+    val clickable = if (onClick != null) Modifier.bouncyClickable(pressedScale = 0.99f) { onClick() }
+    else Modifier
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(clickable)
+            .heightIn(min = minHeight)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(22.dp),
+            tint = cs.onSurface
         )
-        Spacer(Modifier.height(6.dp))
-        content()
+        Spacer(Modifier.size(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium
+            )
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = cs.onSurfaceVariant
+                )
+            }
+            Box(Modifier.padding(top = 2.dp)) { editor() }
+        }
+        trailing()
     }
 }
 
 @Composable
-private fun GapDivider() {
-    // "Seamless cutout divider": just background-coloured negative space.
-    Spacer(Modifier.height(10.dp))
+private fun NavRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String? = null,
+    onClick: () -> Unit
+) {
+    BaseRow(icon = icon, title = title, subtitle = subtitle, onClick = onClick) {
+        Icon(
+            Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
 @Composable
 private fun ToggleRow(
+    icon: ImageVector,
     title: String,
     subtitle: String,
     checked: Boolean,
     onChange: (Boolean) -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, color = cs.onSurface, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(2.dp))
-            Text(subtitle, style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant)
-        }
+    BaseRow(icon = icon, title = title, subtitle = subtitle) {
         Switch(
             checked = checked,
             onCheckedChange = onChange,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = cs.onPrimary,
+                checkedThumbColor = Color.White,
                 checkedTrackColor = cs.primary,
-                uncheckedThumbColor = cs.onSurface,
+                uncheckedThumbColor = Color.White,
                 uncheckedTrackColor = cs.surfaceContainerHighest,
                 checkedBorderColor = Color.Transparent,
                 uncheckedBorderColor = Color.Transparent
@@ -342,172 +450,198 @@ private fun ToggleRow(
 }
 
 @Composable
-private fun IconChip(icon: ImageVector, onClick: () -> Unit) {
-    val cs = MaterialTheme.colorScheme
-    Box(
-        Modifier
-            .size(34.dp)
-            .mdSurface(cs.surfaceContainerHigh, CircleShape)
-            .bouncyPress(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(15.dp), tint = cs.onSurface)
-    }
-}
-
-@Composable
-private fun ModelPickerHeader(
-    selected: String,
-    loading: Boolean,
-    onRefresh: () -> Unit
+private fun SliderRow(
+    icon: ImageVector,
+    title: String,
+    value: Float,
+    onChange: (Float) -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                "当前模型",
-                style = MaterialTheme.typography.labelLarge,
-                color = cs.onSurfaceVariant
-            )
-            Text(
-                selected,
-                style = MaterialTheme.typography.bodyLarge,
-                color = cs.onSurface,
-                fontWeight = FontWeight.SemiBold
-            )
-        }
-        Box(
-            Modifier
-                .mdSurface(cs.surfaceContainerHigh, RoundedCornerShape(50))
-                .bouncyPress(onClick = onRefresh)
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (loading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp,
-                        color = cs.onSurface
-                    )
-                } else {
-                    Icon(
-                        Icons.Rounded.Refresh,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = cs.onSurface
-                    )
-                }
-                Spacer(Modifier.size(6.dp))
-                Text("拉取模型", style = MaterialTheme.typography.labelLarge, color = cs.onSurface, fontWeight = FontWeight.SemiBold)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ModelRow(
-    id: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    val cs = MaterialTheme.colorScheme
-    val bg = if (selected) cs.primary else cs.surfaceContainerHigh
-    val fg = if (selected) cs.onPrimary else cs.onSurface
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .mdSurface(bg, RoundedCornerShape(14.dp))
-            .bouncyPress(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            id,
-            style = MaterialTheme.typography.bodyLarge,
-            color = fg,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-            modifier = Modifier.weight(1f)
-        )
-        if (selected) {
-            Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(16.dp), tint = fg)
+        Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp), tint = cs.onSurface)
+        Spacer(Modifier.size(16.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = cs.onSurface,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "%.2f".format(value),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cs.onSurfaceVariant
+                )
+            }
+            Slider(
+                value = value,
+                onValueChange = onChange,
+                valueRange = 0f..1.5f,
+                steps = 14,
+                colors = SliderDefaults.colors(
+                    thumbColor = cs.primary,
+                    activeTrackColor = cs.primary,
+                    inactiveTrackColor = cs.surfaceContainerHighest
+                )
+            )
         }
     }
 }
 
 @Composable
-private fun BalanceBlock(
-    state: com.biji.notes.ui.chat.BalanceState,
+private fun IconAction(icon: ImageVector, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .size(34.dp)
+            .clip(RoundedCornerShape(50))
+            .bouncyClickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = cs.onSurface)
+    }
+}
+
+@Composable
+private fun BalanceRow(state: BalanceState, onRefresh: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val info = state.info
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 64.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Outlined.AccountBalanceWallet,
+            contentDescription = null,
+            modifier = Modifier.size(22.dp),
+            tint = cs.onSurface
+        )
+        Spacer(Modifier.size(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "余额",
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                when {
+                    state.error != null -> "刷新失败：${state.error}"
+                    info != null && !info.isAvailable -> "账户暂不可用"
+                    info != null ->
+                        "${info.totalBalance} ${info.currency} · 赠 ${info.grantedBalance} / 充 ${info.toppedUpBalance}"
+                    else -> "尚未拉取"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (state.error != null) cs.error else cs.onSurfaceVariant
+            )
+        }
+        IconAction(
+            icon = if (state.loading) Icons.Rounded.Refresh else Icons.Rounded.Refresh,
+            onClick = onRefresh
+        )
+        if (state.loading) {
+            Spacer(Modifier.size(4.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = cs.primary
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModelListInline(
+    current: String,
+    list: List<String>,
+    loading: Boolean,
+    error: String?,
+    onPick: (String) -> Unit,
     onRefresh: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    val info = state.info
-    Column {
+    val all = (listOf(MODEL_CHAT, MODEL_REASONER) + list).distinct()
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    if (info != null) "${info.totalBalance} ${info.currency}" else "—",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = cs.onSurface,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    when {
-                        state.error != null -> "刷新失败：${state.error}"
-                        info != null && !info.isAvailable -> "账户暂不可用"
-                        info != null -> "可用余额"
-                        else -> "尚未拉取"
-                    },
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (state.error != null) cs.error else cs.onSurfaceVariant
-                )
-            }
+            Text(
+                "选择模型",
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
             Box(
-                Modifier
-                    .mdSurface(cs.primary, RoundedCornerShape(50))
-                    .bouncyPress(onClick = onRefresh)
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .bouncyClickable(onClick = onRefresh)
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (state.loading) {
+                    if (loading) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = cs.onPrimary
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp,
+                            color = cs.primary
                         )
                     } else {
                         Icon(
                             Icons.Rounded.Refresh,
                             contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                            tint = cs.onPrimary
+                            modifier = Modifier.size(13.dp),
+                            tint = cs.primary
                         )
                     }
-                    Spacer(Modifier.size(6.dp))
-                    Text("查余额", style = MaterialTheme.typography.labelLarge, color = cs.onPrimary, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.size(4.dp))
+                    Text(
+                        "拉取",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }
-        if (info != null) {
-            Spacer(Modifier.height(10.dp))
-            Row {
-                BalanceCell("赠送", "${info.grantedBalance} ${info.currency}", Modifier.weight(1f))
-                Spacer(Modifier.size(8.dp))
-                BalanceCell("充值", "${info.toppedUpBalance} ${info.currency}", Modifier.weight(1f))
+        Spacer(Modifier.size(6.dp))
+        all.forEach { id ->
+            val selected = id == current
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .bouncyClickable(pressedScale = 0.98f) { onPick(id) }
+                    .padding(horizontal = 4.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    id,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = cs.onSurface,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    modifier = Modifier.weight(1f)
+                )
+                if (selected) {
+                    Icon(
+                        Icons.Rounded.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = cs.primary
+                    )
+                }
             }
         }
-    }
-}
-
-@Composable
-private fun BalanceCell(label: String, value: String, modifier: Modifier = Modifier) {
-    val cs = MaterialTheme.colorScheme
-    Column(
-        modifier
-            .mdSurface(cs.surfaceContainerHigh, RoundedCornerShape(14.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp)
-    ) {
-        Text(label, style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant)
-        Spacer(Modifier.height(2.dp))
-        Text(value, style = MaterialTheme.typography.titleMedium, color = cs.onSurface, fontWeight = FontWeight.SemiBold)
+        error?.let {
+            Spacer(Modifier.size(4.dp))
+            Text("拉取失败：$it", style = MaterialTheme.typography.labelLarge, color = cs.error)
+        }
     }
 }
