@@ -10,6 +10,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
@@ -65,6 +71,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.biji.notes.ui.chat.ChatScreen
 import com.biji.notes.ui.chat.ChatViewModel
 import com.biji.notes.ui.chat.ConversationListScreen
+import com.biji.notes.ui.chat.DOCK_SHARED_KEY
 import com.biji.notes.ui.glass.bouncyClickable
 import com.biji.notes.ui.settings.SettingsScreen
 import com.biji.notes.ui.theme.BijiTheme
@@ -103,6 +110,7 @@ class MainActivity : ComponentActivity() {
 private val NavPillHeight = 64.dp
 private val NavFadeHeight = 40.dp
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun AppRoot(vm: ChatViewModel) {
     var tab by remember { mutableStateOf(TAB_CHATS) }
@@ -128,11 +136,15 @@ private fun AppRoot(vm: ChatViewModel) {
         NavFadeHeight + NavPillHeight + 16.dp + navInset
     else 0.dp
 
-    Box(
-        Modifier
+    // SharedTransitionLayout enables the dock (bottom-nav pill ↔ chat
+    // composer) to morph its bounds as the screen transitions between
+    // conversation-list / settings and the chat screen.
+    SharedTransitionLayout(
+        modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
+      Box(Modifier.fillMaxSize()) {
         AnimatedContent(
             targetState = Triple(tab, activeConvo, openWebUrl),
             transitionSpec = {
@@ -154,7 +166,12 @@ private fun AppRoot(vm: ChatViewModel) {
                 }
                 currentTab == TAB_CHATS && convoId != null -> {
                     BackHandler { vm.clearActive() }
-                    ChatScreen(vm = vm, onBack = { vm.clearActive() })
+                    ChatScreen(
+                        vm = vm,
+                        onBack = { vm.clearActive() },
+                        sharedTransitionScope = this@SharedTransitionLayout,
+                        animatedVisibilityScope = this@AnimatedContent
+                    )
                 }
                 currentTab == TAB_CHATS -> ConversationListScreen(
                     vm = vm,
@@ -169,9 +186,10 @@ private fun AppRoot(vm: ChatViewModel) {
             }
         }
 
-        // Floating bottom nav with the same gradient fade-out as the chat
-        // composer area: the list above scrolls "underneath" the fade and
-        // the pill sits visually on top of cream-coloured negative space.
+        // Floating bottom nav. Its `AnimatedVisibilityScope` ties into the
+        // SharedTransitionLayout: when the bar disappears (entering chat)
+        // the dock-keyed pill morphs into the chat composer that's appearing
+        // at the same time in the AnimatedContent above.
         AnimatedVisibility(
             visible = showBottomBar,
             enter = fadeIn(tween(160)) + slideInVertically { it / 2 },
@@ -180,16 +198,22 @@ private fun AppRoot(vm: ChatViewModel) {
         ) {
             FloatingBottomNav(
                 tab = tab,
-                onSelect = { tab = it }
+                onSelect = { tab = it },
+                sharedTransitionScope = this@SharedTransitionLayout,
+                animatedVisibilityScope = this@AnimatedVisibility
             )
         }
+      }
     }
 }
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun FloatingBottomNav(
     tab: String,
-    onSelect: (String) -> Unit
+    onSelect: (String) -> Unit,
+    sharedTransitionScope: SharedTransitionScope,
+    animatedVisibilityScope: AnimatedVisibilityScope
 ) {
     val cs = MaterialTheme.colorScheme
     val bg = cs.background
@@ -216,31 +240,40 @@ private fun FloatingBottomNav(
                 .navigationBarsPadding()
                 .padding(horizontal = 48.dp, vertical = 8.dp)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(NavPillHeight)
-                    .clip(RoundedCornerShape(50))
-                    .background(cs.surfaceContainer)
-                    .padding(horizontal = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                NavSlot(
-                    selected = tab == TAB_CHATS,
-                    activeIcon = Icons.Rounded.ChatBubble,
-                    inactiveIcon = Icons.Outlined.ChatBubbleOutline,
-                    label = "对话",
-                    onClick = { onSelect(TAB_CHATS) },
-                    modifier = Modifier.weight(1f)
-                )
-                NavSlot(
-                    selected = tab == TAB_SETTINGS,
-                    activeIcon = Icons.Rounded.Tune,
-                    inactiveIcon = Icons.Outlined.Tune,
-                    label = "设置",
-                    onClick = { onSelect(TAB_SETTINGS) },
-                    modifier = Modifier.weight(1f)
-                )
+            with(sharedTransitionScope) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(NavPillHeight)
+                        .sharedBounds(
+                            rememberSharedContentState(key = DOCK_SHARED_KEY),
+                            animatedVisibilityScope = animatedVisibilityScope,
+                            enter = fadeIn(tween(180)),
+                            exit = fadeOut(tween(120)),
+                            resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds
+                        )
+                        .clip(RoundedCornerShape(50))
+                        .background(cs.surfaceContainer)
+                        .padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    NavSlot(
+                        selected = tab == TAB_CHATS,
+                        activeIcon = Icons.Rounded.ChatBubble,
+                        inactiveIcon = Icons.Outlined.ChatBubbleOutline,
+                        label = "对话",
+                        onClick = { onSelect(TAB_CHATS) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    NavSlot(
+                        selected = tab == TAB_SETTINGS,
+                        activeIcon = Icons.Rounded.Tune,
+                        inactiveIcon = Icons.Outlined.Tune,
+                        label = "设置",
+                        onClick = { onSelect(TAB_SETTINGS) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
     }
@@ -277,9 +310,6 @@ private fun NavSlot(
         modifier = modifier.padding(horizontal = 4.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
-        // A single capsule whose width grows/shrinks horizontally as the
-        // label appears/disappears. Background + icon tint cross-fade so the
-        // transition is one continuous "pill expanding out of the icon".
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(50))

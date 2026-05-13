@@ -108,11 +108,16 @@ import com.biji.notes.ui.markdown.MarkdownText
 import com.biji.notes.voice.VoiceState
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** Shared-element key for the bottom dock (nav pill ↔ chat composer). */
+const val DOCK_SHARED_KEY = "biji-bottom-dock"
+
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.animation.ExperimentalSharedTransitionApi::class)
 @Composable
 fun ChatScreen(
     vm: ChatViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope? = null,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope? = null
 ) {
     val messages by vm.activeMessages.collectAsState()
     val settings by vm.settings.collectAsState()
@@ -212,6 +217,27 @@ fun ChatScreen(
             }
         }
 
+        // Composer with optional shared-element bounds. When the chat
+        // screen enters from the conversation-list, the bottom-nav pill's
+        // bounds morph into this Composer; when leaving, the Composer's
+        // bounds morph back into the nav pill.
+        val composerModifier = Modifier
+            .align(Alignment.BottomCenter)
+            .navigationBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+        val sharedModifier =
+            if (sharedTransitionScope != null && animatedVisibilityScope != null) {
+                with(sharedTransitionScope) {
+                    Modifier.sharedBounds(
+                        rememberSharedContentState(key = DOCK_SHARED_KEY),
+                        animatedVisibilityScope = animatedVisibilityScope,
+                        enter = fadeIn(tween(220)),
+                        exit = fadeOut(tween(140)),
+                        resizeMode = androidx.compose.animation.SharedTransitionScope
+                            .ResizeMode.RemeasureToBounds
+                    )
+                }
+            } else Modifier
         Composer(
             value = input,
             onValueChange = { input = it },
@@ -230,10 +256,7 @@ fun ChatScreen(
                     android.content.pm.PackageManager.PERMISSION_GRANTED
                 if (granted) vm.startVoice() else micPerm.launch(Manifest.permission.RECORD_AUDIO)
             },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+            modifier = composerModifier.then(sharedModifier)
         )
 
         // Model picker sheet (shared composable in ModelPickerSheet.kt).
@@ -417,7 +440,9 @@ private fun ContextRing(usage: ContextUsage, onClick: () -> Unit) {
     )
     val warn = fraction > 0.78f
     val activeColor = if (warn) cs.error else cs.primary
-    val trackColor = cs.surfaceContainerHighest
+    // outline gives clear contrast against the cream background;
+    // surfaceContainerHighest was too close in tone to be visible.
+    val trackColor = cs.outline.copy(alpha = 0.55f)
 
     Box(
         modifier = Modifier

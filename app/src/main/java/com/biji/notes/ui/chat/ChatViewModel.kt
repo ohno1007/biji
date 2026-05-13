@@ -323,7 +323,14 @@ class ChatViewModel(
         val convo = chat.getConversation(convoId)
         val live = chat.getLiveMessages(convoId)
 
-        val keepReasoning = !s.baseUrl.contains("api.deepseek.com", ignoreCase = true)
+        // Always echo reasoning_content back to the API. The official
+        // DeepSeek endpoint silently strips it on input, while
+        // v4-flash / one-api proxies require it for thinking mode and
+        // fail with `HTTP 400 · The reasoning_content in the thinking
+        // mode must be passed back to the API.` if it's missing. The
+        // safe universal default is to always include it whenever the
+        // streamed response carried one.
+        val keepReasoning = true
         val dtos = live.mapNotNull { toDto(it, keepReasoning) }
 
         val systemBlocks = mutableListOf<String>()
