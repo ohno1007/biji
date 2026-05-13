@@ -16,11 +16,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -138,6 +140,7 @@ fun SettingsScreen(
             )
         }
     ) { inner ->
+        Box(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
@@ -329,7 +332,32 @@ fun SettingsScreen(
                 ) {}
             }
         }
+        // Soft top fade right under the LargeTopAppBar — same gradient
+        // as the chat screen so content gently dissolves as it scrolls up.
+        TopEdgeFade(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = inner.calculateTopPadding())
+        )
+        }
     }
+}
+
+@Composable
+private fun TopEdgeFade(modifier: Modifier = Modifier) {
+    val bg = MaterialTheme.colorScheme.background
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(36.dp)
+            .background(
+                Brush.verticalGradient(
+                    0.0f to bg,
+                    0.55f to bg.copy(alpha = 0.92f),
+                    1.0f to bg.copy(alpha = 0f)
+                )
+            )
+    )
 }
 
 private fun androidx.compose.foundation.lazy.LazyListScope.sectionHeader(label: String) {

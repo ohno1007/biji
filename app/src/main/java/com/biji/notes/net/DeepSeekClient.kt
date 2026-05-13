@@ -324,41 +324,58 @@ class DeepSeekClient {
         emit: (ChatEvent) -> Unit
     ) {
         runCatching {
-            val obj = json.parseToJsonElement(data).jsonObject
+            val obj = (json.parseToJsonElement(data) as? JsonObject) ?: return@runCatching
             // Some proxies surface upstream errors as `{"error":{"message":"…"}}`
             // inside an otherwise-200 stream chunk. Forward them so the user
             // sees the real reason instead of "model returned nothing".
-            obj["error"]?.jsonObject?.let { err ->
-                val msg = err["message"]?.jsonPrimitive?.contentOrNull ?: err.toString()
+            obj.objOrNull("error")?.let { err ->
+                val msg = err.stringOrNull("message") ?: err.toString()
                 emit(ChatEvent.Error(msg))
                 return@runCatching
             }
             // Usage may appear on the last chunk (or alongside choices) when
             // stream_options.include_usage = true. Emit it whenever present.
-            obj["usage"]?.jsonObject?.let { u ->
+            // v4-flash and one-api proxies often send `"usage": null` on
+            // early chunks — `as?` makes that case a silent skip instead of
+            // a hard cast failure.
+            obj.objOrNull("usage")?.let { u ->
                 emit(
                     ChatEvent.Usage(
-                        prompt = u["prompt_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L,
-                        completion = u["completion_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L,
-                        total = u["total_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L
+                        prompt = u.longOrNull("prompt_tokens") ?: 0L,
+                        completion = u.longOrNull("completion_tokens") ?: 0L,
+                        total = u.longOrNull("total_tokens") ?: 0L
                     )
                 )
             }
-            val choice = obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject ?: return@runCatching
-            val delta = choice["delta"]?.jsonObject ?: choice["message"]?.jsonObject
+            // Some proxies (notably deepseek-v4-flash) send leading metadata
+            // chunks with no `choices` at all, then start streaming. Skip
+            // anything that doesn't carry a choice.
+            val choice = obj.arrOrNull("choices")
+                ?.firstOrNull()
+                ?.let { it as? JsonObject }
+                ?: return@runCatching
+            val delta = choice.objOrNull("delta") ?: choice.objOrNull("message")
             if (delta != null) {
-                val reasoning = delta["reasoning_content"]?.jsonPrimitive?.contentOrNull
-                val content = delta["content"]?.jsonPrimitive?.contentOrNull
+                val reasoning = delta.stringOrNull("reasoning_content")
+                val content = delta.stringOrNull("content")
                 if (!reasoning.isNullOrEmpty()) emit(ChatEvent.Reasoning(reasoning))
                 if (!content.isNullOrEmpty()) emit(ChatEvent.Delta(content))
-                delta["tool_calls"]?.jsonArray?.let { toolBuf.absorb(it) }
+                delta.arrOrNull("tool_calls")?.let { toolBuf.absorb(it) }
             }
         }.onFailure { t ->
-            // Don't silently eat parse errors – they're exactly the ones that
-            // surface as a mysterious "model returned nothing".
+            // Only surface *real* parse failures (malformed JSON, etc.); the
+            // common JsonNull-shaped chunks are handled above without
+            // reaching this branch.
             emit(ChatEvent.Error("流块解析失败：${t.message ?: t.javaClass.simpleName}\n片段: ${data.take(160)}"))
         }
     }
+
+    private fun JsonObject.objOrNull(key: String): JsonObject? = this[key] as? JsonObject
+    private fun JsonObject.arrOrNull(key: String): JsonArray? = this[key] as? JsonArray
+    private fun JsonObject.stringOrNull(key: String): String? =
+        (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+    private fun JsonObject.longOrNull(key: String): Long? =
+        (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.intOrNull?.toLong()
 
     private fun emitCompleteJson(
         text: String,
@@ -366,27 +383,34 @@ class DeepSeekClient {
         emit: (ChatEvent) -> Unit
     ) {
         runCatching {
-            val obj = json.parseToJsonElement(text).jsonObject
-            obj["usage"]?.jsonObject?.let { u ->
+            val obj = (json.parseToJsonElement(text) as? JsonObject) ?: run {
+                emit(ChatEvent.Error("响应不是 JSON 对象：${text.take(160)}"))
+                return
+            }
+            obj.objOrNull("error")?.let { err ->
+                emit(ChatEvent.Error(err.stringOrNull("message") ?: err.toString()))
+                return
+            }
+            obj.objOrNull("usage")?.let { u ->
                 emit(
                     ChatEvent.Usage(
-                        prompt = u["prompt_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L,
-                        completion = u["completion_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L,
-                        total = u["total_tokens"]?.jsonPrimitive?.intOrNull?.toLong() ?: 0L
+                        prompt = u.longOrNull("prompt_tokens") ?: 0L,
+                        completion = u.longOrNull("completion_tokens") ?: 0L,
+                        total = u.longOrNull("total_tokens") ?: 0L
                     )
                 )
             }
-            val choice = obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject
+            val choice = obj.arrOrNull("choices")?.firstOrNull()?.let { it as? JsonObject }
             if (choice == null) {
-                emit(ChatEvent.Error("响应不是合法的 chat.completion 结构"))
+                emit(ChatEvent.Error("响应不是合法的 chat.completion 结构：${text.take(160)}"))
                 return
             }
-            val msg = choice["message"]?.jsonObject ?: choice["delta"]?.jsonObject
-            val content = msg?.get("content")?.jsonPrimitive?.contentOrNull.orEmpty()
-            val reasoning = msg?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
+            val msg = choice.objOrNull("message") ?: choice.objOrNull("delta")
+            val content = msg?.stringOrNull("content").orEmpty()
+            val reasoning = msg?.stringOrNull("reasoning_content")
             if (!reasoning.isNullOrEmpty()) emit(ChatEvent.Reasoning(reasoning))
             if (content.isNotEmpty()) emit(ChatEvent.Delta(content))
-            msg?.get("tool_calls")?.jsonArray?.let { toolBuf.absorb(it) }
+            msg?.arrOrNull("tool_calls")?.let { toolBuf.absorb(it) }
         }.onFailure {
             emit(ChatEvent.Error("响应解析失败：${it.message ?: it.javaClass.simpleName}"))
         }

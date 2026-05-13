@@ -84,22 +84,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.translate
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.layer.GraphicsLayer
-import androidx.compose.ui.graphics.layer.drawLayer
-import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -165,54 +156,35 @@ fun ChatScreen(
     }
 
     Box(Modifier.fillMaxSize().imePadding()) {
-        // Backdrop layer: captures whatever the LazyColumn draws so the
-        // top/bottom fades can sample it through a Gaussian blur. Below
-        // API 31 the layer still works, just without the blur — and the
-        // gradient alone produces a clean solid-fade.
-        val backdrop = rememberGraphicsLayer()
-        Box(
-            Modifier
-                .fillMaxSize()
-                .drawWithContent {
-                    backdrop.record { this@drawWithContent.drawContent() }
-                    drawLayer(backdrop)
-                }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 18.dp, end = 18.dp,
+                top = TopFadeHeight + 12.dp,
+                bottom = ComposerArea + 16.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    start = 18.dp, end = 18.dp,
-                    top = TopFadeHeight + 12.dp,
-                    bottom = ComposerArea + 16.dp
-                ),
-                verticalArrangement = Arrangement.spacedBy(18.dp)
-            ) {
-                if (messages.isEmpty()) {
-                    item { EmptyChatHint() }
-                } else {
-                    items(messages, key = { it.id }) { m ->
-                        MessageItem(m = m, onOpenUrl = vm::openWebUrl)
-                    }
-                    if (toolStatus != null) {
-                        item { StatusPill(text = toolStatus!!) }
-                    }
-                    if (compactStatus != null) {
-                        item { StatusPill(text = compactStatus!!) }
-                    }
-                    if (error != null) {
-                        item { ErrorRow(message = error!!, onDismiss = vm::dismissError) }
-                    }
+            if (messages.isEmpty()) {
+                item { EmptyChatHint() }
+            } else {
+                items(messages, key = { it.id }) { m ->
+                    MessageItem(m = m, onOpenUrl = vm::openWebUrl)
+                }
+                if (toolStatus != null) {
+                    item { StatusPill(text = toolStatus!!) }
+                }
+                if (compactStatus != null) {
+                    item { StatusPill(text = compactStatus!!) }
+                }
+                if (error != null) {
+                    item { ErrorRow(message = error!!, onDismiss = vm::dismissError) }
                 }
             }
         }
 
-        BlurFade(
-            backdrop = backdrop,
-            isBottom = false,
-            heightTotal = TopFadeHeight + WindowInsetsTopHeight(),
-            modifier = Modifier.align(Alignment.TopCenter)
-        )
+        TopFade(modifier = Modifier.align(Alignment.TopCenter))
 
         TopBar(
             title = title,
@@ -225,12 +197,7 @@ fun ChatScreen(
                 .padding(horizontal = 8.dp, vertical = 6.dp)
         )
 
-        BlurFade(
-            backdrop = backdrop,
-            isBottom = true,
-            heightTotal = BottomFadeHeight,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
+        BottomFade(modifier = Modifier.align(Alignment.BottomCenter))
 
         AnimatedVisibility(
             visible = !isNearBottom && messages.isNotEmpty(),
@@ -313,71 +280,59 @@ private val ComposerArea = 172.dp
 // Fade / Top bar
 // =====================================================================
 
-/**
- * Frosted-glass fade overlay. Samples the underlying content from a
- * recorded [GraphicsLayer] and renders it back through a Gaussian
- * [androidx.compose.ui.graphics.BlurEffect] (API 31+), then layers an
- * alpha-mask gradient on top so the blur dissolves into the background
- * colour. Below API 31, [renderEffect] is left null — you still get a
- * clean solid fade.
- */
 @Composable
-private fun BlurFade(
-    backdrop: GraphicsLayer,
-    isBottom: Boolean,
-    heightTotal: androidx.compose.ui.unit.Dp,
-    modifier: Modifier = Modifier
-) {
+private fun TopFade(modifier: Modifier = Modifier) {
     val bg = MaterialTheme.colorScheme.background
-    val maskBrush = if (isBottom) {
-        Brush.verticalGradient(
-            0.00f to bg.copy(alpha = 0f),
-            0.35f to bg.copy(alpha = 0.55f),
-            0.70f to bg.copy(alpha = 0.92f),
-            1.00f to bg
-        )
-    } else {
-        Brush.verticalGradient(
-            0.00f to bg,
-            0.30f to bg.copy(alpha = 0.92f),
-            0.65f to bg.copy(alpha = 0.55f),
-            1.00f to bg.copy(alpha = 0f)
-        )
-    }
-    val blurEffect = remember {
-        if (android.os.Build.VERSION.SDK_INT >= 31) {
-            BlurEffect(30f, 30f, TileMode.Clamp)
-        } else null
-    }
-
     Box(
         modifier
             .fillMaxWidth()
-            .height(heightTotal)
-    ) {
-        // Backdrop pass: sample the recorded layer, clip to our bounds,
-        // apply Gaussian blur. The fade box only covers a slice of the
-        // screen, so for the bottom fade we translate the layer up so its
-        // bottom slice aligns with this box.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    clip = true
-                    renderEffect = blurEffect
-                }
-                .drawBehind {
-                    val ty = if (isBottom) -(backdrop.size.height.toFloat() - size.height) else 0f
-                    translate(top = ty) { drawLayer(backdrop) }
-                }
-        )
-        // Mask pass: alpha gradient that fades the blurred layer into bg.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(maskBrush)
-        )
-    }
+            .height(TopFadeHeight + WindowInsetsTopHeight())
+            .background(
+                Brush.verticalGradient(
+                    0.0f to bg,
+                    0.55f to bg.copy(alpha = 0.92f),
+                    1.0f to bg.copy(alpha = 0f)
+                )
+            )
+    )
+}
+
+@Composable
+private fun BottomFade(modifier: Modifier = Modifier) {
+    val bg = MaterialTheme.colorScheme.background
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(BottomFadeHeight)
+            .background(
+                Brush.verticalGradient(
+                    0.0f to bg.copy(alpha = 0f),
+                    0.45f to bg.copy(alpha = 0.92f),
+                    1.0f to bg
+                )
+            )
+    )
+}
+
+/**
+ * Public re-export so other screens (Settings, ConversationList) can use
+ * the exact same top-edge fade as the chat screen.
+ */
+@Composable
+fun ChatTopFade(modifier: Modifier = Modifier, totalHeight: androidx.compose.ui.unit.Dp = TopFadeHeight) {
+    val bg = MaterialTheme.colorScheme.background
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(totalHeight)
+            .background(
+                Brush.verticalGradient(
+                    0.0f to bg,
+                    0.55f to bg.copy(alpha = 0.92f),
+                    1.0f to bg.copy(alpha = 0f)
+                )
+            )
+    )
 }
 
 @Composable

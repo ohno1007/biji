@@ -47,6 +47,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.biji.notes.data.Conversation
 import com.biji.notes.data.MODEL_REASONER
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.graphics.Brush
 import com.biji.notes.ui.glass.bouncyClickable
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -97,28 +99,35 @@ fun ConversationListScreen(
             )
         }
     ) { inner ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                start = 16.dp, end = 16.dp,
-                top = inner.calculateTopPadding(),
-                bottom = inner.calculateBottomPadding() +
-                    contentPadding.calculateBottomPadding() + 24.dp
-            ),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            item { NewChatCard(onClick = onNew) }
-            if (conversations.isEmpty()) {
-                item { EmptyHint() }
-            } else {
-                items(conversations, key = { it.id }) { c ->
-                    ConversationRow(
-                        convo = c,
-                        onClick = { onOpen(c.id) },
-                        onDelete = { vm.deleteConversation(c.id) }
-                    )
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 16.dp, end = 16.dp,
+                    top = inner.calculateTopPadding(),
+                    bottom = inner.calculateBottomPadding() +
+                        contentPadding.calculateBottomPadding() + 24.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item { NewChatCard(onClick = onNew) }
+                if (conversations.isEmpty()) {
+                    item { EmptyHint() }
+                } else {
+                    items(conversations, key = { it.id }) { c ->
+                        ConversationRow(
+                            convo = c,
+                            onClick = { onOpen(c.id) },
+                            onDelete = { vm.deleteConversation(c.id) }
+                        )
+                    }
                 }
             }
+            ConvoTopEdgeFade(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = inner.calculateTopPadding())
+            )
         }
     }
 
@@ -328,3 +337,20 @@ private fun EmptyHint() {
 
 private fun formatDate(ts: Long): String =
     SimpleDateFormat("MM/dd HH:mm", Locale.getDefault()).format(Date(ts))
+
+@Composable
+private fun ConvoTopEdgeFade(modifier: Modifier = Modifier) {
+    val bg = MaterialTheme.colorScheme.background
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(36.dp)
+            .background(
+                Brush.verticalGradient(
+                    0.0f to bg,
+                    0.55f to bg.copy(alpha = 0.92f),
+                    1.0f to bg.copy(alpha = 0f)
+                )
+            )
+    )
+}
