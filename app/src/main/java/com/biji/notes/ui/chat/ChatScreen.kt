@@ -2,13 +2,13 @@ package com.biji.notes.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,13 +32,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -49,7 +48,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,27 +61,23 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.biji.notes.data.Message
 import com.biji.notes.data.Role
-import com.biji.notes.ui.glass.LiquidGlassState
 import com.biji.notes.ui.glass.bouncyPress
-import com.biji.notes.ui.glass.liquidGlass
+import com.biji.notes.ui.glass.cardContainerColor
+import com.biji.notes.ui.glass.mdSurface
 import com.biji.notes.ui.markdown.MarkdownText
-import androidx.compose.animation.core.animateFloatAsState
 
 @Composable
 fun ChatScreen(
     vm: ChatViewModel,
-    glass: LiquidGlassState?,
     onBack: () -> Unit
 ) {
     val messages by vm.activeMessages.collectAsState()
     val settings by vm.settings.collectAsState()
     val streaming by vm.isStreaming.collectAsState()
     val error by vm.streamError.collectAsState()
-    val convoId by vm.activeConvoId.collectAsState()
 
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(messages.size, streaming) {
         if (messages.isNotEmpty()) {
@@ -98,17 +92,16 @@ fun ChatScreen(
             .imePadding()
     ) {
         ChatTopBar(
-            glass = glass,
             title = "DeepSeek",
-            subtitle = if (settings.thinking) "Reasoner · 思考开启" else "Chat",
+            subtitle = if (settings.thinking) "${settings.model} · 思考开启" else settings.model,
             thinking = settings.thinking,
-            onToggleThinking = { vm.setThinking(it) },
+            onToggleThinking = vm::setThinking,
             onBack = onBack
         )
 
         Box(Modifier.weight(1f)) {
             if (messages.isEmpty()) {
-                EmptyChatHint(glass = glass)
+                EmptyChatHint()
             } else {
                 LazyColumn(
                     state = listState,
@@ -117,17 +110,11 @@ fun ChatScreen(
                         start = 16.dp, end = 16.dp,
                         top = 12.dp, bottom = 12.dp
                     ),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(
-                        items = messages,
-                        key = { it.id }
-                    ) { m -> MessageBubble(m = m, glass = glass) }
-
+                    items(messages, key = { it.id }) { m -> MessageBubble(m = m) }
                     if (error != null) {
-                        item {
-                            ErrorPill(message = error!!, glass = glass, onDismiss = vm::dismissError)
-                        }
+                        item { ErrorPill(message = error!!, onDismiss = vm::dismissError) }
                     }
                 }
             }
@@ -136,12 +123,10 @@ fun ChatScreen(
         Composer(
             value = input,
             onValueChange = { input = it },
-            glass = glass,
             sending = streaming,
             onSend = {
                 if (input.isNotBlank() && !streaming) {
-                    vm.send(input)
-                    input = ""
+                    vm.send(input); input = ""
                 }
             },
             onStop = vm::cancelStream
@@ -152,28 +137,21 @@ fun ChatScreen(
 
 @Composable
 private fun ChatTopBar(
-    glass: LiquidGlassState?,
     title: String,
     subtitle: String,
     thinking: Boolean,
     onToggleThinking: (Boolean) -> Unit,
     onBack: () -> Unit
 ) {
+    val cs = MaterialTheme.colorScheme
     Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             Modifier
                 .size(40.dp)
-                .liquidGlass(
-                    glass,
-                    shape = CircleShape,
-                    cornerRadius = 40.dp,
-                    blurRadius = 24.dp
-                )
+                .mdSurface(cs.surfaceContainerHigh, CircleShape)
                 .bouncyPress(onClick = onBack),
             contentAlignment = Alignment.Center
         ) {
@@ -181,7 +159,7 @@ private fun ChatTopBar(
                 Icons.AutoMirrored.Rounded.ArrowBack,
                 contentDescription = "返回",
                 modifier = Modifier.size(18.dp),
-                tint = LocalContentColor.current
+                tint = cs.onSurface
             )
         }
         Spacer(Modifier.size(12.dp))
@@ -189,86 +167,81 @@ private fun ChatTopBar(
             Text(
                 title,
                 style = MaterialTheme.typography.titleLarge,
-                color = LocalContentColor.current,
-                fontWeight = FontWeight.SemiBold,
+                color = cs.onBackground,
+                fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 subtitle,
                 style = MaterialTheme.typography.labelLarge,
-                color = LocalContentColor.current.copy(alpha = 0.65f)
+                color = cs.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
-        ThinkingToggle(thinking = thinking, glass = glass, onChange = onToggleThinking)
+        ThinkingToggle(thinking = thinking, onChange = onToggleThinking)
     }
 }
 
 @Composable
-private fun ThinkingToggle(
-    thinking: Boolean,
-    glass: LiquidGlassState?,
-    onChange: (Boolean) -> Unit
-) {
+private fun ThinkingToggle(thinking: Boolean, onChange: (Boolean) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val bg = if (thinking) cs.primaryContainer else cs.surfaceContainerHigh
+    val fg = if (thinking) cs.onPrimaryContainer else cs.onSurface
     Row(
         Modifier
-            .liquidGlass(
-                glass,
-                shape = RoundedCornerShape(50),
-                cornerRadius = 50.dp,
-                blurRadius = 22.dp,
-                tint = if (thinking)
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                else Color.White.copy(alpha = 0.10f)
-            )
-            .padding(horizontal = 10.dp, vertical = 4.dp),
+            .mdSurface(bg, RoundedCornerShape(50))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             Icons.Rounded.AutoAwesome,
             contentDescription = null,
             modifier = Modifier.size(14.dp),
-            tint = LocalContentColor.current
+            tint = fg
         )
         Spacer(Modifier.size(6.dp))
-        Text("思考", style = MaterialTheme.typography.labelLarge, color = LocalContentColor.current)
+        Text(
+            "思考",
+            style = MaterialTheme.typography.labelLarge,
+            color = fg,
+            fontWeight = FontWeight.SemiBold
+        )
         Spacer(Modifier.size(6.dp))
         Switch(
             checked = thinking,
             onCheckedChange = onChange,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = MaterialTheme.colorScheme.primary,
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = Color.White.copy(alpha = 0.25f),
-                uncheckedBorderColor = Color.Transparent,
-                checkedBorderColor = Color.Transparent
+                checkedThumbColor = cs.onPrimary,
+                checkedTrackColor = cs.primary,
+                uncheckedThumbColor = cs.onSurface,
+                uncheckedTrackColor = cs.surfaceContainerHighest,
+                checkedBorderColor = Color.Transparent,
+                uncheckedBorderColor = Color.Transparent
             ),
-            modifier = Modifier.size(width = 40.dp, height = 22.dp)
+            modifier = Modifier.size(width = 38.dp, height = 22.dp)
         )
     }
 }
 
 @Composable
-private fun MessageBubble(m: Message, glass: LiquidGlassState?) {
+private fun MessageBubble(m: Message) {
     val isUser = m.role == Role.USER
-    val alignment = if (isUser) Alignment.End else Alignment.Start
+    val cs = MaterialTheme.colorScheme
     val shape = if (isUser)
-        RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 22.dp, bottomEnd = 6.dp)
+        RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
     else
-        RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 6.dp, bottomEnd = 22.dp)
-    val tint = if (isUser)
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
-    else
-        Color.White.copy(alpha = 0.12f)
-    val cornerR = 22.dp
+        RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp)
+    val bg = if (isUser) cs.primary else cardContainerColor(2)
+    val fg = if (isUser) cs.onPrimary else cs.onSurface
     val clipboard = LocalClipboardManager.current
 
     AnimatedVisibility(
         visible = true,
         enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) +
             scaleIn(
-                initialScale = 0.92f,
+                initialScale = 0.94f,
                 animationSpec = spring(
                     dampingRatio = Spring.DampingRatioMediumBouncy,
                     stiffness = Spring.StiffnessMediumLow
@@ -276,33 +249,26 @@ private fun MessageBubble(m: Message, glass: LiquidGlassState?) {
             )
     ) {
         Box(
-            modifier = Modifier
-                .fillMaxWidth(),
+            Modifier.fillMaxWidth(),
             contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
         ) {
             Column(
-                modifier = Modifier
+                Modifier
                     .widthIn(max = 320.dp)
-                    .liquidGlass(
-                        glass,
-                        shape = shape,
-                        cornerRadius = cornerR,
-                        blurRadius = 30.dp,
-                        tint = tint
-                    )
+                    .mdSurface(bg, shape)
                     .padding(horizontal = 14.dp, vertical = 12.dp)
             ) {
                 if (!isUser && !m.reasoning.isNullOrBlank()) {
-                    ReasoningBlock(reasoning = m.reasoning)
+                    ReasoningBlock(reasoning = m.reasoning, fg = fg)
                     Spacer(Modifier.height(8.dp))
                 }
                 if (m.content.isBlank() && !isUser && m.reasoning.isNullOrBlank()) {
-                    TypingDots()
+                    TypingDots(fg = fg)
                 } else if (isUser) {
                     Text(
                         m.content,
                         style = MaterialTheme.typography.bodyLarge,
-                        color = LocalContentColor.current
+                        color = fg
                     )
                 } else {
                     MarkdownText(markdown = m.content)
@@ -313,13 +279,7 @@ private fun MessageBubble(m: Message, glass: LiquidGlassState?) {
                         Box(
                             Modifier
                                 .size(28.dp)
-                                .liquidGlass(
-                                    glass,
-                                    shape = CircleShape,
-                                    cornerRadius = 28.dp,
-                                    blurRadius = 14.dp,
-                                    tint = Color.White.copy(alpha = 0.18f)
-                                )
+                                .mdSurface(cs.surfaceContainerHighest, CircleShape)
                                 .bouncyPress(onClick = {
                                     clipboard.setText(AnnotatedString(m.content))
                                 }),
@@ -329,7 +289,7 @@ private fun MessageBubble(m: Message, glass: LiquidGlassState?) {
                                 Icons.Rounded.ContentCopy,
                                 contentDescription = "复制",
                                 modifier = Modifier.size(13.dp),
-                                tint = LocalContentColor.current.copy(alpha = 0.85f)
+                                tint = cs.onSurfaceVariant
                             )
                         }
                     }
@@ -340,8 +300,9 @@ private fun MessageBubble(m: Message, glass: LiquidGlassState?) {
 }
 
 @Composable
-private fun ReasoningBlock(reasoning: String) {
-    var expanded by remember { mutableStateOf(true) }
+private fun ReasoningBlock(reasoning: String, fg: Color) {
+    val cs = MaterialTheme.colorScheme
+    var expanded by remember { mutableStateOf(false) }
     val rotation by animateFloatAsState(
         targetValue = if (expanded) 90f else 0f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
@@ -350,37 +311,32 @@ private fun ReasoningBlock(reasoning: String) {
     Column(
         Modifier
             .fillMaxWidth()
-            .background(
-                color = LocalContentColor.current.copy(alpha = 0.06f),
-                shape = RoundedCornerShape(12.dp)
-            )
+            .mdSurface(cs.surfaceContainerHigh, RoundedCornerShape(12.dp))
             .padding(10.dp)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .bouncyPress(onClick = { expanded = !expanded }),
+            modifier = Modifier.fillMaxWidth().bouncyPress(onClick = { expanded = !expanded }),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 Icons.Rounded.ChevronRight,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp).rotate(rotation),
-                tint = LocalContentColor.current.copy(alpha = 0.65f)
+                tint = cs.onSurfaceVariant
             )
             Spacer(Modifier.size(4.dp))
             Icon(
                 Icons.Rounded.AutoAwesome,
                 contentDescription = null,
                 modifier = Modifier.size(13.dp),
-                tint = MaterialTheme.colorScheme.primary
+                tint = cs.primary
             )
             Spacer(Modifier.size(6.dp))
             Text(
                 "思考过程",
                 style = MaterialTheme.typography.labelLarge,
-                color = LocalContentColor.current.copy(alpha = 0.75f),
-                fontWeight = FontWeight.Medium
+                color = cs.onSurface,
+                fontWeight = FontWeight.SemiBold
             )
         }
         AnimatedVisibility(
@@ -393,7 +349,7 @@ private fun ReasoningBlock(reasoning: String) {
                 Text(
                     reasoning,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = LocalContentColor.current.copy(alpha = 0.80f)
+                    color = cs.onSurfaceVariant
                 )
             }
         }
@@ -401,24 +357,13 @@ private fun ReasoningBlock(reasoning: String) {
 }
 
 @Composable
-private fun TypingDots() {
+private fun TypingDots(fg: Color) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         repeat(3) { i ->
-            val anim by animateFloatAsState(
-                targetValue = 1f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioLowBouncy,
-                    stiffness = Spring.StiffnessLow
-                ),
-                label = "dot$i"
-            )
             Box(
                 Modifier
                     .size(8.dp)
-                    .background(
-                        color = LocalContentColor.current.copy(alpha = 0.5f * anim),
-                        shape = CircleShape
-                    )
+                    .mdSurface(fg.copy(alpha = 0.45f), CircleShape)
             )
             if (i < 2) Spacer(Modifier.size(4.dp))
         }
@@ -429,50 +374,38 @@ private fun TypingDots() {
 private fun Composer(
     value: String,
     onValueChange: (String) -> Unit,
-    glass: LiquidGlassState?,
     sending: Boolean,
     onSend: () -> Unit,
     onStop: () -> Unit
 ) {
-    val shape = RoundedCornerShape(28.dp)
+    val cs = MaterialTheme.colorScheme
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 8.dp)
-            .liquidGlass(
-                glass,
-                shape = shape,
-                cornerRadius = 28.dp,
-                blurRadius = 36.dp,
-                tint = Color.White.copy(alpha = 0.12f)
-            )
+            .mdSurface(cs.surfaceContainerHigh, RoundedCornerShape(26.dp))
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.Bottom
     ) {
-        Box(
-            Modifier
-                .weight(1f)
-                .padding(top = 6.dp, bottom = 6.dp, end = 8.dp)
-        ) {
+        Box(Modifier.weight(1f).padding(top = 6.dp, bottom = 6.dp, end = 8.dp)) {
             if (value.isEmpty()) {
                 Text(
                     "和 DeepSeek 说点什么…",
                     style = MaterialTheme.typography.bodyLarge,
-                    color = LocalContentColor.current.copy(alpha = 0.40f)
+                    color = cs.onSurfaceVariant
                 )
             }
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = LocalContentColor.current),
-                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
+                cursorBrush = SolidColor(cs.primary),
                 modifier = Modifier.fillMaxWidth()
             )
         }
         SendOrStopButton(
             sending = sending,
             enabled = sending || value.isNotBlank(),
-            glass = glass,
             onSend = onSend,
             onStop = onStop
         )
@@ -483,48 +416,43 @@ private fun Composer(
 private fun SendOrStopButton(
     sending: Boolean,
     enabled: Boolean,
-    glass: LiquidGlassState?,
     onSend: () -> Unit,
     onStop: () -> Unit
 ) {
-    val tint = if (enabled)
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-    else
-        Color.White.copy(alpha = 0.12f)
+    val cs = MaterialTheme.colorScheme
+    val bg = when {
+        sending -> cs.error
+        enabled -> cs.primary
+        else -> cs.surfaceContainerHighest
+    }
+    val fg = when {
+        sending -> cs.onPrimary
+        enabled -> cs.onPrimary
+        else -> cs.onSurfaceVariant
+    }
     Box(
         Modifier
             .size(44.dp)
-            .liquidGlass(
-                glass,
-                shape = CircleShape,
-                cornerRadius = 44.dp,
-                blurRadius = 24.dp,
-                tint = tint
-            )
+            .mdSurface(bg, CircleShape)
             .bouncyPress(onClick = { if (sending) onStop() else if (enabled) onSend() }),
         contentAlignment = Alignment.Center
     ) {
         Icon(
-            imageVector = if (sending) Icons.Rounded.Stop else Icons.Rounded.Send,
+            imageVector = if (sending) Icons.Rounded.Stop else Icons.AutoMirrored.Rounded.Send,
             contentDescription = if (sending) "停止" else "发送",
             modifier = Modifier.size(18.dp),
-            tint = Color.White
+            tint = fg
         )
     }
 }
 
 @Composable
-private fun ErrorPill(message: String, glass: LiquidGlassState?, onDismiss: () -> Unit) {
+private fun ErrorPill(message: String, onDismiss: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
     Row(
         Modifier
             .fillMaxWidth()
-            .liquidGlass(
-                glass,
-                shape = RoundedCornerShape(18.dp),
-                cornerRadius = 18.dp,
-                blurRadius = 26.dp,
-                tint = Color(0xFFFF6B6B).copy(alpha = 0.25f)
-            )
+            .mdSurface(cs.error, RoundedCornerShape(16.dp))
             .bouncyPress(onClick = onDismiss)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -532,57 +460,47 @@ private fun ErrorPill(message: String, glass: LiquidGlassState?, onDismiss: () -
         Text(
             message,
             style = MaterialTheme.typography.bodyMedium,
-            color = LocalContentColor.current,
+            color = cs.onPrimary,
             modifier = Modifier.weight(1f)
         )
     }
 }
 
 @Composable
-private fun EmptyChatHint(glass: LiquidGlassState?) {
+private fun EmptyChatHint() {
+    val cs = MaterialTheme.colorScheme
     Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier
-                .liquidGlass(
-                    glass,
-                    shape = RoundedCornerShape(28.dp),
-                    cornerRadius = 28.dp,
-                    blurRadius = 40.dp
-                )
+                .mdSurface(cardContainerColor(1), RoundedCornerShape(24.dp))
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Box(
                 Modifier
-                    .size(56.dp)
-                    .liquidGlass(
-                        glass,
-                        shape = CircleShape,
-                        cornerRadius = 56.dp,
-                        blurRadius = 22.dp,
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
-                    ),
+                    .size(52.dp)
+                    .mdSurface(cs.primary, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     Icons.Rounded.AutoAwesome,
                     contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(26.dp)
+                    tint = cs.onPrimary,
+                    modifier = Modifier.size(24.dp)
                 )
             }
             Spacer(Modifier.height(12.dp))
             Text(
                 "现在开始聊吧",
                 style = MaterialTheme.typography.titleLarge,
-                color = LocalContentColor.current,
-                fontWeight = FontWeight.SemiBold
+                color = cs.onSurface,
+                fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "支持流式输出、Markdown，开「思考」可切到 R1 推理。",
+                "支持 Markdown 流式输出；打开「思考」切到 deepseek-reasoner。",
                 style = MaterialTheme.typography.bodyMedium,
-                color = LocalContentColor.current.copy(alpha = 0.70f)
+                color = cs.onSurfaceVariant
             )
         }
     }

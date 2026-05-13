@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,13 +22,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.biji.notes.ui.glass.LiquidGlassState
 import com.biji.notes.ui.glass.bouncyPress
-import com.biji.notes.ui.glass.liquidGlass
+import com.biji.notes.ui.glass.mdSurface
 
 data class TabItem(
     val key: String,
@@ -42,9 +39,9 @@ fun BouncyTabBar(
     items: List<TabItem>,
     selected: String,
     onSelect: (String) -> Unit,
-    glass: LiquidGlassState?,
     modifier: Modifier = Modifier
 ) {
+    val cs = MaterialTheme.colorScheme
     Box(
         modifier
             .fillMaxWidth()
@@ -54,14 +51,8 @@ fun BouncyTabBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .liquidGlass(
-                    glass,
-                    shape = RoundedCornerShape(50),
-                    cornerRadius = 50.dp,
-                    blurRadius = 40.dp,
-                    tint = Color.White.copy(alpha = 0.10f)
-                )
-                .padding(horizontal = 10.dp, vertical = 10.dp),
+                .mdSurface(cs.surfaceContainerHigh, RoundedCornerShape(50))
+                .padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             items.forEach { item ->
@@ -69,7 +60,6 @@ fun BouncyTabBar(
                 TabSlot(
                     item = item,
                     selected = isSelected,
-                    glass = glass,
                     onClick = { if (!isSelected) onSelect(item.key) },
                     modifier = Modifier.weight(1f)
                 )
@@ -82,12 +72,12 @@ fun BouncyTabBar(
 private fun TabSlot(
     item: TabItem,
     selected: Boolean,
-    glass: LiquidGlassState?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val cs = MaterialTheme.colorScheme
     val scale by animateFloatAsState(
-        targetValue = if (selected) 1.0f else 0.9f,
+        targetValue = if (selected) 1.0f else 0.92f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMediumLow
@@ -106,7 +96,7 @@ private fun TabSlot(
     Box(
         modifier = modifier
             .padding(horizontal = 4.dp)
-            .height(56.dp)
+            .height(52.dp)
             .bouncyPress(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -115,13 +105,7 @@ private fun TabSlot(
                 modifier = Modifier
                     .offset(y = lift)
                     .scale(scale)
-                    .liquidGlass(
-                        glass,
-                        shape = RoundedCornerShape(50),
-                        cornerRadius = 50.dp,
-                        blurRadius = 22.dp,
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
-                    )
+                    .mdSurface(cs.primary, RoundedCornerShape(50))
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -129,14 +113,14 @@ private fun TabSlot(
                     item.icon,
                     contentDescription = item.label,
                     modifier = Modifier.size(18.dp),
-                    tint = Color.White
+                    tint = cs.onPrimary
                 )
                 Spacer(Modifier.size(6.dp))
                 Text(
                     item.label,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
-                    color = Color.White
+                    color = cs.onPrimary
                 )
             }
         } else {
@@ -144,7 +128,7 @@ private fun TabSlot(
                 item.icon,
                 contentDescription = item.label,
                 modifier = Modifier.size(22.dp).scale(scale),
-                tint = LocalContentColor.current.copy(alpha = 0.75f)
+                tint = cs.onSurfaceVariant
             )
         }
     }

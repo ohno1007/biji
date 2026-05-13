@@ -1,12 +1,19 @@
 package com.biji.notes.net
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.serialization.SerialName
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -15,10 +22,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
-import okhttp3.sse.EventSource
-import okhttp3.sse.EventSourceListener
-import okhttp3.sse.EventSources
 import java.util.concurrent.TimeUnit
 
 sealed interface ChatEvent {
@@ -42,6 +45,19 @@ data class ChatRequest(
     val temperature: Float? = null
 )
 
+data class ModelInfo(
+    val id: String,
+    val ownedBy: String? = null
+)
+
+data class BalanceInfo(
+    val isAvailable: Boolean,
+    val currency: String,
+    val totalBalance: String,
+    val grantedBalance: String,
+    val toppedUpBalance: String
+)
+
 class DeepSeekClient {
 
     private val json = Json {
@@ -52,18 +68,12 @@ class DeepSeekClient {
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
+        // Streaming responses are open-ended; readTimeout = 0 disables it
+        // for the duration of a chat.
         .readTimeout(0, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    private val factory = EventSources.createFactory(http)
-
-    /**
-     * Streams a chat completion. `model = "deepseek-reasoner"` enables the
-     * reasoning model whose chunks may carry a `reasoning_content` field;
-     * `"deepseek-chat"` is the standard one. Emits granular events until
-     * either [ChatEvent.Done] or [ChatEvent.Error] terminates the stream.
-     */
     fun stream(
         baseUrl: String,
         apiKey: String,
@@ -73,87 +83,186 @@ class DeepSeekClient {
     ): Flow<ChatEvent> = callbackFlow {
         if (apiKey.isBlank()) {
             trySend(ChatEvent.Error("未配置 API Key，请到「设置」填入。"))
-            close()
-            return@callbackFlow
+            close(); return@callbackFlow
         }
 
-        val body = json
-            .encodeToString(
-                ChatRequest(
-                    model = model,
-                    messages = messages,
-                    stream = true,
-                    // Reasoner ignores temperature; harmless to omit.
-                    temperature = if (model == "deepseek-reasoner") null else temperature
-                )
+        val payload = json.encodeToString(
+            ChatRequest(
+                model = model,
+                messages = messages,
+                stream = true,
+                temperature = if (model.contains("reason", ignoreCase = true)) null else temperature
             )
-            .toRequestBody("application/json".toMediaType())
-
-        val url = baseUrl.trimEnd('/') + "/v1/chat/completions"
+        )
         val request = Request.Builder()
-            .url(url)
+            .url(baseUrl.trimEnd('/').removeSuffix("/v1") + "/v1/chat/completions")
             .header("Accept", "text/event-stream")
             .header("Authorization", "Bearer $apiKey")
-            .post(body)
+            .post(payload.toRequestBody("application/json".toMediaType()))
             .build()
 
-        val listener = object : EventSourceListener() {
-            override fun onEvent(
-                eventSource: EventSource,
-                id: String?,
-                type: String?,
-                data: String
-            ) {
-                if (data == "[DONE]") {
-                    trySend(ChatEvent.Done); close(); return
-                }
-                runCatching {
-                    val obj = json.parseToJsonElement(data).jsonObject
-                    val choices = obj["choices"]?.jsonArray ?: return@runCatching
-                    val delta = choices.firstOrNull()?.jsonObject
-                        ?.get("delta")?.jsonObject
-                    val reasoning = delta?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
-                    val content = delta?.get("content")?.jsonPrimitive?.contentOrNull
-                    if (!reasoning.isNullOrEmpty()) trySend(ChatEvent.Reasoning(reasoning))
-                    if (!content.isNullOrEmpty()) trySend(ChatEvent.Delta(content))
-                }
-            }
+        val call = http.newCall(request)
 
-            override fun onClosed(eventSource: EventSource) {
-                trySend(ChatEvent.Done); close()
-            }
-
-            override fun onFailure(
-                eventSource: EventSource,
-                t: Throwable?,
-                response: Response?
-            ) {
-                val msg = buildString {
-                    if (response != null) {
-                        append("HTTP ${response.code}")
-                        val errBody = runCatching { response.body?.string() }.getOrNull()
-                        if (!errBody.isNullOrBlank()) {
-                            append(": ")
-                            append(parseErrorMessage(errBody))
-                        }
-                    } else if (t != null) {
-                        append(t.message ?: t.javaClass.simpleName)
-                    } else {
-                        append("网络错误")
+        val job = launch(Dispatchers.IO) {
+            try {
+                call.execute().use { response ->
+                    if (!response.isSuccessful) {
+                        val raw = runCatching { response.body?.string().orEmpty() }.getOrDefault("")
+                        trySend(ChatEvent.Error(formatHttpError(response.code, raw)))
+                        return@use
                     }
+
+                    val body = response.body ?: run {
+                        trySend(ChatEvent.Error("空响应体"))
+                        return@use
+                    }
+                    val contentType = (response.header("Content-Type") ?: "").lowercase()
+
+                    if (contentType.contains("event-stream")) {
+                        readSse(body.source(), this@callbackFlow::trySend)
+                    } else {
+                        // Server ignored stream=true (proxies / non-streaming
+                        // gateways do this). Parse the whole completion in one
+                        // shot so the user sees the answer instead of raw JSON.
+                        val text = body.string()
+                        emitCompleteJson(text, this@callbackFlow::trySend)
+                    }
+                    trySend(ChatEvent.Done)
                 }
-                trySend(ChatEvent.Error(msg))
+            } catch (_: CancellationException) {
+                // user clicked stop — nothing to report
+            } catch (e: Throwable) {
+                trySend(ChatEvent.Error(e.message ?: e.javaClass.simpleName))
+            } finally {
                 close()
             }
         }
 
-        val source = factory.newEventSource(request, listener)
-        awaitClose { source.cancel() }
+        awaitClose {
+            call.cancel()
+            job.cancel()
+        }
     }
 
-    private fun parseErrorMessage(raw: String): String =
+    private fun readSse(
+        src: okio.BufferedSource,
+        emit: (ChatEvent) -> Unit
+    ) {
+        val buf = StringBuilder()
+        while (true) {
+            val line = src.readUtf8Line() ?: break
+            if (line.isEmpty()) {
+                val data = buf.toString()
+                buf.clear()
+                if (data.isEmpty()) continue
+                if (data == "[DONE]") return
+                parseStreamChunk(data, emit)
+            } else if (line.startsWith("data:")) {
+                val payload = line.removePrefix("data:").trimStart()
+                if (buf.isNotEmpty()) buf.append('\n')
+                buf.append(payload)
+            }
+            // Ignore "event:", "id:", and comment ":" lines.
+        }
+    }
+
+    private fun parseStreamChunk(data: String, emit: (ChatEvent) -> Unit) {
         runCatching {
-            val o = json.parseToJsonElement(raw).jsonObject
-            o["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull ?: raw
-        }.getOrElse { raw }
+            val obj = json.parseToJsonElement(data).jsonObject
+            val choice = obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject ?: return@runCatching
+            // Many OpenAI-compatible servers stream "delta"; some (mis)stream
+            // a full "message" per chunk — handle both.
+            val delta = choice["delta"]?.jsonObject ?: choice["message"]?.jsonObject
+            if (delta != null) {
+                val reasoning = delta["reasoning_content"]?.jsonPrimitive?.contentOrNull
+                val content = delta["content"]?.jsonPrimitive?.contentOrNull
+                if (!reasoning.isNullOrEmpty()) emit(ChatEvent.Reasoning(reasoning))
+                if (!content.isNullOrEmpty()) emit(ChatEvent.Delta(content))
+            }
+        }
+    }
+
+    private fun emitCompleteJson(text: String, emit: (ChatEvent) -> Unit) {
+        runCatching {
+            val obj = json.parseToJsonElement(text).jsonObject
+            val choice = obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject
+            if (choice == null) {
+                emit(ChatEvent.Error("响应不是合法的 chat.completion 结构"))
+                return
+            }
+            val msg = choice["message"]?.jsonObject ?: choice["delta"]?.jsonObject
+            val content = msg?.get("content")?.jsonPrimitive?.contentOrNull.orEmpty()
+            val reasoning = msg?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
+            if (!reasoning.isNullOrEmpty()) emit(ChatEvent.Reasoning(reasoning))
+            if (content.isNotEmpty()) emit(ChatEvent.Delta(content))
+            if (content.isEmpty() && reasoning.isNullOrEmpty()) {
+                emit(ChatEvent.Error("响应体没有 content 字段"))
+            }
+        }.onFailure {
+            emit(ChatEvent.Error("响应解析失败：${it.message ?: it.javaClass.simpleName}"))
+        }
+    }
+
+    private fun formatHttpError(code: Int, raw: String): String {
+        val parsed = runCatching {
+            json.parseToJsonElement(raw).jsonObject["error"]?.jsonObject
+                ?.get("message")?.jsonPrimitive?.contentOrNull
+        }.getOrNull()
+        val tail = parsed ?: raw.take(220).ifBlank { "" }
+        return if (tail.isBlank()) "HTTP $code" else "HTTP $code · $tail"
+    }
+
+    // ---- Models -----------------------------------------------------------
+
+    suspend fun listModels(baseUrl: String, apiKey: String): Result<List<ModelInfo>> =
+        withContext(Dispatchers.IO) {
+            if (apiKey.isBlank()) return@withContext Result.failure(IllegalStateException("未配置 API Key"))
+            runCatching {
+                val req = Request.Builder()
+                    .url(baseUrl.trimEnd('/').removeSuffix("/v1") + "/v1/models")
+                    .header("Authorization", "Bearer $apiKey")
+                    .get().build()
+                http.newCall(req).execute().use { resp ->
+                    val text = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error(formatHttpError(resp.code, text))
+                    val arr: JsonArray = json.parseToJsonElement(text).jsonObject["data"]?.jsonArray
+                        ?: error("响应缺少 data 字段")
+                    arr.mapNotNull { el: JsonElement ->
+                        val o: JsonObject = el.jsonObject
+                        val id = o["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                        ModelInfo(
+                            id = id,
+                            ownedBy = o["owned_by"]?.jsonPrimitive?.contentOrNull
+                        )
+                    }.sortedBy { it.id }
+                }
+            }
+        }
+
+    // ---- Balance ----------------------------------------------------------
+
+    suspend fun getBalance(baseUrl: String, apiKey: String): Result<BalanceInfo> =
+        withContext(Dispatchers.IO) {
+            if (apiKey.isBlank()) return@withContext Result.failure(IllegalStateException("未配置 API Key"))
+            runCatching {
+                val req = Request.Builder()
+                    .url(baseUrl.trimEnd('/').removeSuffix("/v1") + "/user/balance")
+                    .header("Authorization", "Bearer $apiKey")
+                    .get().build()
+                http.newCall(req).execute().use { resp ->
+                    val text = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error(formatHttpError(resp.code, text))
+                    val obj = json.parseToJsonElement(text).jsonObject
+                    val avail = obj["is_available"]?.jsonPrimitive?.booleanOrNull ?: false
+                    val info = obj["balance_infos"]?.jsonArray?.firstOrNull()?.jsonObject
+                    BalanceInfo(
+                        isAvailable = avail,
+                        currency = info?.get("currency")?.jsonPrimitive?.contentOrNull ?: "CNY",
+                        totalBalance = info?.get("total_balance")?.jsonPrimitive?.contentOrNull ?: "-",
+                        grantedBalance = info?.get("granted_balance")?.jsonPrimitive?.contentOrNull ?: "-",
+                        toppedUpBalance = info?.get("topped_up_balance")?.jsonPrimitive?.contentOrNull ?: "-"
+                    )
+                }
+            }
+        }
 }

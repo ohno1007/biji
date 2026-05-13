@@ -12,11 +12,13 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -30,9 +32,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.biji.notes.ui.chat.ChatScreen
 import com.biji.notes.ui.chat.ChatViewModel
 import com.biji.notes.ui.chat.ConversationListScreen
-import com.biji.notes.ui.glass.AnimatedAuroraBackground
-import com.biji.notes.ui.glass.LiquidGlassScaffold
-import com.biji.notes.ui.glass.LocalLiquidGlass
 import com.biji.notes.ui.nav.BouncyTabBar
 import com.biji.notes.ui.nav.TabItem
 import com.biji.notes.ui.settings.SettingsScreen
@@ -66,62 +65,51 @@ private fun AppRoot(vm: ChatViewModel) {
     var tab by remember { mutableStateOf(TAB_CHATS) }
     val activeConvo by vm.activeConvoId.collectAsState()
 
-    LiquidGlassScaffold(
-        background = { AnimatedAuroraBackground() },
-        content = {
-            val glass = LocalLiquidGlass.current
-
-            Box(Modifier.fillMaxSize()) {
-                AnimatedContent(
-                    targetState = Pair(tab, activeConvo),
-                    transitionSpec = {
-                        (fadeIn(tween(180)) + scaleIn(
-                            initialScale = 0.97f,
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioMediumBouncy,
-                                stiffness = Spring.StiffnessMediumLow
-                            )
-                        )) togetherWith fadeOut(tween(120))
-                    },
-                    label = "screen",
-                    modifier = Modifier.fillMaxSize()
-                ) { (currentTab, convoId) ->
-                    when {
-                        currentTab == TAB_CHATS && convoId != null -> {
-                            BackHandler { vm.clearActive() }
-                            ChatScreen(
-                                vm = vm,
-                                glass = glass,
-                                onBack = { vm.clearActive() }
-                            )
-                        }
-                        currentTab == TAB_CHATS -> {
-                            ConversationListScreen(
-                                vm = vm,
-                                glass = glass,
-                                onOpen = { id -> vm.openConversation(id) },
-                                onNew = { vm.newConversation() }
-                            )
-                        }
-                        else -> {
-                            SettingsScreen(vm = vm, glass = glass)
-                        }
-                    }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        AnimatedContent(
+            targetState = Pair(tab, activeConvo),
+            transitionSpec = {
+                (fadeIn(tween(180)) + scaleIn(
+                    initialScale = 0.98f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )) togetherWith fadeOut(tween(120))
+            },
+            label = "screen",
+            modifier = Modifier.fillMaxSize()
+        ) { (currentTab, convoId) ->
+            when {
+                currentTab == TAB_CHATS && convoId != null -> {
+                    BackHandler { vm.clearActive() }
+                    ChatScreen(vm = vm, onBack = { vm.clearActive() })
                 }
-
-                if (activeConvo == null) {
-                    BouncyTabBar(
-                        items = listOf(
-                            TabItem(TAB_CHATS, "对话", Icons.Rounded.ChatBubble),
-                            TabItem(TAB_SETTINGS, "设置", Icons.Rounded.Settings)
-                        ),
-                        selected = tab,
-                        onSelect = { tab = it },
-                        glass = glass,
-                        modifier = Modifier.align(Alignment.BottomCenter)
+                currentTab == TAB_CHATS -> {
+                    ConversationListScreen(
+                        vm = vm,
+                        onOpen = { id -> vm.openConversation(id) },
+                        onNew = { vm.newConversation() }
                     )
                 }
+                else -> SettingsScreen(vm = vm)
             }
         }
-    )
+
+        if (activeConvo == null) {
+            BouncyTabBar(
+                items = listOf(
+                    TabItem(TAB_CHATS, "对话", Icons.Rounded.ChatBubble),
+                    TabItem(TAB_SETTINGS, "设置", Icons.Rounded.Settings)
+                ),
+                selected = tab,
+                onSelect = { tab = it },
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
+    }
 }
