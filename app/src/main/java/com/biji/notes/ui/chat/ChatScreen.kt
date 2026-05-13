@@ -92,6 +92,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.biji.notes.data.MODEL_CHAT
 import com.biji.notes.data.MODEL_REASONER
 import com.biji.notes.data.Message
@@ -369,20 +370,22 @@ private fun IconBtn(
 }
 
 /**
- * MD3-flavoured two-segment hollow ring that displays current context-window
- * usage. The bright arc covers the used fraction, the muted arc the rest;
- * a small angular gap separates them ("镂空双段圆环"). Tapping shows a
- * compact stats line.
+ * Context-usage indicator. Uses the canonical MD3
+ * [androidx.compose.material3.CircularProgressIndicator] in determinate
+ * mode, which natively renders a two-segment hollow ring with a rounded
+ * stroke cap and a real `gapSize` between the active arc and the track —
+ * exactly the "镂空双段圆环" the spec calls for, no custom Canvas drawing.
  */
 @Composable
 private fun ContextRing(usage: ContextUsage, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val fraction by animateFloatAsState(
-        targetValue = usage.fraction,
+        targetValue = usage.fraction.coerceAtLeast(0.001f),
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "ringFrac"
     )
     val warn = fraction > 0.78f
+    val percent = (fraction * 100).toInt()
     Box(
         modifier = Modifier
             .size(40.dp)
@@ -390,33 +393,18 @@ private fun ContextRing(usage: ContextUsage, onClick: () -> Unit) {
             .bouncyClickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(26.dp)) {
-            val stroke = 2.6f * density
-            val gap = 12f
-            val usedColor = if (warn) cs.error else cs.primary
-            val restColor = cs.outlineVariant
-            val usedSweep = (fraction * (360f - gap * 2)).coerceAtLeast(0f)
-            val restSweep = (360f - gap * 2 - usedSweep).coerceAtLeast(0f)
-            // Used arc
-            drawArc(
-                color = usedColor,
-                startAngle = -90f + gap,
-                sweepAngle = usedSweep,
-                useCenter = false,
-                style = Stroke(width = stroke, cap = StrokeCap.Round)
-            )
-            // Remaining arc
-            drawArc(
-                color = restColor,
-                startAngle = -90f + gap + usedSweep + gap,
-                sweepAngle = restSweep,
-                useCenter = false,
-                style = Stroke(width = stroke, cap = StrokeCap.Round)
-            )
-        }
+        androidx.compose.material3.CircularProgressIndicator(
+            progress = { fraction },
+            modifier = Modifier.size(30.dp),
+            color = if (warn) cs.error else cs.primary,
+            trackColor = cs.outlineVariant,
+            strokeWidth = 3.dp,
+            strokeCap = StrokeCap.Round,
+            gapSize = 3.dp
+        )
         Text(
-            "${(fraction * 100).toInt()}",
-            style = MaterialTheme.typography.labelLarge.copy(fontSize = androidx.compose.ui.unit.TextUnit(9f, androidx.compose.ui.unit.TextUnitType.Sp)),
+            text = if (percent < 1) "0" else "$percent",
+            fontSize = 9.sp,
             color = if (warn) cs.error else cs.onSurfaceVariant,
             fontWeight = FontWeight.SemiBold
         )

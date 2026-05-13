@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.biji.notes.data.Conversation
 import com.biji.notes.data.MODEL_REASONER
+import com.biji.notes.ui.glass.TopFade
 import com.biji.notes.ui.glass.bouncyClickable
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -90,35 +91,40 @@ fun ConversationListScreen(
                 },
                 scrollBehavior = scrollBehavior,
                 colors = TopAppBarDefaults.largeTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    scrolledContainerColor = MaterialTheme.colorScheme.background,
+                    containerColor = Color.Transparent,
+                    scrolledContainerColor = Color.Transparent,
                     titleContentColor = MaterialTheme.colorScheme.onBackground
                 )
             )
         }
     ) { inner ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                start = 16.dp, end = 16.dp,
-                top = inner.calculateTopPadding(),
-                bottom = inner.calculateBottomPadding() +
-                    contentPadding.calculateBottomPadding() + 24.dp
-            ),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            item { NewChatCard(onClick = onNew) }
-            if (conversations.isEmpty()) {
-                item { EmptyHint() }
-            } else {
-                items(conversations, key = { it.id }) { c ->
-                    ConversationRow(
-                        convo = c,
-                        onClick = { onOpen(c.id) },
-                        onDelete = { vm.deleteConversation(c.id) }
-                    )
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 16.dp, end = 16.dp,
+                    top = inner.calculateTopPadding(),
+                    bottom = inner.calculateBottomPadding() +
+                        contentPadding.calculateBottomPadding() + 24.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item { NewChatCard(onClick = onNew) }
+                if (conversations.isEmpty()) {
+                    item { EmptyHint() }
+                } else {
+                    items(conversations, key = { it.id }) { c ->
+                        ConversationRow(
+                            convo = c,
+                            onClick = { onOpen(c.id) },
+                            onDelete = { vm.deleteConversation(c.id) }
+                        )
+                    }
                 }
             }
+            // Same fade transition as the chat page: list content
+            // dissolves into the background before reaching the title row.
+            TopFade(modifier = Modifier.align(Alignment.TopCenter))
         }
     }
 

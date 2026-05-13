@@ -17,6 +17,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
@@ -255,49 +256,64 @@ private fun NavSlot(
     modifier: Modifier = Modifier
 ) {
     val cs = MaterialTheme.colorScheme
-    Box(
-        modifier = modifier
-            .padding(horizontal = 4.dp, vertical = 6.dp)
-            .clip(RoundedCornerShape(50))
-            .bouncyClickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        if (selected) {
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(cs.primary)
-                    .padding(horizontal = 18.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    activeIcon,
-                    contentDescription = label,
-                    modifier = Modifier.size(18.dp),
-                    tint = cs.onPrimary
+    // AnimatedContent gives the "capsule expand / shrink" transition the
+    // user asked for; the bouncyClickable lives on the *visible* slot
+    // content so the MD3 ripple shows on the pill or icon itself, not
+    // on the outer transparent slot bounds.
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        AnimatedContent(
+            targetState = selected,
+            transitionSpec = {
+                val springSpec = spring<Float>(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
                 )
-                Spacer(Modifier.size(6.dp))
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = cs.onPrimary,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-        } else {
-            Box(
-                Modifier
-                    .padding(horizontal = 8.dp, vertical = 6.dp)
-                    .size(36.dp)
-                    .clip(CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    inactiveIcon,
-                    contentDescription = label,
-                    modifier = Modifier.size(22.dp),
-                    tint = cs.onSurfaceVariant
-                )
+                (fadeIn(tween(180)) + scaleIn(initialScale = 0.85f, animationSpec = springSpec))
+                    .togetherWith(fadeOut(tween(140)) + scaleOut(targetScale = 0.85f, animationSpec = springSpec))
+                    .using(SizeTransform(clip = false))
+            },
+            label = "navSlot"
+        ) { isSelected ->
+            if (isSelected) {
+                Row(
+                    modifier = Modifier
+                        .padding(vertical = 6.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(cs.primary)
+                        .bouncyClickable(onClick = onClick)
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        activeIcon,
+                        contentDescription = label,
+                        modifier = Modifier.size(18.dp),
+                        tint = cs.onPrimary
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.onPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            } else {
+                Box(
+                    Modifier
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .bouncyClickable(onClick = onClick),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        inactiveIcon,
+                        contentDescription = label,
+                        modifier = Modifier.size(22.dp),
+                        tint = cs.onSurfaceVariant
+                    )
+                }
             }
         }
     }

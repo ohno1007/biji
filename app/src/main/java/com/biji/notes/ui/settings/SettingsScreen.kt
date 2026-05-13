@@ -68,6 +68,7 @@ import com.biji.notes.data.MODEL_CHAT
 import com.biji.notes.data.MODEL_REASONER
 import com.biji.notes.ui.chat.BalanceState
 import com.biji.notes.ui.chat.ChatViewModel
+import com.biji.notes.ui.glass.TopFade
 import com.biji.notes.ui.glass.bouncyClickable
 import com.biji.notes.ui.glass.mdSurface
 import androidx.compose.foundation.background
@@ -123,13 +124,14 @@ fun SettingsScreen(
                 },
                 scrollBehavior = scrollBehavior,
                 colors = TopAppBarDefaults.largeTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    scrolledContainerColor = MaterialTheme.colorScheme.background,
+                    containerColor = Color.Transparent,
+                    scrolledContainerColor = Color.Transparent,
                     titleContentColor = MaterialTheme.colorScheme.onBackground
                 )
             )
         }
     ) { inner ->
+        Box(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
@@ -311,6 +313,8 @@ fun SettingsScreen(
                 }
             }
         }
+        TopFade(modifier = Modifier.align(Alignment.TopCenter))
+        }
     }
 }
 
@@ -319,33 +323,29 @@ fun SettingsScreen(
 // =====================================================================
 
 /**
- * iOS-style group card: a single rounded white surface that wraps its
- * rows. Within the card, rows are separated by inset hairline dividers
- * ([InsetDivider]); between cards is just gap, so the cream background
- * "镂空" through.
+ * Per-row stand-alone cards. Within a "group" they're spaced by [Gap]; the
+ * cream background bleeds through between them, no drawn divider line –
+ * canonical MD3 "list item with spacing" pattern.
  */
 @Composable
 private fun Group(content: @Composable () -> Unit) {
     Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(GroupShape)
-            .background(MaterialTheme.colorScheme.surfaceContainer)
+        Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(Gap)
     ) { content() }
 }
 
-private val rowShape = androidx.compose.foundation.shape.RoundedCornerShape(0.dp)
+private val Gap = 6.dp
+private val rowShape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
 
 @Composable
-private fun rowBackground(): Color = androidx.compose.ui.graphics.Color.Transparent
+private fun rowBackground(): Color = MaterialTheme.colorScheme.surfaceContainer
 
 @Composable
 private fun InsetDivider() {
-    HorizontalDivider(
-        modifier = Modifier.padding(start = 56.dp),
-        thickness = 0.5.dp,
-        color = MaterialTheme.colorScheme.outlineVariant
-    )
+    // Replaced with negative-space spacing (the Group does the work). Kept
+    // as a no-op so existing call sites still compile.
+    Spacer(Modifier.height(0.dp))
 }
 
 /**

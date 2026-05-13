@@ -104,14 +104,54 @@ class DeepSeekClient {
                     val contentType = (response.header("Content-Type") ?: "").lowercase()
 
                     val toolBuf = ToolCallBuffer()
-                    if (contentType.contains("event-stream")) {
-                        readSse(body.source(), toolBuf, this@callbackFlow::trySend)
-                    } else {
-                        val text = body.string()
-                        emitCompleteJson(text, toolBuf, this@callbackFlow::trySend)
+                    var sawAnyChunk = false
+                    val watchedSend: (ChatEvent) -> Unit = { ev ->
+                        if (ev is ChatEvent.Delta || ev is ChatEvent.Reasoning ||
+                            ev is ChatEvent.ToolCalls
+                        ) sawAnyChunk = true
+                        trySend(ev)
+                    }
+
+                    when {
+                        contentType.contains("event-stream") ->
+                            readSse(body.source(), toolBuf, watchedSend)
+                        contentType.contains("json") -> {
+                            val text = body.string()
+                            emitCompleteJson(text, toolBuf, watchedSend)
+                        }
+                        else -> {
+                            // Unknown / missing content-type. Read into a
+                            // buffer and decide what to do based on the
+                            // body itself.
+                            val text = body.string()
+                            val trimmed = text.trimStart()
+                            when {
+                                trimmed.startsWith("{") ->
+                                    emitCompleteJson(text, toolBuf, watchedSend)
+                                trimmed.startsWith("data:") ->
+                                    readSse(okio.Buffer().writeUtf8(text), toolBuf, watchedSend)
+                                else -> trySend(
+                                    ChatEvent.Error(
+                                        "无法识别的响应格式（Content-Type: $contentType）：" +
+                                            text.take(200).ifBlank { "（空响应体）" }
+                                    )
+                                )
+                            }
+                        }
                     }
                     val calls = toolBuf.build()
-                    if (calls.isNotEmpty()) trySend(ChatEvent.ToolCalls(calls))
+                    if (calls.isNotEmpty()) {
+                        trySend(ChatEvent.ToolCalls(calls))
+                        sawAnyChunk = true
+                    }
+                    if (!sawAnyChunk) {
+                        trySend(
+                            ChatEvent.Error(
+                                "API 响应解析后没有任何 content / reasoning_content / tool_calls。" +
+                                    "Content-Type: $contentType。可能是代理对 stream_options / tools 不兼容。"
+                            )
+                        )
+                    }
                     trySend(ChatEvent.Done)
                 }
             } catch (_: CancellationException) {
@@ -248,6 +288,13 @@ class DeepSeekClient {
                 if (buf.isNotEmpty()) buf.append('\n')
                 buf.append(payload)
             }
+            // ignore "event:", "id:", "retry:", ":comment" lines
+        }
+        // EOF: some servers omit the final blank-line terminator. Drain
+        // whatever's still buffered so the last chunk isn't dropped.
+        if (buf.isNotEmpty()) {
+            val data = buf.toString()
+            if (data != "[DONE]") parseStreamChunk(data, toolBuf, emit)
         }
     }
 
