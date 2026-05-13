@@ -84,6 +84,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
@@ -103,6 +104,10 @@ import com.biji.notes.data.MODEL_REASONER
 import com.biji.notes.data.Message
 import com.biji.notes.data.MessageKind
 import com.biji.notes.data.Role
+import com.biji.notes.net.Tools
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import com.biji.notes.ui.glass.bouncyClickable
 import com.biji.notes.ui.markdown.MarkdownText
 import com.biji.notes.voice.VoiceState
@@ -111,52 +116,44 @@ import kotlinx.coroutines.launch
 /** Shared-element key for the bottom dock (nav pill ↔ chat composer). */
 const val DOCK_SHARED_KEY = "biji-bottom-dock"
 
-/** A single visible row in the chat log. Tool results that arrive
- *  back-to-back are batched into one [Workflow] item so they read as a
- *  single Codex-style sequence rather than a stack of full-width cards. */
+/** A single visible row in the chat log. */
 sealed interface ChatItem {
     val key: Any
     data class Plain(val message: Message) : ChatItem {
         override val key: Any get() = "p-${message.id}"
     }
-    data class Workflow(val entries: List<Message>) : ChatItem {
-        override val key: Any get() = "wf-${entries.first().id}-${entries.last().id}"
+    /** Inline "Searched for X" chip for a web_search tool result. */
+    data class SearchChip(val message: Message) : ChatItem {
+        override val key: Any get() = "s-${message.id}"
     }
 }
 
 /**
- * Walk through the message list in chronological order, batching every
- * run of consecutive `TOOL_RESULT` messages into a single workflow. The
- * silent assistant carrier rows that own the `tool_calls` array don't
- * render as their own bubble but they're left in the stream so the
- * grouper can detect a workflow already in flight.
+ * Walk through the message list in chronological order. Tool results
+ * become inline [ChatItem.SearchChip] entries (web_search only — read_url
+ * is hidden because its article body is already folded into the assistant
+ * answer that follows). The silent assistant carrier rows that own the
+ * `tool_calls` array don't render their own bubble.
  */
 internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
     val out = mutableListOf<ChatItem>()
-    val pending = mutableListOf<Message>()
-    fun flush() {
-        if (pending.isNotEmpty()) {
-            out += ChatItem.Workflow(pending.toList())
-            pending.clear()
-        }
-    }
     for (m in messages) {
         if (m.archived) continue
         when {
-            m.kind == MessageKind.TOOL_RESULT -> pending += m
-            // Silent assistant carrier (only tool_calls, no text & no
-            // reasoning) — keep the workflow open.
+            m.kind == MessageKind.TOOL_RESULT -> {
+                val kind = runCatching {
+                    Lite.parseToJsonElement(m.toolData.orEmpty())
+                        .jsonObject["kind"]?.jsonPrimitive?.contentOrNull
+                }.getOrNull()
+                if (kind == Tools.WEB_SEARCH) out += ChatItem.SearchChip(m)
+                // read_url and any other tool: hidden from the chat log
+            }
+            // Silent assistant carrier (only tool_calls, no text & no reasoning) — hidden.
             m.role == Role.ASSISTANT && m.toolData != null &&
                 m.content.isBlank() && m.reasoning.isNullOrBlank() -> Unit
-            // Anything visible (user bubble, summary, assistant content/
-            // reasoning, errors etc.) breaks the workflow.
-            else -> {
-                flush()
-                out += ChatItem.Plain(m)
-            }
+            else -> out += ChatItem.Plain(m)
         }
     }
-    flush()
     return out
 }
 
@@ -181,6 +178,7 @@ fun ChatScreen(
     val modelsState by vm.models.collectAsState()
     val voiceState by vm.voiceState.collectAsState()
     val voiceVisible by vm.voiceVisible.collectAsState()
+    val workflow by vm.workflow.collectAsState()
     val ctx = LocalContext.current
     val convoThinking = conversations.firstOrNull { it.id == convoId }?.thinking == true
 
@@ -228,8 +226,8 @@ fun ChatScreen(
                     when (item) {
                         is ChatItem.Plain ->
                             MessageItem(m = item.message, onOpenUrl = vm::openWebUrl)
-                        is ChatItem.Workflow ->
-                            WorkflowCard(entries = item.entries, onOpenUrl = vm::openWebUrl)
+                        is ChatItem.SearchChip ->
+                            SearchedForChip(message = item.message, onOpenUrl = vm::openWebUrl)
                     }
                 }
                 if (toolStatus != null) {
@@ -293,6 +291,22 @@ fun ChatScreen(
                     )
                 }
             } else Modifier
+        // Workflow status panel — hangs above the composer for the
+        // duration of a multi-step tool run. Auto-hides when empty.
+        AnimatedVisibility(
+            visible = workflow.isNotEmpty(),
+            enter = fadeIn(tween(180)) +
+                slideInVertically(initialOffsetY = { it / 2 }),
+            exit = fadeOut(tween(140)) +
+                androidx.compose.animation.slideOutVertically(targetOffsetY = { it / 2 }),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = ComposerArea + 4.dp)
+        ) {
+            WorkflowPanel(steps = workflow)
+        }
+
         Composer(
             value = input,
             onValueChange = { input = it },
@@ -1189,6 +1203,130 @@ private fun ErrorRow(message: String, onDismiss: () -> Unit) {
         Text(message, style = MaterialTheme.typography.bodyMedium, color = cs.error)
     }
 }
+
+/**
+ * Stage-tracker panel that floats above the composer while a multi-tool
+ * turn is in flight. 80% of the screen width, frosted-glass surface,
+ * one row per step (running / done / error). Hidden when the workflow
+ * list is empty.
+ */
+@Composable
+private fun WorkflowPanel(steps: List<WorkflowStep>) {
+    val cs = MaterialTheme.colorScheme
+    var open by remember { mutableStateOf(true) }
+    val rotation by animateFloatAsState(
+        targetValue = if (open) 180f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "wfPanelChev"
+    )
+    val active = steps.lastOrNull { it.state == WorkflowStepState.RUNNING } ?: steps.last()
+    Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier
+                .fillMaxWidth(0.8f)
+                .clip(RoundedCornerShape(18.dp))
+                .background(cs.surface.copy(alpha = 0.85f))
+                .androidx_border_compat(cs.outlineVariant.copy(alpha = 0.7f))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .bouncyClickable(pressedScale = 0.99f) { open = !open }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                StepIcon(state = active.state)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (active.state == WorkflowStepState.RUNNING)
+                        active.label
+                    else
+                        "${steps.size} 步已完成",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cs.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    Icons.Rounded.ExpandMore,
+                    contentDescription = if (open) "收起" else "展开",
+                    modifier = Modifier.size(16.dp).rotate(rotation),
+                    tint = cs.onSurfaceVariant
+                )
+            }
+            AnimatedVisibility(
+                visible = open,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    steps.forEachIndexed { i, s ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${i + 1}.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = cs.onSurfaceVariant
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            StepIcon(state = s.state)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                s.label,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = cs.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StepIcon(state: WorkflowStepState) {
+    val cs = MaterialTheme.colorScheme
+    when (state) {
+        WorkflowStepState.RUNNING ->
+            androidx.compose.material3.CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 1.5.dp,
+                color = cs.primary
+            )
+        WorkflowStepState.DONE ->
+            Icon(
+                Icons.Rounded.Check,
+                contentDescription = null,
+                modifier = Modifier.size(13.dp),
+                tint = cs.primary
+            )
+        WorkflowStepState.ERROR ->
+            Icon(
+                Icons.Outlined.AutoAwesome,
+                contentDescription = null,
+                modifier = Modifier.size(13.dp),
+                tint = cs.error
+            )
+    }
+}
+
+private fun Modifier.androidx_border_compat(color: Color) =
+    this.then(
+        Modifier.drawBehind {
+            drawRect(
+                color = color,
+                size = size,
+                style = Stroke(width = 0.5.dp.toPx())
+            )
+        }
+    )
 
 @Composable
 private fun EmptyChatHint() {

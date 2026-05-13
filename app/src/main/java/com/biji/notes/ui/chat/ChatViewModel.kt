@@ -37,6 +37,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
 data class ModelsState(
@@ -58,6 +59,14 @@ data class ContextUsage(
     val fraction: Float get() = if (limit <= 0L) 0f else (tokens.toFloat() / limit).coerceIn(0f, 1f)
     companion object { const val DEFAULT_LIMIT = 64_000L }
 }
+
+enum class WorkflowStepState { RUNNING, DONE, ERROR }
+
+data class WorkflowStep(
+    val tool: String,        // "web_search" / "read_url" / ...
+    val label: String,       // human-readable: "联网搜索: 特朗普"
+    val state: WorkflowStepState
+)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(
@@ -94,6 +103,13 @@ class ChatViewModel(
 
     private val _toolStatus = MutableStateFlow<String?>(null)
     val toolStatus: StateFlow<String?> = _toolStatus.asStateFlow()
+
+    // Multi-stage workflow panel anchored above the composer. Resets at
+    // the start of each user turn; each tool call appends a RUNNING step
+    // that flips to DONE / ERROR when the tool finishes. The whole list
+    // clears when the streaming turn ends.
+    private val _workflow = MutableStateFlow<List<WorkflowStep>>(emptyList())
+    val workflow: StateFlow<List<WorkflowStep>> = _workflow.asStateFlow()
 
     private val _models = MutableStateFlow(ModelsState())
     val models: StateFlow<ModelsState> = _models.asStateFlow()
@@ -213,6 +229,7 @@ class ChatViewModel(
             _isStreaming.value = true
             _streamError.value = null
             _toolStatus.value = null
+            _workflow.value = emptyList()
 
             try {
                 maybeCompactContext(convoId)
@@ -220,6 +237,7 @@ class ChatViewModel(
             } finally {
                 _isStreaming.value = false
                 _toolStatus.value = null
+                _workflow.value = emptyList()
             }
 
             maybeSummarizeTitle(convoId)
@@ -295,6 +313,12 @@ class ChatViewModel(
 
             for (call in toolCalls) {
                 _toolStatus.value = friendlyToolStatus(call)
+                val stepLabel = workflowLabel(call)
+                _workflow.value = _workflow.value + WorkflowStep(
+                    tool = call.name,
+                    label = stepLabel,
+                    state = WorkflowStepState.RUNNING
+                )
                 val (forModel, uiJson) = runCatching { toolExec.run(call) }
                     .getOrElse { e ->
                         "工具失败: ${e.message}" to buildJsonObject {
@@ -302,6 +326,15 @@ class ChatViewModel(
                             put("message", e.message ?: e.javaClass.simpleName)
                         }
                     }
+                val done = uiJson["error"] == null
+                _workflow.value = _workflow.value.toMutableList().also { list ->
+                    val idx = list.indexOfLast { it.state == WorkflowStepState.RUNNING }
+                    if (idx >= 0) {
+                        list[idx] = list[idx].copy(
+                            state = if (done) WorkflowStepState.DONE else WorkflowStepState.ERROR
+                        )
+                    }
+                }
                 chat.addMessage(
                     convoId = convoId,
                     role = Role.TOOL,
@@ -312,6 +345,27 @@ class ChatViewModel(
                 )
             }
             _toolStatus.value = null
+        }
+    }
+
+    /** Friendly per-step label rendered inside the workflow panel. */
+    private fun workflowLabel(call: com.biji.notes.net.ToolCall): String {
+        val args = runCatching {
+            kotlinx.serialization.json.Json.parseToJsonElement(call.arguments).jsonObject
+        }.getOrNull()
+        return when (call.name) {
+            Tools.WEB_SEARCH -> {
+                val q = args?.get("query")?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.content.orEmpty()
+                if (q.isBlank()) "联网搜索" else "联网搜索 “$q”"
+            }
+            Tools.READ_URL -> {
+                val url = args?.get("url")?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.content.orEmpty()
+                val host = runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("")
+                if (host.isBlank()) "网页解析" else "网页解析 $host"
+            }
+            else -> call.name
         }
     }
 
