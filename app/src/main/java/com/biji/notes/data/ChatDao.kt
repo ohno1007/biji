@@ -48,4 +48,10 @@ interface ChatDao {
 
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun deleteMessage(id: Long)
+
+    @Query("SELECT * FROM messages ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun getRecentForIndex(limit: Int = 5000): List<Message>
+
+    @Query("UPDATE messages SET tool_data = :data WHERE id = :id")
+    suspend fun setToolData(id: Long, data: String?)
 }

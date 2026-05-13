@@ -79,6 +79,7 @@ import androidx.compose.ui.unit.dp
 import com.biji.notes.data.MODEL_CHAT
 import com.biji.notes.data.MODEL_REASONER
 import com.biji.notes.data.Message
+import com.biji.notes.data.MessageKind
 import com.biji.notes.data.Role
 import com.biji.notes.ui.glass.bouncyClickable
 import com.biji.notes.ui.markdown.MarkdownText
@@ -96,6 +97,7 @@ fun ChatScreen(
     val convoId by vm.activeConvoId.collectAsState()
     val conversations by vm.conversations.collectAsState()
     val title = conversations.firstOrNull { it.id == convoId }?.title ?: "DeepSeek"
+    val toolStatus by vm.toolStatus.collectAsState()
 
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -135,7 +137,12 @@ fun ChatScreen(
             if (messages.isEmpty()) {
                 item { EmptyChatHint() }
             } else {
-                items(messages, key = { it.id }) { m -> MessageItem(m = m) }
+                items(messages, key = { it.id }) { m ->
+                    MessageItem(m = m, onOpenUrl = vm::openWebUrl)
+                }
+                if (toolStatus != null) {
+                    item { ToolStatusPill(text = toolStatus!!) }
+                }
                 if (error != null) {
                     item { ErrorRow(message = error!!, onDismiss = vm::dismissError) }
                 }
@@ -324,7 +331,33 @@ private fun IconBtn(
 // =====================================================================
 
 @Composable
-private fun MessageItem(m: Message) {
+private fun MessageItem(m: Message, onOpenUrl: (String) -> Unit) {
+    // Tool-call placeholder records (assistant content empty + tool_data
+    // present) carry the chat-protocol payload only; the *tool result*
+    // rows below render the actual UI.
+    if (m.role == Role.ASSISTANT && m.kind == com.biji.notes.data.MessageKind.TEXT &&
+        m.content.isBlank() && m.reasoning.isNullOrBlank() && m.toolData == null) {
+        return
+    }
+    if (m.role == Role.ASSISTANT && m.toolData != null && m.content.isBlank()) {
+        // tool_call carrier – no UI; the tool_result row that follows will
+        // render the search results.
+        return
+    }
+    if (m.kind == MessageKind.TOOL_RESULT) {
+        AnimatedVisibility(
+            visible = true,
+            enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) +
+                slideInVertically(initialOffsetY = { it / 6 }, animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                ))
+        ) {
+            ToolMessageCard(message = m, onOpenUrl = onOpenUrl)
+        }
+        return
+    }
+
     val isUser = m.role == Role.USER
     AnimatedVisibility(
         visible = true,
@@ -338,6 +371,31 @@ private fun MessageItem(m: Message) {
             )
     ) {
         if (isUser) UserBubble(m.content) else AssistantBlock(m)
+    }
+}
+
+@Composable
+private fun ToolStatusPill(text: String) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(cs.surfaceContainerHigh)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        androidx.compose.material3.CircularProgressIndicator(
+            modifier = Modifier.size(14.dp),
+            strokeWidth = 2.dp,
+            color = cs.primary
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            color = cs.onSurface,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
 

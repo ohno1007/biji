@@ -21,6 +21,9 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Thermostat
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.rounded.Check
@@ -233,7 +236,36 @@ fun SettingsScreen(
                 }
             }
 
-            // ---- Group: 系统提示词 ----------------------------------------
+            // ---- Group: 工具与记忆 ----------------------------------------
+        item {
+            Group {
+                ToggleRow(
+                    icon = Icons.Outlined.Search,
+                    title = "联网搜索",
+                    subtitle = "允许模型调用 web_search / read_url 工具",
+                    checked = settings.webSearch,
+                    onChange = vm::setWebSearch
+                )
+                InsetDivider()
+                ToggleRow(
+                    icon = Icons.Outlined.Memory,
+                    title = "长期记忆",
+                    subtitle = "用 BM25 在过去对话里检索相关片段注入上下文",
+                    checked = settings.longMemory,
+                    onChange = vm::setLongMemory
+                )
+                InsetDivider()
+                ToggleRow(
+                    icon = Icons.Outlined.Notifications,
+                    title = "完成通知",
+                    subtitle = "AI 回答完成时在后台时弹通知",
+                    checked = settings.notify,
+                    onChange = vm::setNotify
+                )
+            }
+        }
+
+        // ---- Group: 系统提示词 ----------------------------------------
             item {
                 Group {
                     KeyValueRow(

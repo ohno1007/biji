@@ -1,9 +1,13 @@
 package com.biji.notes
 
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Spring
@@ -13,7 +17,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
@@ -30,6 +33,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +48,7 @@ import com.biji.notes.ui.chat.ChatViewModel
 import com.biji.notes.ui.chat.ConversationListScreen
 import com.biji.notes.ui.settings.SettingsScreen
 import com.biji.notes.ui.theme.BijiTheme
+import com.biji.notes.ui.webview.WebViewScreen
 
 private const val TAB_CHATS = "chats"
 private const val TAB_SETTINGS = "settings"
@@ -59,7 +64,11 @@ class MainActivity : ComponentActivity() {
                     factory = ChatViewModel.factory(
                         chat = app.chatRepository,
                         settings = app.settingsRepository,
-                        client = app.deepSeekClient
+                        client = app.deepSeekClient,
+                        memory = app.memoryService,
+                        toolExec = app.toolExecutor,
+                        notifier = app.chatNotifier,
+                        isForeground = app::isForeground
                     )
                 )
                 AppRoot(vm)
@@ -73,7 +82,18 @@ class MainActivity : ComponentActivity() {
 private fun AppRoot(vm: ChatViewModel) {
     var tab by remember { mutableStateOf(TAB_CHATS) }
     val activeConvo by vm.activeConvoId.collectAsState()
-    val showBottomBar = activeConvo == null
+    val openWebUrl by vm.openWebUrl.collectAsState()
+    val showBottomBar = activeConvo == null && openWebUrl == null
+
+    // POST_NOTIFICATIONS – ask once on launch on API 33+.
+    val notifLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* user choice persisted by system */ }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -82,9 +102,7 @@ private fun AppRoot(vm: ChatViewModel) {
         bottomBar = {
             AnimatedContent(
                 targetState = showBottomBar,
-                transitionSpec = {
-                    fadeIn(tween(160)) togetherWith fadeOut(tween(120))
-                },
+                transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(120)) },
                 label = "bottomBar"
             ) { visible ->
                 if (visible) {
@@ -136,7 +154,7 @@ private fun AppRoot(vm: ChatViewModel) {
         }
     ) { outerPadding ->
         AnimatedContent(
-            targetState = Pair(tab, activeConvo),
+            targetState = Triple(tab, activeConvo, openWebUrl),
             transitionSpec = {
                 val spec = spring<Float>(
                     dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -148,26 +166,24 @@ private fun AppRoot(vm: ChatViewModel) {
             },
             label = "screen",
             modifier = Modifier.fillMaxSize()
-        ) { (currentTab, convoId) ->
+        ) { (currentTab, convoId, webUrl) ->
             when {
+                webUrl != null -> {
+                    BackHandler { vm.closeWebUrl() }
+                    WebViewScreen(initialUrl = webUrl, onClose = { vm.closeWebUrl() })
+                }
                 currentTab == TAB_CHATS && convoId != null -> {
                     BackHandler { vm.clearActive() }
-                    ChatScreen(
-                        vm = vm,
-                        onBack = { vm.clearActive() }
-                    )
+                    ChatScreen(vm = vm, onBack = { vm.clearActive() })
                 }
-                currentTab == TAB_CHATS -> {
-                    ConversationListScreen(
-                        vm = vm,
-                        contentPadding = outerPadding,
-                        onOpen = { id -> vm.openConversation(id) },
-                        onNew = { vm.newConversation() }
-                    )
-                }
+                currentTab == TAB_CHATS -> ConversationListScreen(
+                    vm = vm,
+                    contentPadding = outerPadding,
+                    onOpen = { id -> vm.openConversation(id) },
+                    onNew = { vm.newConversation() }
+                )
                 else -> SettingsScreen(vm = vm, contentPadding = outerPadding)
             }
         }
     }
 }
-

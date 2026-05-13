@@ -25,14 +25,20 @@ class ChatRepository(private val dao: ChatDao) {
         convoId: Long,
         role: String,
         content: String,
-        reasoning: String? = null
+        reasoning: String? = null,
+        kind: String = MessageKind.TEXT,
+        toolData: String? = null,
+        toolCallId: String? = null
     ): Long {
         val id = dao.insertMessage(
             Message(
                 conversationId = convoId,
                 role = role,
                 content = content,
-                reasoning = reasoning
+                reasoning = reasoning,
+                kind = kind,
+                toolData = toolData,
+                toolCallId = toolCallId
             )
         )
         dao.touchConversation(convoId)
@@ -41,4 +47,11 @@ class ChatRepository(private val dao: ChatDao) {
 
     suspend fun updateAssistantStream(id: Long, content: String, reasoning: String?) =
         dao.updateMessageBody(id, content, reasoning)
+
+    suspend fun setToolData(id: Long, data: String?) = dao.setToolData(id, data)
+
+    /** Returns the latest N text messages across all conversations,
+     *  used to seed the BM25 long-term-memory index. */
+    suspend fun getCorpus(limit: Int = 5000): List<Message> =
+        dao.getRecentForIndex(limit).filter { it.kind == MessageKind.TEXT }
 }

@@ -3,6 +3,7 @@ package com.biji.notes.data
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -19,7 +20,10 @@ data class AppSettings(
     val baseUrl: String = "https://api.deepseek.com",
     val model: String = MODEL_CHAT,
     val systemPrompt: String = "",
-    val temperature: Float = 1.0f
+    val temperature: Float = 1.0f,
+    val webSearch: Boolean = true,
+    val longMemory: Boolean = true,
+    val notify: Boolean = true
 ) {
     val thinking: Boolean get() = model == MODEL_REASONER
 }
@@ -32,6 +36,9 @@ class SettingsRepository(private val ctx: Context) {
         val MODEL = stringPreferencesKey("model")
         val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
         val TEMPERATURE = stringPreferencesKey("temperature")
+        val WEB_SEARCH = booleanPreferencesKey("web_search")
+        val LONG_MEMORY = booleanPreferencesKey("long_memory")
+        val NOTIFY = booleanPreferencesKey("notify")
     }
 
     val settings: Flow<AppSettings> = ctx.settingsStore.data.map { p ->
@@ -40,33 +47,30 @@ class SettingsRepository(private val ctx: Context) {
             baseUrl = p[K.BASE_URL]?.ifBlank { null } ?: "https://api.deepseek.com",
             model = p[K.MODEL]?.ifBlank { null } ?: MODEL_CHAT,
             systemPrompt = p[K.SYSTEM_PROMPT].orEmpty(),
-            temperature = p[K.TEMPERATURE]?.toFloatOrNull() ?: 1.0f
+            temperature = p[K.TEMPERATURE]?.toFloatOrNull() ?: 1.0f,
+            webSearch = p[K.WEB_SEARCH] ?: true,
+            longMemory = p[K.LONG_MEMORY] ?: true,
+            notify = p[K.NOTIFY] ?: true
         )
     }
 
-    suspend fun setApiKey(value: String) {
-        ctx.settingsStore.edit { it[K.API_KEY] = value.trim() }
-    }
-
-    suspend fun setBaseUrl(value: String) {
+    suspend fun setApiKey(v: String) { ctx.settingsStore.edit { it[K.API_KEY] = v.trim() } }
+    suspend fun setBaseUrl(v: String) {
         ctx.settingsStore.edit {
-            it[K.BASE_URL] = value.trim().ifBlank { "https://api.deepseek.com" }
+            it[K.BASE_URL] = v.trim().ifBlank { "https://api.deepseek.com" }
         }
     }
-
-    suspend fun setModel(value: String) {
-        ctx.settingsStore.edit { it[K.MODEL] = value.trim().ifBlank { MODEL_CHAT } }
+    suspend fun setModel(v: String) {
+        ctx.settingsStore.edit { it[K.MODEL] = v.trim().ifBlank { MODEL_CHAT } }
     }
-
-    suspend fun setThinking(on: Boolean) {
-        setModel(if (on) MODEL_REASONER else MODEL_CHAT)
+    suspend fun setThinking(on: Boolean) = setModel(if (on) MODEL_REASONER else MODEL_CHAT)
+    suspend fun setSystemPrompt(v: String) {
+        ctx.settingsStore.edit { it[K.SYSTEM_PROMPT] = v }
     }
-
-    suspend fun setSystemPrompt(value: String) {
-        ctx.settingsStore.edit { it[K.SYSTEM_PROMPT] = value }
+    suspend fun setTemperature(v: Float) {
+        ctx.settingsStore.edit { it[K.TEMPERATURE] = v.toString() }
     }
-
-    suspend fun setTemperature(value: Float) {
-        ctx.settingsStore.edit { it[K.TEMPERATURE] = value.toString() }
-    }
+    suspend fun setWebSearch(v: Boolean) { ctx.settingsStore.edit { it[K.WEB_SEARCH] = v } }
+    suspend fun setLongMemory(v: Boolean) { ctx.settingsStore.edit { it[K.LONG_MEMORY] = v } }
+    suspend fun setNotify(v: Boolean) { ctx.settingsStore.edit { it[K.NOTIFY] = v } }
 }

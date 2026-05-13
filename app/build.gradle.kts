@@ -73,6 +73,12 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
 
+    implementation("org.jsoup:jsoup:1.17.2")
+    implementation("net.dankito.readability4j:readability4j:1.0.8")
+
+    implementation("androidx.webkit:webkit:1.11.0")
+    implementation("androidx.lifecycle:lifecycle-process:2.8.6")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
