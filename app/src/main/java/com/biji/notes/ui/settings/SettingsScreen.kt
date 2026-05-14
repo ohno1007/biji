@@ -220,7 +220,6 @@ fun SettingsScreen(
                         NavRow(
                             icon = Icons.Outlined.AutoAwesome,
                             title = "模型",
-                            subtitle = settings.model,
                             onClick = { showModels = !showModels }
                         )
                         AnimatedVisibility(
@@ -256,7 +255,6 @@ fun SettingsScreen(
                         ToggleRow(
                             icon = Icons.Outlined.AutoAwesome,
                             title = "默认深度思考",
-                            subtitle = "新建对话时自动开启<think>提示，已存在的对话不影响",
                             checked = settings.defaultThinking,
                             onChange = vm::setDefaultThinking
                         )
@@ -269,7 +267,6 @@ fun SettingsScreen(
                         ToggleRow(
                             icon = Icons.Outlined.Search,
                             title = "联网搜索",
-                            subtitle = "允许模型调用 web_search / read_url 工具",
                             checked = settings.webSearch,
                             onChange = vm::setWebSearch
                         )
@@ -277,7 +274,6 @@ fun SettingsScreen(
                         ToggleRow(
                             icon = Icons.Outlined.Memory,
                             title = "长期记忆",
-                            subtitle = "用 BM25 在过去对话里检索相关片段注入上下文",
                             checked = settings.longMemory,
                             onChange = vm::setLongMemory
                         )
@@ -285,7 +281,6 @@ fun SettingsScreen(
                         ToggleRow(
                             icon = Icons.Outlined.Notifications,
                             title = "完成通知",
-                            subtitle = "AI 回答完成时在后台时弹通知",
                             checked = settings.notify,
                             onChange = vm::setNotify
                         )
@@ -327,8 +322,7 @@ fun SettingsScreen(
                     Group {
                         BaseRow(
                             icon = Icons.Outlined.Info,
-                            title = "Biji",
-                            subtitle = "1.2 · DeepSeek 流式聊天",
+                            title = "Biji 1.2",
                             trailing = {}
                         )
                     }
@@ -494,7 +488,6 @@ private fun NavRow(
 private fun ToggleRow(
     icon: ImageVector,
     title: String,
-    subtitle: String,
     checked: Boolean,
     onChange: (Boolean) -> Unit
 ) {
@@ -504,7 +497,6 @@ private fun ToggleRow(
     BaseRow(
         icon = icon,
         title = title,
-        subtitle = subtitle,
         onClick = { onChange(!checked) }
     ) {
         Switch(

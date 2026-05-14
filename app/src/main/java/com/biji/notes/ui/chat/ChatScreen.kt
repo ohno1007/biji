@@ -136,25 +136,38 @@ sealed interface ChatItem {
     data class SearchGroup(val messages: List<Message>) : ChatItem {
         override val key: Any get() = "sg-${messages.first().id}-${messages.last().id}"
     }
+    /** One or more consecutive reasoning-only assistant carriers
+     *  (i.e. tool-call carriers whose only visible output is reasoning).
+     *  Merged into a single collapsible "思考过程" toggle so the chat
+     *  doesn't show four identical-looking thinking blocks in a row. */
+    data class MergedReasoning(val messages: List<Message>) : ChatItem {
+        override val key: Any get() = "mr-${messages.first().id}-${messages.last().id}"
+    }
 }
 
 /**
- * Walk through the message list in chronological order, batching every
- * run of consecutive web_search tool-results into one
- * [ChatItem.SearchGroup] so the chips render tightly stacked (like a
- * reasoning toggle and its body) rather than with the chat's default
- * 18dp gap between unrelated turns.
+ * Walk through the message list in chronological order, batching:
+ *  - consecutive web_search tool-results into one [ChatItem.SearchGroup]
+ *  - consecutive reasoning-only assistant carriers into one
+ *    [ChatItem.MergedReasoning]
  *
- * read_url and other tool kinds are silently dropped — the article body
- * is already folded into the next assistant answer.
+ * read_url and other non-search tool results are dropped — the article
+ * body is already folded into the next assistant answer.
  */
 internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
     val out = mutableListOf<ChatItem>()
-    val pending = mutableListOf<Message>()
-    fun flush() {
-        if (pending.isNotEmpty()) {
-            out += ChatItem.SearchGroup(pending.toList())
-            pending.clear()
+    val searchBuf = mutableListOf<Message>()
+    val reasoningBuf = mutableListOf<Message>()
+    fun flushSearch() {
+        if (searchBuf.isNotEmpty()) {
+            out += ChatItem.SearchGroup(searchBuf.toList())
+            searchBuf.clear()
+        }
+    }
+    fun flushReasoning() {
+        if (reasoningBuf.isNotEmpty()) {
+            out += ChatItem.MergedReasoning(reasoningBuf.toList())
+            reasoningBuf.clear()
         }
     }
     for (m in messages) {
@@ -163,19 +176,33 @@ internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
             Lite.parseToJsonElement(m.toolData.orEmpty())
                 .jsonObject["kind"]?.jsonPrimitive?.contentOrNull
         }.getOrNull() == Tools.WEB_SEARCH
+        val isHiddenTool = m.kind == MessageKind.TOOL_RESULT && !isSearch
+        val isReasoningOnlyCarrier = m.role == Role.ASSISTANT &&
+            !m.reasoning.isNullOrBlank() && m.content.isBlank()
+        val isSilentCarrier = m.role == Role.ASSISTANT && m.toolData != null &&
+            m.content.isBlank() && m.reasoning.isNullOrBlank()
         when {
-            isSearch -> pending += m
-            m.kind == MessageKind.TOOL_RESULT -> Unit  // non-search tools hidden
-            // Silent assistant carrier (only tool_calls, no text & no reasoning) — hidden.
-            m.role == Role.ASSISTANT && m.toolData != null &&
-                m.content.isBlank() && m.reasoning.isNullOrBlank() -> Unit
+            isSearch -> {
+                flushReasoning()
+                searchBuf += m
+            }
+            // Hidden tools and silent carriers don't break either buffer:
+            // they're invisible, so consecutive reasoning across them
+            // should still merge into one block.
+            isHiddenTool || isSilentCarrier -> Unit
+            isReasoningOnlyCarrier -> {
+                flushSearch()
+                reasoningBuf += m
+            }
             else -> {
-                flush()
+                flushSearch()
+                flushReasoning()
                 out += ChatItem.Plain(m)
             }
         }
     }
-    flush()
+    flushSearch()
+    flushReasoning()
     return out
 }
 
@@ -274,7 +301,22 @@ fun ChatScreen(
                                 }
                             }
                         }
+                        is ChatItem.MergedReasoning -> {
+                            ReasoningBlock(
+                                reasoning = item.messages
+                                    .mapNotNull { it.reasoning?.takeIf { r -> r.isNotBlank() } }
+                                    .joinToString("\n\n")
+                            )
+                        }
                     }
+                }
+                // Trailing copy button — only when not actively streaming
+                // and the last visible assistant turn has real text.
+                val lastAssistantContent = messages.lastOrNull {
+                    it.role == Role.ASSISTANT && it.content.isNotBlank()
+                }?.content?.let { stripToolCallMarkup(it) }
+                if (!streaming && !lastAssistantContent.isNullOrBlank()) {
+                    item { TrailingCopyButton(text = lastAssistantContent) }
                 }
                 if (toolStatus != null) {
                     item { StatusPill(text = toolStatus!!) }
@@ -851,8 +893,6 @@ private fun Color.luminance(): Float = 0.2126f * red + 0.7152f * green + 0.0722f
 
 @Composable
 private fun AssistantBlock(m: Message, onOpenUrl: (String) -> Unit = {}) {
-    val cs = MaterialTheme.colorScheme
-    val clipboard = LocalClipboardManager.current
     Column(Modifier.fillMaxWidth()) {
         if (!m.reasoning.isNullOrBlank()) {
             ReasoningBlock(m.reasoning)
@@ -861,32 +901,80 @@ private fun AssistantBlock(m: Message, onOpenUrl: (String) -> Unit = {}) {
         if (m.content.isBlank() && m.reasoning.isNullOrBlank()) {
             TypingDots()
         } else if (m.content.isNotBlank()) {
-            MarkdownText(markdown = m.content, onOpenUrl = onOpenUrl)
-            if (m.content.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .bouncyClickable(pressedScale = 0.94f) {
-                            clipboard.setText(AnnotatedString(m.content))
-                        }
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Rounded.ContentCopy,
-                        contentDescription = "复制",
-                        modifier = Modifier.size(13.dp),
-                        tint = cs.onSurfaceVariant
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "复制",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = cs.onSurfaceVariant
-                    )
-                }
+            // Display-clean content: scrub the model's occasional
+            // leakage of raw `<||DSML|| tool_calls>` / `<|tool_call|>`
+            // XML-ish markup that some proxies emit when their tool
+            // routing fails.
+            val cleaned = stripToolCallMarkup(m.content)
+            if (cleaned.isNotBlank()) {
+                MarkdownText(markdown = cleaned, onOpenUrl = onOpenUrl)
             }
+        }
+    }
+}
+
+/**
+ * Strip text-form tool-call markup that some proxy models leak into the
+ * assistant's text stream when their tool routing falls apart. We don't
+ * try to *execute* these — just hide them from the rendered output so
+ * the user sees the clean prose, not a wall of pseudo-XML.
+ */
+internal fun stripToolCallMarkup(raw: String): String {
+    var s = raw
+    // Closed `<||TAG|| ...>...</||TAG|| ...>` blocks.
+    s = Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*?</\\|\\|[A-Za-z]+\\|\\|[^>]*>")
+        .replace(s, "")
+    // `<|tool_call|>...</|tool_call|>` (gpt / qwen style).
+    s = Regex("<\\|tool_calls?\\|>[\\s\\S]*?</\\|tool_calls?\\|>").replace(s, "")
+    // Mid-stream half-open `<||TAG|| ...` runs we never matched — drop
+    // everything from the open marker to the end of the string so the
+    // partial markup doesn't bleed into the rendered text while the
+    // model is still typing.
+    s = Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*$").replace(s, "")
+    s = Regex("<\\|tool_calls?\\|>[\\s\\S]*$").replace(s, "")
+    return s.trim()
+}
+
+/**
+ * Trailing copy button rendered once at the end of the chat list when
+ * the latest assistant turn is fully streamed. Tap copies the most
+ * recent assistant answer's clean text.
+ */
+@Composable
+private fun TrailingCopyButton(text: String) {
+    val cs = MaterialTheme.colorScheme
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(text) { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(copied) {
+        if (copied) {
+            kotlinx.coroutines.delay(1500)
+            copied = false
+        }
+    }
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .bouncyClickable(pressedScale = 0.94f) {
+                    clipboard.setText(AnnotatedString(text))
+                    copied = true
+                }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                contentDescription = if (copied) "已复制" else "复制完整回答",
+                modifier = Modifier.size(14.dp),
+                tint = if (copied) cs.primary else cs.onSurfaceVariant
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (copied) "已复制" else "复制完整回答",
+                style = MaterialTheme.typography.labelLarge,
+                color = if (copied) cs.primary else cs.onSurfaceVariant,
+                fontWeight = FontWeight.Medium
+            )
         }
     }
 }
