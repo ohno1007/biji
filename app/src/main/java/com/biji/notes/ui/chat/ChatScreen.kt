@@ -259,6 +259,8 @@ fun ChatScreen(
     var modelPickerOpen by remember { mutableStateOf(false) }
     var projectDrawerOpen by remember { mutableStateOf(false) }
     val latestUsage by vm.latestUsage.collectAsState()
+    val sessionSpentMap by vm.sessionTokenSpent.collectAsState()
+    val sessionSpent = sessionSpentMap[convoId ?: -1L] ?: 0L
 
     // Pull a fresh models list as soon as we land on a chat screen.
     LaunchedEffect(settings.apiKey, settings.baseUrl) { vm.ensureModelsLoaded() }
@@ -532,6 +534,7 @@ fun ChatScreen(
                 CacheDetailsPopup(
                     usage = ctxUsage,
                     details = latestUsage,
+                    sessionSpent = sessionSpent,
                     sharedTransitionScope = sharedTransitionScope,
                     animatedVisibilityScope = this@AnimatedVisibility,
                     onBack = { cacheDetailsOpen = false }
@@ -843,7 +846,7 @@ private fun ContextRing(
             }
         }
         Text(
-            "${(fraction * 100).toInt()}",
+            formatPercent(fraction, withSign = false),
             style = MaterialTheme.typography.labelSmall.copy(
                 fontSize = androidx.compose.ui.unit.TextUnit(10f, androidx.compose.ui.unit.TextUnitType.Sp)
             ),
@@ -1800,7 +1803,9 @@ private fun ContextStatsPopup(
     ) {
         Column(
             modifier = sharedMod
-                .widthIn(min = 280.dp, max = 360.dp)
+                // Fixed width so both context-stats popups share the
+                // exact same right-edge anchor and visual silhouette.
+                .width(340.dp)
                 .clip(RoundedCornerShape(28.dp))
                 .background(cs.surface)
                 .pointerInput(Unit) {
@@ -1842,7 +1847,7 @@ private fun ContextStatsPopup(
                         )
                     }
                     Text(
-                        "${(usage.fraction * 100).toInt()}%",
+                        formatPercent(usage.fraction),
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                         color = cs.onSurface
                     )
@@ -1961,6 +1966,23 @@ private fun formatTokens(n: Long): String =
         else -> n.toString()
     }
 
+/**
+ * Compact percentage display. Renders `<1%` when there's some
+ * non-zero usage that would otherwise round down to `0%` — keeps the
+ * UX honest about "you have used *some* of the context window" even
+ * when the integer-percent rounds to nothing. With [withSign] the
+ * percent suffix is appended.
+ */
+private fun formatPercent(fraction: Float, withSign: Boolean = true): String {
+    val pct = (fraction * 100).toInt()
+    val core = when {
+        fraction <= 0f -> "0"
+        pct <= 0 -> "<1"
+        else -> "$pct"
+    }
+    return if (withSign) "$core%" else core
+}
+
 // =====================================================================
 // Cache-details popup — second-level shared element from the
 // "已用 token" row of the context-stats card.
@@ -1971,6 +1993,7 @@ private fun formatTokens(n: Long): String =
 private fun CacheDetailsPopup(
     usage: ContextUsage,
     details: UsageDetails,
+    sessionSpent: Long,
     sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
     animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope,
     onBack: () -> Unit
@@ -1998,7 +2021,9 @@ private fun CacheDetailsPopup(
     ) {
         Column(
             modifier = sharedMod
-                .widthIn(min = 280.dp, max = 360.dp)
+                // Fixed width so both context-stats popups share the
+                // exact same right-edge anchor and visual silhouette.
+                .width(340.dp)
                 .clip(RoundedCornerShape(28.dp))
                 .background(cs.surface)
                 .pointerInput(Unit) { detectTapGestures { /* eat */ } }
@@ -2028,7 +2053,7 @@ private fun CacheDetailsPopup(
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    "${(hitFraction * 100).toInt()}%",
+                    formatPercent(hitFraction),
                     style = MaterialTheme.typography.titleLarge.copy(
                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                         fontWeight = FontWeight.Bold
@@ -2078,9 +2103,11 @@ private fun CacheDetailsPopup(
             Spacer(Modifier.height(6.dp))
             StatsRow(label = "Completion tokens", value = formatTokens(details.completion))
             Spacer(Modifier.height(6.dp))
-            StatsRow(label = "总 token (本轮)", value = formatTokens(details.total))
+            StatsRow(label = "本次请求总计", value = formatTokens(details.total))
             Spacer(Modifier.height(6.dp))
-            StatsRow(label = "累计 token", value = formatTokens(usage.tokens))
+            StatsRow(label = "上下文占用", value = formatTokens(usage.tokens))
+            Spacer(Modifier.height(6.dp))
+            StatsRow(label = "本会话累计", value = formatTokens(sessionSpent))
             Spacer(Modifier.height(14.dp))
             Box(
                 modifier = Modifier

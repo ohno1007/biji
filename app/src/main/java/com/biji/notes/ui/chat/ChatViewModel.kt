@@ -127,6 +127,20 @@ class ChatViewModel(
     private val _latestUsage = MutableStateFlow(UsageDetails())
     val latestUsage: StateFlow<UsageDetails> = _latestUsage.asStateFlow()
 
+    // Per-conversation, app-session-scoped cumulative `total_tokens`
+    // summed across every API call that ran in this session. Useful
+    // for "how much did this conversation actually cost so far?"
+    // Lost on app restart (we don't persist it to keep the schema
+    // lean), but accurate while the chat stays open.
+    private val _sessionTokenSpent = MutableStateFlow<Map<Long, Long>>(emptyMap())
+    val sessionTokenSpent: StateFlow<Map<Long, Long>> = _sessionTokenSpent.asStateFlow()
+
+    private fun bumpSessionSpend(convoId: Long, delta: Long) {
+        if (delta <= 0L) return
+        val cur = _sessionTokenSpent.value[convoId] ?: 0L
+        _sessionTokenSpent.value = _sessionTokenSpent.value + (convoId to cur + delta)
+    }
+
     private val _models = MutableStateFlow(ModelsState())
     val models: StateFlow<ModelsState> = _models.asStateFlow()
 
@@ -338,6 +352,7 @@ class ChatViewModel(
                             cacheHit = ev.cacheHit,
                             cacheMiss = ev.cacheMiss
                         )
+                        bumpSessionSpend(convoId, ev.total)
                     }
                     ChatEvent.Done -> Unit
                     is ChatEvent.Error -> { sawError = ev.message }
@@ -459,6 +474,7 @@ class ChatViewModel(
                         cacheHit = ev.cacheHit,
                         cacheMiss = ev.cacheMiss
                     )
+                    bumpSessionSpend(convoId, ev.total)
                 }
                 is ChatEvent.Error -> { sawError = ev.message }
                 else -> Unit

@@ -8,8 +8,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -104,9 +102,17 @@ internal fun DiffView(
                 style = MaterialTheme.typography.labelLarge
             )
         }
-        LazyColumn(Modifier.fillMaxWidth().horizontalScroll(hScroll)) {
-            items(diff.size, key = { it }) { idx ->
-                val d = diff[idx]
+        // Plain Column (not Lazy) — DiffView is rendered inside chat
+        // LazyColumn items which give children infinite vertical
+        // constraints, illegal for nested LazyColumns. The diffs we
+        // get are typically small (chat tool-results, not full
+        // codebases) so non-lazy is fine.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(hScroll)
+        ) {
+            diff.take(2000).forEach { d ->
                 val (bg, fg, prefix) = when (d.type) {
                     DiffType.COMMON -> Triple(Color.Transparent, cs.onSurface, "  ")
                     DiffType.ADDED -> Triple(addedBg, addedFg, "+ ")
@@ -125,6 +131,14 @@ internal fun DiffView(
                         color = if (d.type == DiffType.COMMON) cs.onSurface else fg
                     )
                 }
+            }
+            if (diff.size > 2000) {
+                Text(
+                    "（diff 超过 2000 行，已截断）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(12.dp)
+                )
             }
         }
     }

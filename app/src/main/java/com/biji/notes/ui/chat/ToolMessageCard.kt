@@ -43,6 +43,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -264,6 +266,13 @@ fun SandboxToolCard(message: Message) {
             exit = fadeOut() + shrinkVertically()
         ) {
             Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)) {
+                // run_shell_command → render a high-contrast terminal
+                // view (bold prompt, dim metadata, red stderr / non-
+                // zero exit) instead of the flat monospace dump.
+                if (kind == "run_shell_command") {
+                    TerminalView(data)
+                    return@Column
+                }
                 // write_file with a before/after snapshot → render a
                 // proper diff inline in chat (the user no longer has
                 // to open the editor for a quick glance).
@@ -441,4 +450,155 @@ private fun describeSandboxImpl(kind: String, data: JsonObject): SandboxPreview 
         primaryLine = "",
         body = data.toString()
     )
+}
+
+/**
+ * High-contrast terminal-style render for run_shell_command results.
+ * - Prompt line `$ <cmd>` rendered bold in the primary tint.
+ * - Metadata line (cwd / exit / duration) dimmed; exit≠0 in red.
+ * - stdout: normal monospace.
+ * - stderr: red-tinted background pane.
+ * Each pane has its own background so the boundary between stdout
+ * and stderr is obvious at a glance.
+ */
+@Composable
+private fun TerminalView(data: JsonObject) {
+    val cs = MaterialTheme.colorScheme
+    val isDark = cs.background.luminance() < 0.5f
+    val command = data.str("command").orEmpty()
+    val cwd = data.str("workingDir").orEmpty()
+    val exit = data.int("exitCode") ?: -1
+    val duration = data.long("durationMs") ?: 0L
+    val timedOut = data.bool("timedOut") == true
+    val stdout = data.str("stdout").orEmpty()
+    val stderr = data.str("stderr").orEmpty()
+    var fullOpen by remember(command, stdout, stderr) { mutableStateOf(false) }
+    val totalLen = stdout.length + stderr.length
+
+    val mono = androidx.compose.ui.text.font.FontFamily.Monospace
+    val terminalBg = if (isDark) Color(0xFF0F0F12) else Color(0xFFF4F1EA)
+    val terminalFg = if (isDark) Color(0xFFE6E1D8) else Color(0xFF1A1A1F)
+    val promptFg = cs.primary
+    val errBg = if (isDark) Color(0xFF3A1518) else Color(0xFFFBE2E4)
+    val errFg = if (isDark) Color(0xFFE07C84) else Color(0xFFB42E3F)
+    val metaFg = cs.onSurfaceVariant
+    val exitFg = if (exit == 0 && !timedOut) cs.primary else cs.error
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(terminalBg)
+            .padding(10.dp)
+    ) {
+        // Prompt
+        Row(verticalAlignment = androidx.compose.ui.Alignment.Top) {
+            Text(
+                "$ ",
+                fontFamily = mono,
+                color = promptFg,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                command,
+                fontFamily = mono,
+                color = terminalFg,
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        // Metadata
+        Text(
+            buildString {
+                append("# cwd=$cwd")
+                append("  exit=")
+            },
+            fontFamily = mono,
+            color = metaFg,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(top = 2.dp)
+        )
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text(
+                "exit $exit  ${duration}ms${if (timedOut) "  (TIMEOUT)" else ""}",
+                fontFamily = mono,
+                color = exitFg,
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+        // stdout
+        if (stdout.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            val previewOut = if (fullOpen) stdout else stdout.take(600)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(terminalBg.copy(alpha = if (isDark) 0.6f else 1f))
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    previewOut,
+                    fontFamily = mono,
+                    color = terminalFg,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        // stderr — its own red-tinted pane.
+        if (stderr.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            val previewErr = if (fullOpen) stderr else stderr.take(600)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(errBg)
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    previewErr,
+                    fontFamily = mono,
+                    color = errFg,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        // Second-level expand for long combined output.
+        if (totalLen > 600 && !fullOpen) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .bouncyClickable(pressedScale = 0.97f) { fullOpen = true }
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Text(
+                    "展开完整输出 ($totalLen 字符)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        } else if (fullOpen && totalLen > 600) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .bouncyClickable(pressedScale = 0.97f) { fullOpen = false }
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Text(
+                    "收起完整输出",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
 }
