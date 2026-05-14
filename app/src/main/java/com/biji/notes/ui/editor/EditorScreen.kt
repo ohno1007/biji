@@ -6,12 +6,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -41,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextRange
@@ -133,92 +138,14 @@ fun EditorScreen(
         Modifier
             .fillMaxSize()
             .background(cs.background)
-            .statusBarsPadding()
             .imePadding()
     ) {
-        Column(Modifier.fillMaxSize()) {
-            // Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                EditorIconButton(Icons.AutoMirrored.Rounded.ArrowBack, "返回", onBack)
-                Spacer(Modifier.width(4.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        path.substringAfterLast('/', path),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = cs.onBackground,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        when {
-                            dirty -> "未保存 · $lang"
-                            mode == EditorMode.DIFF -> "Diff · 对比 AI 修改前"
-                            else -> "$lang · ${fieldValue.text.length} chars"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (dirty) cs.error else cs.onSurfaceVariant,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis
-                    )
-                }
-                if (hasDiff) {
-                    EditorIconButton(
-                        Icons.Outlined.CompareArrows,
-                        "查看 AI 改动",
-                        {
-                            mode = if (mode == EditorMode.DIFF) EditorMode.VIEW
-                            else EditorMode.DIFF
-                        }
-                    )
-                }
-                EditorIconButton(
-                    if (mode == EditorMode.EDIT) Icons.Outlined.VisibilityOff
-                    else Icons.Outlined.Visibility,
-                    if (mode == EditorMode.EDIT) "切到查看" else "切到编辑",
-                    {
-                        mode = if (mode == EditorMode.EDIT) EditorMode.VIEW
-                        else EditorMode.EDIT
-                    }
-                )
-                Spacer(Modifier.width(2.dp))
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .bouncyClickable(enabled = dirty && !saving) {
-                            saving = true
-                            scope.launch {
-                                runCatching {
-                                    withContext(Dispatchers.IO) {
-                                        sandbox.writeFile(folder, path, fieldValue.text, append = false)
-                                    }
-                                }
-                                dirty = false
-                                saving = false
-                            }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (saving) {
-                        CircularProgressIndicator(
-                            Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = cs.primary
-                        )
-                    } else {
-                        Icon(
-                            Icons.Outlined.Save,
-                            contentDescription = "保存",
-                            modifier = Modifier.size(20.dp),
-                            tint = if (dirty) cs.primary else cs.onSurfaceVariant.copy(alpha = 0.4f)
-                        )
-                    }
-                }
-            }
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(top = 56.dp)
+        ) {
             // Body
             Box(
                 Modifier
@@ -330,7 +257,126 @@ fun EditorScreen(
                 Spacer(Modifier.navigationBarsPadding())
             }
         }
+
+        // Top fade — same vertical gradient as the chat screen so the
+        // content scrolls under a soft cream / dark veil rather than
+        // a hard edge.
+        EditorTopFade(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+        )
+
+        // Floating top bar — left title, right action cluster. Sits
+        // above the fade so the controls stay readable while the file
+        // scrolls underneath.
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            EditorIconButton(Icons.AutoMirrored.Rounded.ArrowBack, "返回", onBack)
+            Spacer(Modifier.width(4.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    path.substringAfterLast('/', path),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = cs.onBackground,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    when {
+                        dirty -> "未保存 · $lang"
+                        mode == EditorMode.DIFF -> "Diff · 对比 AI 修改前"
+                        else -> "$lang · ${fieldValue.text.length} chars"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (dirty) cs.error else cs.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (hasDiff) {
+                EditorIconButton(
+                    Icons.Outlined.CompareArrows,
+                    "查看 AI 改动",
+                    {
+                        mode = if (mode == EditorMode.DIFF) EditorMode.VIEW
+                        else EditorMode.DIFF
+                    }
+                )
+            }
+            EditorIconButton(
+                if (mode == EditorMode.EDIT) Icons.Outlined.VisibilityOff
+                else Icons.Outlined.Visibility,
+                if (mode == EditorMode.EDIT) "切到查看" else "切到编辑",
+                {
+                    mode = if (mode == EditorMode.EDIT) EditorMode.VIEW
+                    else EditorMode.EDIT
+                }
+            )
+            Spacer(Modifier.width(2.dp))
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .bouncyClickable(enabled = dirty && !saving) {
+                        saving = true
+                        scope.launch {
+                            runCatching {
+                                withContext(Dispatchers.IO) {
+                                    sandbox.writeFile(folder, path, fieldValue.text, append = false)
+                                }
+                            }
+                            dirty = false
+                            saving = false
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                if (saving) {
+                    CircularProgressIndicator(
+                        Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = cs.primary
+                    )
+                } else {
+                    Icon(
+                        Icons.Outlined.Save,
+                        contentDescription = "保存",
+                        modifier = Modifier.size(20.dp),
+                        tint = if (dirty) cs.primary else cs.onSurfaceVariant.copy(alpha = 0.4f)
+                    )
+                }
+            }
+        }
     }
+}
+
+/** Same vertical gradient TopFade as the chat screen — soft veil
+ *  fading from fully-opaque background at top to transparent below.
+ *  Status-bar inset is added in here so callers can just align it at
+ *  the top of the layout. */
+@Composable
+private fun EditorTopFade(modifier: Modifier = Modifier) {
+    val bg = MaterialTheme.colorScheme.background
+    val statusBarHeight =
+        WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(96.dp + statusBarHeight)
+            .background(
+                Brush.verticalGradient(
+                    0.0f to bg,
+                    0.55f to bg.copy(alpha = 0.92f),
+                    1.0f to bg.copy(alpha = 0f)
+                )
+            )
+    )
 }
 
 @Composable

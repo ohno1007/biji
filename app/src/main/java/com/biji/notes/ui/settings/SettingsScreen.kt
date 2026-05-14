@@ -46,7 +46,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -136,15 +136,15 @@ fun SettingsScreen(
             .nestedScroll(scrollBehavior.nestedScrollConnection),
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            LargeTopAppBar(
+            TopAppBar(
                 title = {
                     Text(
                         "设置",
-                        style = MaterialTheme.typography.displayLarge.copy(fontWeight = FontWeight.Bold)
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 },
                 scrollBehavior = scrollBehavior,
-                colors = TopAppBarDefaults.largeTopAppBarColors(
+                colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                     scrolledContainerColor = MaterialTheme.colorScheme.background,
                     titleContentColor = MaterialTheme.colorScheme.onBackground
@@ -309,7 +309,14 @@ fun SettingsScreen(
                                 onProbe = { vm.probeRoot() }
                             )
                             InsetDivider()
-                            DevEnvRow()
+                            DevEnvRow(runShell = { cmd ->
+                                val r = vm.sandbox.runShell(
+                                    folder = null,
+                                    command = cmd,
+                                    asRoot = settings.useRoot
+                                )
+                                r.exitCode to r.stdout
+                            })
                         }
                     }
                 }
@@ -775,18 +782,26 @@ private fun RootAccessRow(
 }
 
 /**
- * "一键初始化开发环境" — except we can't, because user-space apps on
- * stock Android can't `apt install gcc/cmake/ndk` etc. without root.
- * Instead the row opens a dialog explaining the situation and offering
- * to launch Termux (or its F-Droid listing if not installed); from
- * there the user can run `pkg install build-essential cmake clang
- * make` and our shell tool can call those via PATH.
+ * "一键初始化开发环境" — with the Root 模式 toggle on, the dialog
+ * adds an "扫描工具链" button that runs `which <tool>` for the common
+ * native build chain and reports which binaries are present on PATH.
+ * With root off we still surface the Termux suggestion. The dialog
+ * also exposes a button to launch Termux directly.
+ *
+ * [runShell] is the host's shell entry point — when null, the dialog
+ * hides the probe button. The lambda returns (exitCode, stdout) so
+ * the row can detect "exit 0 + non-empty path" as "tool installed".
  */
 @Composable
-private fun DevEnvRow() {
+private fun DevEnvRow(runShell: (suspend (String) -> Pair<Int, String>)? = null) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val cs = MaterialTheme.colorScheme
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var open by remember { mutableStateOf(false) }
+    var probing by remember { mutableStateOf(false) }
+    // (tool, present, path-or-stderr) — surfaces inline after a probe.
+    var probeReport by remember { mutableStateOf<List<Triple<String, Boolean, String>>>(emptyList()) }
+    val tools = listOf("gcc", "clang", "cmake", "make", "git", "python", "python3", "node")
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -848,6 +863,88 @@ private fun DevEnvRow() {
                         color = cs.onSurfaceVariant,
                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                     )
+                    if (runShell != null) {
+                        Spacer(Modifier.size(10.dp))
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(cs.primary.copy(alpha = 0.14f))
+                                .bouncyClickable(enabled = !probing, pressedScale = 0.96f) {
+                                    probing = true
+                                    probeReport = emptyList()
+                                    scope.launch {
+                                        val results = tools.map { tool ->
+                                            val (exit, out) = runCatching {
+                                                runShell("which $tool 2>/dev/null || command -v $tool 2>/dev/null")
+                                            }.getOrDefault(1 to "")
+                                            val path = out.trim().lineSequence().firstOrNull().orEmpty()
+                                            Triple(tool, exit == 0 && path.isNotBlank(), path)
+                                        }
+                                        probeReport = results
+                                        probing = false
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (probing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    color = cs.primary,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(Modifier.size(8.dp))
+                                Text(
+                                    "扫描中…",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = cs.primary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            } else {
+                                Text(
+                                    "扫描工具链（需 Root 模式 / Termux PATH）",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = cs.primary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                    if (probeReport.isNotEmpty()) {
+                        Spacer(Modifier.size(8.dp))
+                        probeReport.forEach { (tool, present, path) ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(vertical = 2.dp)
+                            ) {
+                                Text(
+                                    if (present) "✓" else "✗",
+                                    color = if (present) cs.primary else cs.error,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelLarge
+                                )
+                                Spacer(Modifier.size(8.dp))
+                                Text(
+                                    tool,
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    ),
+                                    color = cs.onSurface,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(Modifier.size(8.dp))
+                                Text(
+                                    if (present) path else "未找到",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    ),
+                                    color = cs.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {

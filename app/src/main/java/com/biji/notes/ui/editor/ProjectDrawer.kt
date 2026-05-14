@@ -79,8 +79,8 @@ fun ProjectDrawer(
 ) {
     AnimatedVisibility(
         visible = open,
-        enter = fadeIn(),
-        exit = fadeOut(),
+        enter = fadeIn(animationSpec = androidx.compose.animation.core.tween(220)),
+        exit = fadeOut(animationSpec = androidx.compose.animation.core.tween(180)),
         modifier = Modifier.fillMaxSize()
     ) {
         Box(
@@ -91,16 +91,27 @@ fun ProjectDrawer(
                     detectTapGestures { onDismiss() }
                 }
         ) {
+            // Inner content uses the same `open` flag so it animates in
+            // sync with the scrim. The enter spring overshoots ever so
+            // slightly (LowBouncy) for a softer landing; the exit
+            // pairs a quicker slide with an opacity fade so it doesn't
+            // linger off-screen.
             androidx.compose.animation.AnimatedVisibility(
                 visible = open,
                 enter = slideInHorizontally(
                     animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessMediumLow
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessLow
                     ),
                     initialOffsetX = { it }
-                ) + fadeIn(),
-                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+                ) + fadeIn(animationSpec = androidx.compose.animation.core.tween(220)),
+                exit = slideOutHorizontally(
+                    animationSpec = androidx.compose.animation.core.tween(
+                        durationMillis = 220,
+                        easing = androidx.compose.animation.core.FastOutSlowInEasing
+                    ),
+                    targetOffsetX = { it }
+                ) + fadeOut(animationSpec = androidx.compose.animation.core.tween(180)),
                 modifier = Modifier.align(Alignment.CenterEnd)
             ) {
                 DrawerBody(

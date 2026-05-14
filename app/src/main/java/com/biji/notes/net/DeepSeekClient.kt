@@ -349,15 +349,7 @@ class DeepSeekClient {
             // early chunks — `as?` makes that case a silent skip instead of
             // a hard cast failure.
             obj.objOrNull("usage")?.let { u ->
-                emit(
-                    ChatEvent.Usage(
-                        prompt = u.longOrNull("prompt_tokens") ?: 0L,
-                        completion = u.longOrNull("completion_tokens") ?: 0L,
-                        total = u.longOrNull("total_tokens") ?: 0L,
-                        cacheHit = u.longOrNull("prompt_cache_hit_tokens") ?: 0L,
-                        cacheMiss = u.longOrNull("prompt_cache_miss_tokens") ?: 0L
-                    )
-                )
+                emit(parseUsage(u))
             }
             // Some proxies (notably deepseek-v4-flash) send leading metadata
             // chunks with no `choices` at all, then start streaming. Skip
@@ -389,6 +381,47 @@ class DeepSeekClient {
     private fun JsonObject.longOrNull(key: String): Long? =
         (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.intOrNull?.toLong()
 
+    /**
+     * Parse a `usage` object into a [ChatEvent.Usage] regardless of
+     * which vendor convention the proxy follows.
+     *
+     * DeepSeek's native API ships separate `prompt_cache_hit_tokens`
+     * and `prompt_cache_miss_tokens`. OpenAI's spec (and many proxies
+     * — one-api / openrouter / v4-flash) uses a nested
+     * `prompt_tokens_details.cached_tokens` instead, with no explicit
+     * miss field. When only one side is reported, infer the other from
+     * the prompt total so the popup actually shows useful numbers
+     * instead of 缓存命中 = 0.
+     */
+    private fun parseUsage(u: JsonObject): ChatEvent.Usage {
+        val prompt = u.longOrNull("prompt_tokens") ?: 0L
+        val completion = u.longOrNull("completion_tokens") ?: 0L
+        val total = u.longOrNull("total_tokens") ?: (prompt + completion)
+        val rawHit = u.longOrNull("prompt_cache_hit_tokens")
+            ?: u.objOrNull("prompt_tokens_details")?.longOrNull("cached_tokens")
+            ?: u.objOrNull("prompt_tokens_details")?.longOrNull("cache_hit_tokens")
+        val rawMiss = u.longOrNull("prompt_cache_miss_tokens")
+            ?: u.objOrNull("prompt_tokens_details")?.longOrNull("cache_miss_tokens")
+        val hit = rawHit ?: 0L
+        val miss = when {
+            rawMiss != null -> rawMiss
+            rawHit != null && prompt > 0L -> (prompt - hit).coerceAtLeast(0L)
+            else -> 0L
+        }
+        val hitFinal = when {
+            rawHit != null -> hit
+            rawMiss != null && prompt > 0L -> (prompt - miss).coerceAtLeast(0L)
+            else -> 0L
+        }
+        return ChatEvent.Usage(
+            prompt = prompt,
+            completion = completion,
+            total = total,
+            cacheHit = hitFinal,
+            cacheMiss = miss
+        )
+    }
+
     private fun emitCompleteJson(
         text: String,
         toolBuf: ToolCallBuffer,
@@ -404,15 +437,7 @@ class DeepSeekClient {
                 return
             }
             obj.objOrNull("usage")?.let { u ->
-                emit(
-                    ChatEvent.Usage(
-                        prompt = u.longOrNull("prompt_tokens") ?: 0L,
-                        completion = u.longOrNull("completion_tokens") ?: 0L,
-                        total = u.longOrNull("total_tokens") ?: 0L,
-                        cacheHit = u.longOrNull("prompt_cache_hit_tokens") ?: 0L,
-                        cacheMiss = u.longOrNull("prompt_cache_miss_tokens") ?: 0L
-                    )
-                )
+                emit(parseUsage(u))
             }
             val choice = obj.arrOrNull("choices")?.firstOrNull()?.let { it as? JsonObject }
             if (choice == null) {

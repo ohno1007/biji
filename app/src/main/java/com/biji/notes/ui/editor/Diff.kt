@@ -25,6 +25,22 @@ internal enum class DiffType { COMMON, ADDED, REMOVED }
 internal data class DiffLine(val type: DiffType, val text: String)
 
 /**
+ * Whether [index]'s common line lies in the "neighborhood" of an
+ * actual addition / removal (within ±2 lines). Used to tint adjacent
+ * context with a faint green so reviewers can see the touched block.
+ */
+internal fun nearChange(lines: List<DiffLine>, index: Int, window: Int = 2): Boolean {
+    if (lines[index].type != DiffType.COMMON) return false
+    val lo = (index - window).coerceAtLeast(0)
+    val hi = (index + window).coerceAtMost(lines.size - 1)
+    for (i in lo..hi) {
+        val t = lines[i].type
+        if (t == DiffType.ADDED || t == DiffType.REMOVED) return true
+    }
+    return false
+}
+
+/**
  * Simple line-based LCS diff. Good enough for showing what the AI
  * changed in a single file — not trying to compete with `git diff`'s
  * Myers refinement, just produce a readable +/- view.
@@ -75,6 +91,11 @@ internal fun DiffView(
     val addedFg = if (isDark) Color(0xFF7EE2A0) else Color(0xFF1A6F32)
     val removedBg = if (isDark) Color(0xFF4A1F22) else Color(0xFFFAD2D5)
     val removedFg = if (isDark) Color(0xFFE07C84) else Color(0xFFB42E3F)
+    // Faint green tint for context lines (COMMON) that sit ±2 rows from
+    // an actual change — surfaces the "touched neighborhood" without
+    // looking like the line was itself modified.
+    val nearBg = if (isDark) Color(0xFF142A1A).copy(alpha = 0.55f)
+    else Color(0xFFEEFAF1)
 
     val diff = remember(before, after) { lineDiff(before, after) }
     val hScroll = rememberScrollState()
@@ -112,9 +133,11 @@ internal fun DiffView(
                 .fillMaxWidth()
                 .horizontalScroll(hScroll)
         ) {
-            diff.take(2000).forEach { d ->
+            diff.take(2000).forEachIndexed { idx, d ->
+                val isNear = d.type == DiffType.COMMON && nearChange(diff, idx)
                 val (bg, fg, prefix) = when (d.type) {
-                    DiffType.COMMON -> Triple(Color.Transparent, cs.onSurface, "  ")
+                    DiffType.COMMON ->
+                        Triple(if (isNear) nearBg else Color.Transparent, cs.onSurface, "  ")
                     DiffType.ADDED -> Triple(addedBg, addedFg, "+ ")
                     DiffType.REMOVED -> Triple(removedBg, removedFg, "- ")
                 }
