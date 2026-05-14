@@ -479,17 +479,18 @@ fun ChatScreen(
             )
         }
 
-        // Right-edge invisible swipe handle. 36-dp wide strip along the
-        // trailing edge, with `systemGestureExclusion` claiming the
-        // area so Android's right-edge back gesture stops eating our
-        // drag. Drag-from-right-to-left opens the project drawer. The
-        // handle hides while the drawer is already open.
+        // Right-edge invisible swipe handle. Skip the topbar (so the
+        // context ring + folder icon still get their taps) and the
+        // composer area (so the model chip + send button still work).
+        // 24-dp wide strip in the middle vertical span only.
         if (!projectDrawerOpen) {
             Box(
                 Modifier
                     .align(Alignment.CenterEnd)
+                    .statusBarsPadding()
+                    .padding(top = 60.dp, bottom = ComposerArea + 16.dp)
                     .fillMaxHeight()
-                    .width(36.dp)
+                    .width(24.dp)
                     .systemGestureExclusion()
                     .pointerInput(Unit) {
                         val threshold = with(density) { 6.dp.toPx() }
@@ -713,6 +714,7 @@ private fun TopBar(
             contentDescription = "项目文件",
             onClick = onTapDrawer
         )
+        Spacer(Modifier.width(2.dp))
         // Keep the ring's slot 40dp wide even when hidden, so the title's
         // weighted layout doesn't reflow when the popup opens. The
         // fully-qualified AnimatedVisibility call avoids the ambient

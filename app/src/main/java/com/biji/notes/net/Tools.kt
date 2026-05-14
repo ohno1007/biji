@@ -342,6 +342,12 @@ class ToolExecutor(
         val priorContent = runCatching { sandbox.readFile(path, maxBytes = 256 * 1024) }
             .getOrDefault("")
         sandbox.captureSnapshot(path, priorContent)
+        // Cap each side at 32 KB when round-tripping through the DB so a
+        // huge file rewrite can't bloat the chat message blob.
+        val capBytes = 32 * 1024
+        val beforeCapped = priorContent.take(capBytes)
+        val afterCapped = content.take(capBytes)
+        val truncated = priorContent.length > capBytes || content.length > capBytes
         return runCatching { sandbox.writeFile(path, content, append) }.fold(
             onSuccess = {
                 sandbox.markAiEdited(path)
@@ -350,6 +356,9 @@ class ToolExecutor(
                     put("path", path)
                     put("bytes", content.length)
                     put("append", append)
+                    put("before", beforeCapped)
+                    put("after", afterCapped)
+                    put("truncated", truncated)
                 }
                 val verb = if (append) "追加" else "写入"
                 "$verb 完成: $path (${content.length} bytes)" to ui

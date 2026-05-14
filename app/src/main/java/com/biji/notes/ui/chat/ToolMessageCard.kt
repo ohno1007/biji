@@ -264,7 +264,37 @@ fun SandboxToolCard(message: Message) {
             exit = fadeOut() + shrinkVertically()
         ) {
             Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)) {
-                // Preview = first ~600 chars; full body opens on second tap.
+                // write_file with a before/after snapshot → render a
+                // proper diff inline in chat (the user no longer has
+                // to open the editor for a quick glance).
+                if (kind == "write_file") {
+                    val before = data.str("before").orEmpty()
+                    val after = data.str("after").orEmpty()
+                    val truncated = data.bool("truncated") == true
+                    if (before.isNotEmpty() || after.isNotEmpty()) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(cs.surface)
+                        ) {
+                            com.biji.notes.ui.editor.DiffView(
+                                before = before,
+                                after = after
+                            )
+                        }
+                        if (truncated) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "（输出过长，diff 已截断到 32 KB 每侧）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = cs.onSurfaceVariant
+                            )
+                        }
+                        return@Column
+                    }
+                }
+                // Default path — preview ≤600 chars, second tap to expand.
                 val preview = body.take(600)
                 val isTruncated = body.length > preview.length
                 Box(
