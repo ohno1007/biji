@@ -8,12 +8,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.outlined.CompareArrows
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -30,6 +31,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,10 +41,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -56,15 +57,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private enum class EditorMode { VIEW, EDIT, DIFF }
+
 /**
- * Minimal in-app code editor backed by the local sandbox. Two modes:
- *  - View: read-only syntax-highlighted preview.
- *  - Edit: plain BasicTextField with syntax-highlight applied via the
- *    field's visualTransformation; saves through LocalSandbox.
+ * In-app sandbox-scoped code editor. Three modes:
+ *  - VIEW: read-only, SyntaxHighlight-colourised display.
+ *  - EDIT: BasicTextField + bottom completion strip (language keyword
+ *    + buffer-identifier prefix matches).
+ *  - DIFF: line-by-line comparison against the most recent pre-edit
+ *    snapshot taken by the AI write tool, if any.
  *
- * Language is inferred from the file extension; falls back to plain
- * text. No completion / next-word prediction in v1 — that needs a real
- * local model and is deferred.
+ * Completion / suggestion is local & lightweight — no LM behind it,
+ * but enough to take the edge off mobile-keyboard typing.
  */
 @Composable
 fun EditorScreen(
@@ -79,8 +83,10 @@ fun EditorScreen(
     var fieldValue by remember(path) { mutableStateOf(TextFieldValue("")) }
     var dirty by remember(path) { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf(false) }
+    var mode by remember { mutableStateOf(EditorMode.VIEW) }
     val scope = rememberCoroutineScope()
+    val aiEdited by sandbox.aiEditedPaths.collectAsState()
+    val hasDiff = path.trimStart('/') in aiEdited && sandbox.snapshotBefore(path) != null
 
     LaunchedEffect(path) {
         val body = withContext(Dispatchers.IO) {
@@ -88,7 +94,7 @@ fun EditorScreen(
         }
         body.fold(
             onSuccess = { content ->
-                fieldValue = TextFieldValue(content, selection = TextRange(0))
+                fieldValue = TextFieldValue(content, selection = TextRange(content.length))
                 loaded = true
             },
             onFailure = { err ->
@@ -100,6 +106,14 @@ fun EditorScreen(
 
     val lang = remember(path) { langFor(path) }
 
+    // Live completion suggestions for EDIT mode. Recomputed on every
+    // recompose — cheap enough that derivedStateOf would only add
+    // bookkeeping without a real benefit, and avoids a Kotlin type
+    // inference quirk where the delegate landed as `Any?`.
+    val completion: Pair<String, List<String>> =
+        if (mode == EditorMode.EDIT) suggestCompletions(fieldValue, lang)
+        else "" to emptyList()
+
     Box(
         Modifier
             .fillMaxSize()
@@ -108,7 +122,7 @@ fun EditorScreen(
             .imePadding()
     ) {
         Column(Modifier.fillMaxSize()) {
-            // Header.
+            // Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -126,16 +140,34 @@ fun EditorScreen(
                         maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        if (dirty) "未保存 · $lang" else "$lang · ${fieldValue.text.length} chars",
+                        when {
+                            dirty -> "未保存 · $lang"
+                            mode == EditorMode.DIFF -> "Diff · 对比 AI 修改前"
+                            else -> "$lang · ${fieldValue.text.length} chars"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = if (dirty) cs.error else cs.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
                 }
+                if (hasDiff) {
+                    EditorIconButton(
+                        Icons.Outlined.CompareArrows,
+                        "查看 AI 改动",
+                        {
+                            mode = if (mode == EditorMode.DIFF) EditorMode.VIEW
+                            else EditorMode.DIFF
+                        }
+                    )
+                }
                 EditorIconButton(
-                    if (editing) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                    if (editing) "切到查看" else "切到编辑",
-                    { editing = !editing }
+                    if (mode == EditorMode.EDIT) Icons.Outlined.VisibilityOff
+                    else Icons.Outlined.Visibility,
+                    if (mode == EditorMode.EDIT) "切到查看" else "切到编辑",
+                    {
+                        mode = if (mode == EditorMode.EDIT) EditorMode.VIEW
+                        else EditorMode.EDIT
+                    }
                 )
                 Spacer(Modifier.width(2.dp))
                 Box(
@@ -172,15 +204,15 @@ fun EditorScreen(
                     }
                 }
             }
-            // Body.
+            // Body
             Box(
                 Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 4.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .background(cs.surfaceContainer)
-                    .padding(12.dp)
-                    .navigationBarsPadding()
+                    .padding(if (mode == EditorMode.DIFF) 0.dp else 12.dp)
             ) {
                 when {
                     !loaded -> CircularProgressIndicator(
@@ -193,7 +225,11 @@ fun EditorScreen(
                         color = cs.error,
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    editing -> {
+                    mode == EditorMode.DIFF -> {
+                        val before = sandbox.snapshotBefore(path).orEmpty()
+                        DiffView(before = before, after = fieldValue.text)
+                    }
+                    mode == EditorMode.EDIT -> {
                         val hScroll = rememberScrollState()
                         val vScroll = rememberScrollState()
                         BasicTextField(
@@ -236,6 +272,21 @@ fun EditorScreen(
                         }
                     }
                 }
+            }
+            // Completion strip — only when actively editing.
+            if (mode == EditorMode.EDIT) {
+                val (prefix, sugs) = completion
+                CompletionStrip(
+                    prefix = prefix,
+                    suggestions = sugs,
+                    onPick = { sug ->
+                        fieldValue = applySuggestion(fieldValue, sug)
+                        dirty = true
+                    },
+                    modifier = Modifier.navigationBarsPadding()
+                )
+            } else {
+                Spacer(Modifier.navigationBarsPadding())
             }
         }
     }

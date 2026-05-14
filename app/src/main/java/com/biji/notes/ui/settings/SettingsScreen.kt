@@ -28,6 +28,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
@@ -292,6 +294,10 @@ fun SettingsScreen(
                             checked = settings.developerMode,
                             onChange = vm::setDeveloperMode
                         )
+                        if (settings.developerMode) {
+                            InsetDivider()
+                            SandboxPathRow(vm.sandbox.root.absolutePath)
+                        }
                     }
                 }
 
@@ -579,6 +585,81 @@ private fun IconAction(icon: ImageVector, onClick: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = cs.onSurface)
+    }
+}
+
+/** Read-only info row showing the local sandbox path with a copy
+ *  button. The path is the dir under `Android/data/<pkg>/files/projects/
+ *  default` — the user can put files there via the system file
+ *  manager and the assistant will see them through its sandbox
+ *  tools. */
+@Composable
+private fun SandboxPathRow(path: String) {
+    val cs = MaterialTheme.colorScheme
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var copied by remember(path) { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(copied) {
+        if (copied) {
+            kotlinx.coroutines.delay(1200)
+            copied = false
+        }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 60.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Outlined.FolderOpen,
+            contentDescription = null,
+            modifier = Modifier.size(22.dp),
+            tint = cs.onSurface
+        )
+        Spacer(Modifier.size(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "项目目录",
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                path,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                ),
+                color = cs.onSurfaceVariant,
+                maxLines = 2,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+        }
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .bouncyClickable(pressedScale = 0.95f) {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(path))
+                    copied = true
+                }
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                if (copied) Icons.Rounded.Check
+                else Icons.Rounded.ContentCopy,
+                contentDescription = "复制路径",
+                modifier = Modifier.size(14.dp),
+                tint = if (copied) cs.primary else cs.onSurfaceVariant
+            )
+            Spacer(Modifier.size(4.dp))
+            Text(
+                if (copied) "已复制" else "复制",
+                style = MaterialTheme.typography.labelLarge,
+                color = if (copied) cs.primary else cs.onSurfaceVariant,
+                fontWeight = FontWeight.Medium
+            )
+        }
     }
 }
 

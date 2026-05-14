@@ -31,10 +31,31 @@ class LocalSandbox(private val context: Context) {
     private val _aiEditedPaths = MutableStateFlow<Set<String>>(emptySet())
     val aiEditedPaths: StateFlow<Set<String>> = _aiEditedPaths.asStateFlow()
 
+    /** Pre-edit snapshots of each file the assistant has modified this
+     *  session, keyed by relative path. Captured *before* the write
+     *  applies, so the diff view can compare on-disk → on-disk-after. */
+    private val preEditSnapshots = mutableMapOf<String, String>()
+
     fun markAiEdited(path: String) {
         _aiEditedPaths.value = _aiEditedPaths.value + path.trimStart('/')
     }
-    fun clearAiEdited() { _aiEditedPaths.value = emptySet() }
+
+    /** Stash the current content of [path] (if any) so a later
+     *  [snapshotBefore] retrieval can render a diff. Idempotent on the
+     *  same path within a session — we keep the *earliest* snapshot so
+     *  the diff always traces back to the user's original file. */
+    fun captureSnapshot(path: String, content: String) {
+        val key = path.trimStart('/')
+        if (key !in preEditSnapshots) preEditSnapshots[key] = content
+    }
+
+    fun snapshotBefore(path: String): String? =
+        preEditSnapshots[path.trimStart('/')]
+
+    fun clearAiEdited() {
+        _aiEditedPaths.value = emptySet()
+        preEditSnapshots.clear()
+    }
 
     /** Project root. Created lazily; survives across runs. */
     val root: File

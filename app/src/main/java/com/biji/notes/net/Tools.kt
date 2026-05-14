@@ -336,6 +336,12 @@ class ToolExecutor(
         val path = args["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
         val content = args["content"]?.jsonPrimitive?.contentOrNull.orEmpty()
         val append = args["append"]?.jsonPrimitive?.contentOrNull?.equals("true", true) ?: false
+        // Capture the pre-edit content so the editor can render a diff
+        // afterwards. Silently swallow read errors — if the file
+        // doesn't exist yet the snapshot is just empty.
+        val priorContent = runCatching { sandbox.readFile(path, maxBytes = 256 * 1024) }
+            .getOrDefault("")
+        sandbox.captureSnapshot(path, priorContent)
         return runCatching { sandbox.writeFile(path, content, append) }.fold(
             onSuccess = {
                 sandbox.markAiEdited(path)
