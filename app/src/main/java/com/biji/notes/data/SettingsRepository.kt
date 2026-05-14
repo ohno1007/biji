@@ -27,7 +27,11 @@ data class AppSettings(
     /** Whether *new* conversations are created with the `<think>` instruction
      *  prepended. Independent from the active model — non-reasoner chats can
      *  still opt into thinking mode. Persisted in DataStore. */
-    val defaultThinking: Boolean = false
+    val defaultThinking: Boolean = false,
+    /** Enable the developer / engineering sandbox tool trio
+     *  (read_file / write_file / run_shell_command). When off, the
+     *  assistant can't touch the local filesystem. */
+    val developerMode: Boolean = false
 ) {
     /** True if the *currently selected model* itself does thinking (i.e.
      *  deepseek-reasoner). For per-conversation thinking, look at the
@@ -47,6 +51,7 @@ class SettingsRepository(private val ctx: Context) {
         val LONG_MEMORY = booleanPreferencesKey("long_memory")
         val NOTIFY = booleanPreferencesKey("notify")
         val DEFAULT_THINKING = booleanPreferencesKey("default_thinking")
+        val DEVELOPER_MODE = booleanPreferencesKey("developer_mode")
     }
 
     val settings: Flow<AppSettings> = ctx.settingsStore.data.map { p ->
@@ -59,7 +64,8 @@ class SettingsRepository(private val ctx: Context) {
             webSearch = p[K.WEB_SEARCH] ?: true,
             longMemory = p[K.LONG_MEMORY] ?: true,
             notify = p[K.NOTIFY] ?: true,
-            defaultThinking = p[K.DEFAULT_THINKING] ?: false
+            defaultThinking = p[K.DEFAULT_THINKING] ?: false,
+            developerMode = p[K.DEVELOPER_MODE] ?: false
         )
     }
 
@@ -83,5 +89,8 @@ class SettingsRepository(private val ctx: Context) {
     suspend fun setNotify(v: Boolean) { ctx.settingsStore.edit { it[K.NOTIFY] = v } }
     suspend fun setDefaultThinking(v: Boolean) {
         ctx.settingsStore.edit { it[K.DEFAULT_THINKING] = v }
+    }
+    suspend fun setDeveloperMode(v: Boolean) {
+        ctx.settingsStore.edit { it[K.DEVELOPER_MODE] = v }
     }
 }

@@ -83,6 +83,8 @@ private sealed interface Block {
 
 private val FenceRegex = Regex("^```([\\w+-]*)\\s*$")
 private val MathFenceRegex = Regex("^\\$\\$\\s*$")
+private val LatexBlockOpen = Regex("^\\\\\\[\\s*$")
+private val LatexBlockClose = Regex("^\\\\]\\s*$")
 private val HrRegex = Regex("^(-{3,}|_{3,}|\\*{3,})\\s*$")
 private val HeadingRegex = Regex("^(#{1,6})\\s+(.*)$")
 private val OrderedRegex = Regex("^(\\d+)\\.\\s+(.*)$")
@@ -121,6 +123,20 @@ private fun parseBlocks(source: String): List<Block> {
             out += Block.MathBlock(buf.toString().trimEnd('\n'))
             orderedCounters.clear(); continue
         }
+        // LaTeX-style block math: a line containing only `\[` opens, a
+        // line containing only `\]` closes. This is what the deepseek
+        // models actually emit for display math.
+        if (LatexBlockOpen.matches(trimmed)) {
+            val buf = StringBuilder(); i++
+            while (i < lines.size && !LatexBlockClose.matches(lines[i].trimStart())) {
+                buf.appendLine(lines[i]); i++
+            }
+            if (i < lines.size) i++
+            out += Block.MathBlock(buf.toString().trimEnd('\n'))
+            orderedCounters.clear(); continue
+        }
+        // Single-line `\[ … \]` shorthand — fall through to a paragraph
+        // and let the inline math handler render it.
         val fence = FenceRegex.matchEntire(trimmed)
         if (fence != null) {
             val lang = fence.groupValues[1]
@@ -223,6 +239,32 @@ private fun inline(
     val s = source
     while (i < s.length) {
         if (s[i] == '\n') { append('\n'); i++; continue }
+        // LaTeX bracket math: `\(...\)` inline, `\[...\]` single-line
+        // block-style inline (the multi-line variant becomes a Block
+        // up in parseBlocks). These are what most modern LLMs emit
+        // for math, in preference to dollar-sign syntax.
+        if (i + 1 < s.length && s[i] == '\\' && (s[i + 1] == '(' || s[i + 1] == '[')) {
+            val isBlock = s[i + 1] == '['
+            val closer = if (isBlock) "\\]" else "\\)"
+            val end = s.indexOf(closer, i + 2)
+            if (end != -1 && end > i + 2) {
+                val raw = s.substring(i + 2, end)
+                val alpha = if (isBlock) 0.08f else 0.06f
+                withStyle(
+                    SpanStyle(
+                        fontFamily = FontFamily.Serif,
+                        fontStyle = FontStyle.Italic,
+                        color = baseColor,
+                        background = baseColor.copy(alpha = alpha)
+                    )
+                ) {
+                    if (isBlock) append(' ')
+                    append(latexToUnicode(raw))
+                    if (isBlock) append(' ')
+                }
+                i = end + 2; continue
+            }
+        }
         // Inline math $$...$$ on a single line — common shorthand when
         // the assistant wraps a one-liner formula. Parsed before single $.
         if (i + 1 < s.length && s[i] == '$' && s[i + 1] == '$') {

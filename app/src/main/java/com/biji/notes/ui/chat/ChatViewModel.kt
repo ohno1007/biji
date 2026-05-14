@@ -282,7 +282,10 @@ class ChatViewModel(
                 model = s.model,
                 messages = msgs,
                 temperature = s.temperature,
-                tools = if (s.webSearch) Tools.definitions() else null
+                tools = Tools.definitions(
+                    webSearch = s.webSearch,
+                    sandbox = s.developerMode
+                ).takeIf { it.isNotEmpty() }
             ).collect { ev ->
                 when (ev) {
                     is ChatEvent.Delta -> {
@@ -463,6 +466,26 @@ class ChatViewModel(
                     ?.content.orEmpty()
                 val host = runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("")
                 if (host.isBlank()) "网页解析" else "网页解析 $host"
+            }
+            Tools.LIST_DIRECTORY -> {
+                val p = args?.get("path")?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.content.orEmpty()
+                "列目录 ${if (p.isBlank()) "/" else p}"
+            }
+            Tools.READ_FILE -> {
+                val p = args?.get("path")?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.content.orEmpty()
+                "读文件 $p"
+            }
+            Tools.WRITE_FILE -> {
+                val p = args?.get("path")?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.content.orEmpty()
+                "写文件 $p"
+            }
+            Tools.RUN_SHELL -> {
+                val c = args?.get("command")?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.content.orEmpty()
+                "运行 $ ${c.take(48)}${if (c.length > 48) "…" else ""}"
             }
             else -> call.name
         }
@@ -669,6 +692,9 @@ class ChatViewModel(
      *  available via [setConversationThinking]. */
     fun setDefaultThinking(on: Boolean) = viewModelScope.launch {
         settingsRepo.setDefaultThinking(on)
+    }
+    fun setDeveloperMode(on: Boolean) = viewModelScope.launch {
+        settingsRepo.setDeveloperMode(on)
     }
     fun setSystemPrompt(v: String) = viewModelScope.launch { settingsRepo.setSystemPrompt(v) }
     fun setTemperature(v: Float) = viewModelScope.launch { settingsRepo.setTemperature(v) }

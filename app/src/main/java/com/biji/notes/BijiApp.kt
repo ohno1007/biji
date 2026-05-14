@@ -12,6 +12,7 @@ import com.biji.notes.net.DeepSeekClient
 import com.biji.notes.net.ToolExecutor
 import com.biji.notes.net.WebSearchService
 import com.biji.notes.notif.ChatNotifier
+import com.biji.notes.sandbox.LocalSandbox
 
 class BijiApp : Application() {
 
@@ -20,7 +21,8 @@ class BijiApp : Application() {
     val settingsRepository: SettingsRepository by lazy { SettingsRepository(this) }
     val deepSeekClient: DeepSeekClient by lazy { DeepSeekClient() }
     val webSearchService: WebSearchService by lazy { WebSearchService() }
-    val toolExecutor: ToolExecutor by lazy { ToolExecutor(webSearchService) }
+    val localSandbox: LocalSandbox by lazy { LocalSandbox(this) }
+    val toolExecutor: ToolExecutor by lazy { ToolExecutor(webSearchService, localSandbox) }
     val memoryService: MemoryService by lazy { MemoryService(chatRepository) }
     val chatNotifier: ChatNotifier by lazy { ChatNotifier(this) }
     val voiceRecognizer: com.biji.notes.voice.VoiceRecognizer by lazy {

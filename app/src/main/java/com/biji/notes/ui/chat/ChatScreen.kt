@@ -136,6 +136,12 @@ sealed interface ChatItem {
     data class SearchGroup(val messages: List<Message>) : ChatItem {
         override val key: Any get() = "sg-${messages.first().id}-${messages.last().id}"
     }
+    /** Sandbox tool result (read_file / write_file / list_directory /
+     *  run_shell_command). Rendered as a code-style card with a
+     *  second-level expand for long output. */
+    data class SandboxTool(val message: Message) : ChatItem {
+        override val key: Any get() = "st-${message.id}"
+    }
     /** One or more consecutive reasoning-only assistant carriers
      *  (i.e. tool-call carriers whose only visible output is reasoning).
      *  Merged into a single collapsible "思考过程" toggle so the chat
@@ -172,11 +178,16 @@ internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
     }
     for (m in messages) {
         if (m.archived) continue
-        val isSearch = m.kind == MessageKind.TOOL_RESULT && runCatching {
+        val toolKind = if (m.kind == MessageKind.TOOL_RESULT) runCatching {
             Lite.parseToJsonElement(m.toolData.orEmpty())
                 .jsonObject["kind"]?.jsonPrimitive?.contentOrNull
-        }.getOrNull() == Tools.WEB_SEARCH
-        val isHiddenTool = m.kind == MessageKind.TOOL_RESULT && !isSearch
+        }.getOrNull() else null
+        val isSearch = toolKind == Tools.WEB_SEARCH
+        val isSandbox = toolKind == Tools.LIST_DIRECTORY ||
+            toolKind == Tools.READ_FILE ||
+            toolKind == Tools.WRITE_FILE ||
+            toolKind == Tools.RUN_SHELL
+        val isHiddenTool = m.kind == MessageKind.TOOL_RESULT && !isSearch && !isSandbox
         val isReasoningOnlyCarrier = m.role == Role.ASSISTANT &&
             !m.reasoning.isNullOrBlank() && m.content.isBlank()
         val isSilentCarrier = m.role == Role.ASSISTANT && m.toolData != null &&
@@ -185,6 +196,11 @@ internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
             isSearch -> {
                 flushReasoning()
                 searchBuf += m
+            }
+            isSandbox -> {
+                flushSearch()
+                flushReasoning()
+                out += ChatItem.SandboxTool(m)
             }
             // Hidden tools and silent carriers don't break either buffer:
             // they're invisible, so consecutive reasoning across them
@@ -300,6 +316,9 @@ fun ChatScreen(
                                     SearchedForChip(message = m, onOpenUrl = vm::openWebUrl)
                                 }
                             }
+                        }
+                        is ChatItem.SandboxTool -> {
+                            SandboxToolCard(item.message)
                         }
                         is ChatItem.MergedReasoning -> {
                             ReasoningBlock(

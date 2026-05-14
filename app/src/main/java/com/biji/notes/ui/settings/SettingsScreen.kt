@@ -27,6 +27,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
@@ -283,6 +284,13 @@ fun SettingsScreen(
                             title = "完成通知",
                             checked = settings.notify,
                             onChange = vm::setNotify
+                        )
+                        InsetDivider()
+                        ToggleRow(
+                            icon = Icons.Outlined.Build,
+                            title = "工程模式",
+                            checked = settings.developerMode,
+                            onChange = vm::setDeveloperMode
                         )
                     }
                 }
