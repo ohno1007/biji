@@ -115,9 +115,19 @@ fun EditorScreen(
     // recompose — cheap enough that derivedStateOf would only add
     // bookkeeping without a real benefit, and avoids a Kotlin type
     // inference quirk where the delegate landed as `Any?`.
-    val completion: Pair<String, List<String>> =
+    val completion: Pair<String, List<CompletionItem>> =
         if (mode == EditorMode.EDIT) suggestCompletions(fieldValue, lang)
         else "" to emptyList()
+
+    // Bracket / quote balance scan — runCatching just in case the
+    // simple state machine ever bumps into something pathological.
+    val errorRanges = remember(fieldValue.text, mode) {
+        if (mode != EditorMode.EDIT) emptyList()
+        else runCatching { findSyntaxIssues(fieldValue.text) }.getOrDefault(emptyList())
+    }
+    val syntaxTransform = remember(lang, isDark, errorRanges) {
+        SyntaxVisualTransformation(lang, isDark, errorRanges)
+    }
 
     Box(
         Modifier
@@ -252,7 +262,8 @@ fun EditorScreen(
                                 fontSize = 13.sp,
                                 color = cs.onSurface
                             ),
-                            cursorBrush = SolidColor(cs.primary)
+                            cursorBrush = SolidColor(cs.primary),
+                            visualTransformation = syntaxTransform
                         )
                     }
                     else -> {
@@ -278,14 +289,39 @@ fun EditorScreen(
                     }
                 }
             }
-            // Completion strip — only when actively editing.
+            // Completion strip + tiny error counter — only when actively
+            // editing. Errors flash a small red pill on the right end of
+            // the strip; tapping it does nothing for now (jump-to-issue
+            // would need a measured layout we don't track).
             if (mode == EditorMode.EDIT) {
                 val (prefix, sugs) = completion
+                if (errorRanges.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(cs.surfaceContainer)
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(cs.error)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "${errorRanges.size} 个语法问题（括号 / 引号未闭合）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = cs.error
+                        )
+                    }
+                }
                 CompletionStrip(
                     prefix = prefix,
                     suggestions = sugs,
-                    onPick = { sug ->
-                        fieldValue = applySuggestion(fieldValue, sug)
+                    onPick = { item ->
+                        fieldValue = applySuggestion(fieldValue, item)
                         dirty = true
                     },
                     modifier = Modifier.navigationBarsPadding()

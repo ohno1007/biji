@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -300,6 +301,8 @@ fun SettingsScreen(
                         if (settings.developerMode) {
                             InsetDivider()
                             SandboxPathRow(vm.sandbox.projectsBase.absolutePath)
+                            InsetDivider()
+                            DevEnvRow()
                         }
                     }
                 }
@@ -665,6 +668,108 @@ private fun SandboxPathRow(path: String) {
                 fontWeight = FontWeight.Medium
             )
         }
+    }
+}
+
+/**
+ * "一键初始化开发环境" — except we can't, because user-space apps on
+ * stock Android can't `apt install gcc/cmake/ndk` etc. without root.
+ * Instead the row opens a dialog explaining the situation and offering
+ * to launch Termux (or its F-Droid listing if not installed); from
+ * there the user can run `pkg install build-essential cmake clang
+ * make` and our shell tool can call those via PATH.
+ */
+@Composable
+private fun DevEnvRow() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    var open by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 60.dp)
+            .bouncyClickable(pressedScale = 0.99f) { open = true }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Outlined.Code,
+            contentDescription = null,
+            modifier = Modifier.size(22.dp),
+            tint = cs.onSurface
+        )
+        Spacer(Modifier.size(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "初始化开发环境",
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                "了解 Android 上 cmake / ndk / gcc 的安装方式",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant
+            )
+        }
+    }
+    if (open) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { open = false },
+            title = {
+                Text(
+                    "开发工具链",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        "biji 跑在 Android 沙箱里，无法直接 apt install cmake / ndk / gcc，也不能在应用进程内编译 native 代码。",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        "推荐流程：",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "1. 安装 Termux（F-Droid 版本最稳）。\n" +
+                            "2. 在 Termux 里执行：\n" +
+                            "   pkg update && pkg install build-essential cmake clang make git python\n" +
+                            "3. 回到 biji，工具链命令通过 sh -c 走 PATH 即可调用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.onSurfaceVariant,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    )
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    val pkg = "com.termux"
+                    val launch = ctx.packageManager.getLaunchIntentForPackage(pkg)
+                    if (launch != null) {
+                        ctx.startActivity(launch)
+                    } else {
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse("https://f-droid.org/packages/com.termux/")
+                        )
+                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        runCatching { ctx.startActivity(intent) }
+                    }
+                    open = false
+                }) {
+                    Text("打开 Termux")
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { open = false }) { Text("关闭") }
+            }
+        )
     }
 }
 

@@ -92,20 +92,105 @@ private val KeywordsByLang: Map<String, Set<String>> = mapOf(
     )
 )
 
+/** Snippet template: the literal text to insert (with `\n` for line
+ *  breaks and `\t` for tab), plus an optional caret marker `$0` that
+ *  will be expanded to the desired caret position. Per-language. */
+private val SnippetsByLang: Map<String, Map<String, String>> = mapOf(
+    "kotlin" to mapOf(
+        "if" to "if ($0) {\n    \n}",
+        "ife" to "if ($0) {\n    \n} else {\n    \n}",
+        "for" to "for ($0 in ) {\n    \n}",
+        "while" to "while ($0) {\n    \n}",
+        "fun" to "fun $0() {\n    \n}",
+        "class" to "class $0 {\n    \n}",
+        "data" to "data class $0()",
+        "when" to "when ($0) {\n    -> \n    else -> \n}",
+        "try" to "try {\n    $0\n} catch (e: Exception) {\n    \n}"
+    ),
+    "java" to mapOf(
+        "if" to "if ($0) {\n    \n}",
+        "ife" to "if ($0) {\n    \n} else {\n    \n}",
+        "for" to "for (int i = 0; i < $0; i++) {\n    \n}",
+        "while" to "while ($0) {\n    \n}",
+        "class" to "class $0 {\n    \n}",
+        "psvm" to "public static void main(String[] args) {\n    $0\n}",
+        "try" to "try {\n    $0\n} catch (Exception e) {\n    \n}"
+    ),
+    "javascript" to mapOf(
+        "if" to "if ($0) {\n    \n}",
+        "ife" to "if ($0) {\n    \n} else {\n    \n}",
+        "for" to "for (let i = 0; i < $0; i++) {\n    \n}",
+        "fore" to "for (const $0 of ) {\n    \n}",
+        "while" to "while ($0) {\n    \n}",
+        "fun" to "function $0() {\n    \n}",
+        "arrow" to "const $0 = () => {\n    \n}",
+        "try" to "try {\n    $0\n} catch (e) {\n    \n}"
+    ),
+    "typescript" to mapOf(
+        "if" to "if ($0) {\n    \n}",
+        "ife" to "if ($0) {\n    \n} else {\n    \n}",
+        "for" to "for (let i = 0; i < $0; i++) {\n    \n}",
+        "fore" to "for (const $0 of ) {\n    \n}",
+        "while" to "while ($0) {\n    \n}",
+        "fun" to "function $0(): void {\n    \n}",
+        "arrow" to "const $0 = (): void => {\n    \n}",
+        "interface" to "interface $0 {\n    \n}",
+        "type" to "type $0 = ",
+        "try" to "try {\n    $0\n} catch (e) {\n    \n}"
+    ),
+    "python" to mapOf(
+        "if" to "if $0:\n    ",
+        "ife" to "if $0:\n    \nelse:\n    ",
+        "for" to "for $0 in :\n    ",
+        "while" to "while $0:\n    ",
+        "def" to "def $0():\n    ",
+        "class" to "class $0:\n    def __init__(self):\n        ",
+        "try" to "try:\n    $0\nexcept Exception as e:\n    "
+    ),
+    "cpp" to mapOf(
+        "if" to "if ($0) {\n    \n}",
+        "ife" to "if ($0) {\n    \n} else {\n    \n}",
+        "for" to "for (int i = 0; i < $0; i++) {\n    \n}",
+        "while" to "while ($0) {\n    \n}",
+        "main" to "int main(int argc, char** argv) {\n    $0\n    return 0;\n}",
+        "incl" to "#include <$0>"
+    ),
+    "c" to mapOf(
+        "if" to "if ($0) {\n    \n}",
+        "for" to "for (int i = 0; i < $0; i++) {\n    \n}",
+        "while" to "while ($0) {\n    \n}",
+        "main" to "int main(int argc, char** argv) {\n    $0\n    return 0;\n}",
+        "incl" to "#include <$0>"
+    ),
+    "bash" to mapOf(
+        "if" to "if [ $0 ]; then\n    \nfi",
+        "ife" to "if [ $0 ]; then\n    \nelse\n    \nfi",
+        "for" to "for $0 in ; do\n    \ndone",
+        "while" to "while [ $0 ]; do\n    \ndone",
+        "fun" to "$0() {\n    \n}"
+    )
+)
+
+/** A completion candidate. [snippetTemplate] is non-null for "expand a
+ *  multi-line scaffold" suggestions; null for plain identifier inserts. */
+internal data class CompletionItem(
+    val label: String,
+    val snippetTemplate: String? = null
+)
+
 /**
  * Compute lightweight completions for the current caret position.
  *
  *  - Reads the identifier-prefix immediately to the left of the caret.
  *  - If the prefix is < 1 char we don't suggest anything.
- *  - Pool: language keywords + every identifier-shaped token already in
- *    the buffer.
- *  - Filtered by `startsWith(prefix, ignoreCase = true)`, deduplicated,
- *    sorted by length ascending, capped at 12.
+ *  - Pool: language snippet keys (expandable) + keywords + every
+ *    identifier-shaped token already in the buffer.
+ *  - Snippet matches surface first; the rest sort by length asc.
  */
 internal fun suggestCompletions(
     value: TextFieldValue,
     lang: String
-): Pair<String, List<String>> {
+): Pair<String, List<CompletionItem>> {
     val caret = value.selection.start.coerceIn(0, value.text.length)
     if (caret == 0) return "" to emptyList()
     val text = value.text
@@ -113,6 +198,11 @@ internal fun suggestCompletions(
     while (start > 0 && text[start - 1].let { it.isLetterOrDigit() || it == '_' }) start--
     val prefix = text.substring(start, caret)
     if (prefix.isEmpty()) return "" to emptyList()
+    val snippets = SnippetsByLang[lang].orEmpty()
+    val snippetMatches = snippets
+        .filter { (k, _) -> k.startsWith(prefix, ignoreCase = true) && k != prefix }
+        .map { (k, tmpl) -> CompletionItem(label = k, snippetTemplate = tmpl) }
+        .sortedBy { it.label.length }
     val pool = mutableSetOf<String>()
     KeywordsByLang[lang]?.let { pool += it }
     // Identifiers in the buffer.
@@ -121,11 +211,12 @@ internal fun suggestCompletions(
         val token = m.value
         if (token != prefix) pool += token
     }
-    val matches = pool
-        .filter { it.startsWith(prefix, ignoreCase = true) && it != prefix }
+    val tokenMatches = pool
+        .filter { it.startsWith(prefix, ignoreCase = true) && it != prefix && it !in snippets }
         .sortedWith(compareBy({ it.length }, { it.lowercase() }))
-        .take(12)
-    return prefix to matches
+        .map { CompletionItem(it) }
+    val merged = (snippetMatches + tokenMatches).take(12)
+    return prefix to merged
 }
 
 /**
@@ -137,8 +228,8 @@ internal fun suggestCompletions(
 @Composable
 internal fun CompletionStrip(
     prefix: String,
-    suggestions: List<String>,
-    onPick: (String) -> Unit,
+    suggestions: List<CompletionItem>,
+    onPick: (CompletionItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     if (suggestions.isEmpty()) return
@@ -153,7 +244,7 @@ internal fun CompletionStrip(
             modifier = Modifier.fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)
         ) {
-            items(suggestions, key = { it }) { sug ->
+            items(suggestions, key = { it.label + (it.snippetTemplate ?: "") }) { item ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(horizontal = 3.dp)
@@ -161,23 +252,37 @@ internal fun CompletionStrip(
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
-                            .background(cs.surface)
-                            .bouncyClickable(pressedScale = 0.95f) { onPick(sug) }
+                            .background(
+                                if (item.snippetTemplate != null) cs.primary.copy(alpha = 0.18f)
+                                else cs.surface
+                            )
+                            .bouncyClickable(pressedScale = 0.95f) { onPick(item) }
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Snippet items get a small lightning glyph in front.
+                        if (item.snippetTemplate != null) {
+                            Text(
+                                text = "⚡",
+                                fontFamily = FontFamily.Monospace,
+                                color = cs.primary,
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                            Spacer(Modifier.width(4.dp))
+                        }
                         // Bold the matched prefix portion.
                         Text(
-                            text = sug.take(prefix.length),
+                            text = item.label.take(prefix.length),
                             fontFamily = FontFamily.Monospace,
                             color = cs.onSurfaceVariant,
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.labelLarge
                         )
                         Text(
-                            text = sug.drop(prefix.length),
+                            text = item.label.drop(prefix.length),
                             fontFamily = FontFamily.Monospace,
-                            color = cs.onSurface,
+                            color = if (item.snippetTemplate != null) cs.primary else cs.onSurface,
+                            fontWeight = if (item.snippetTemplate != null) FontWeight.SemiBold else FontWeight.Normal,
                             style = MaterialTheme.typography.labelLarge
                         )
                     }
@@ -187,17 +292,28 @@ internal fun CompletionStrip(
     }
 }
 
-/** Insert [suggestion] at the caret, replacing the current word
- *  prefix. Returns the new [TextFieldValue] with the caret placed at
- *  the end of the inserted token. */
-internal fun applySuggestion(value: TextFieldValue, suggestion: String): TextFieldValue {
+/** Insert [item] at the caret, replacing the current word prefix.
+ *  Plain identifiers land with the caret after the inserted token;
+ *  snippet templates resolve the `$0` placeholder and place the caret
+ *  there (if no marker, caret ends after the inserted text). */
+internal fun applySuggestion(value: TextFieldValue, item: CompletionItem): TextFieldValue {
     val caret = value.selection.start.coerceIn(0, value.text.length)
     val text = value.text
     var start = caret
     while (start > 0 && text[start - 1].let { it.isLetterOrDigit() || it == '_' }) start--
     val before = text.substring(0, start)
     val after = text.substring(caret)
-    val newText = before + suggestion + after
-    val newCaret = (before + suggestion).length
-    return TextFieldValue(newText, selection = androidx.compose.ui.text.TextRange(newCaret))
+    return if (item.snippetTemplate != null) {
+        val tmpl = item.snippetTemplate
+        val markerIdx = tmpl.indexOf("\$0")
+        val resolved = if (markerIdx >= 0) tmpl.removeRange(markerIdx, markerIdx + 2) else tmpl
+        val newText = before + resolved + after
+        val caretPos = if (markerIdx >= 0) before.length + markerIdx
+        else before.length + resolved.length
+        TextFieldValue(newText, selection = androidx.compose.ui.text.TextRange(caretPos))
+    } else {
+        val newText = before + item.label + after
+        val newCaret = (before + item.label).length
+        TextFieldValue(newText, selection = androidx.compose.ui.text.TextRange(newCaret))
+    }
 }
