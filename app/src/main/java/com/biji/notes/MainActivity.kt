@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
                         toolExec = app.toolExecutor,
                         notifier = app.chatNotifier,
                         voice = app.voiceRecognizer,
+                        sandbox = app.localSandbox,
                         isForeground = app::isForeground
                     )
                 )
@@ -116,7 +117,8 @@ private fun AppRoot(vm: ChatViewModel) {
     var tab by remember { mutableStateOf(TAB_CHATS) }
     val activeConvo by vm.activeConvoId.collectAsState()
     val openWebUrl by vm.openWebUrl.collectAsState()
-    val showBottomBar = activeConvo == null && openWebUrl == null
+    val openEditorPath by vm.openEditorPath.collectAsState()
+    val showBottomBar = activeConvo == null && openWebUrl == null && openEditorPath == null
 
     // POST_NOTIFICATIONS – ask once on launch on API 33+.
     val notifLauncher = rememberLauncherForActivityResult(
@@ -202,6 +204,25 @@ private fun AppRoot(vm: ChatViewModel) {
                 sharedTransitionScope = this@SharedTransitionLayout,
                 animatedVisibilityScope = this@AnimatedVisibility
             )
+        }
+
+        // Editor overlay — opens above the chat when the user taps a
+        // file in the project drawer. Back arrow returns to the chat.
+        AnimatedVisibility(
+            visible = openEditorPath != null,
+            enter = fadeIn(tween(180)) + slideInVertically { it / 6 },
+            exit = fadeOut(tween(140)) + slideOutVertically { it / 6 },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            val path = openEditorPath
+            if (path != null) {
+                BackHandler { vm.closeEditor() }
+                com.biji.notes.ui.editor.EditorScreen(
+                    sandbox = vm.sandbox,
+                    path = path,
+                    onBack = { vm.closeEditor() }
+                )
+            }
         }
       }
     }

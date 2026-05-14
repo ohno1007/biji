@@ -22,6 +22,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -254,6 +255,7 @@ fun ChatScreen(
     var contextStatsOpen by remember { mutableStateOf(false) }
     var cacheDetailsOpen by remember { mutableStateOf(false) }
     var modelPickerOpen by remember { mutableStateOf(false) }
+    var projectDrawerOpen by remember { mutableStateOf(false) }
     val latestUsage by vm.latestUsage.collectAsState()
 
     // Pull a fresh models list as soon as we land on a chat screen.
@@ -473,6 +475,25 @@ fun ChatScreen(
             )
         }
 
+        // Right-edge invisible swipe handle. Catches a 24-dp wide strip
+        // along the trailing edge so the gesture doesn't conflict with
+        // the LazyColumn's vertical scroll. Only armed in developer
+        // mode so non-developers don't accidentally trip a drawer.
+        if (settings.developerMode && !projectDrawerOpen) {
+            Box(
+                Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .width(24.dp)
+                    .pointerInput(Unit) {
+                        val threshold = with(density) { 4.dp.toPx() }
+                        detectHorizontalDragGestures { _, dx ->
+                            if (dx < -threshold) projectDrawerOpen = true
+                        }
+                    }
+            )
+        }
+
         // Context-stats popup. Its bounds morph out of the ContextRing
         // (shared content state CONTEXT_STATS_KEY). Tapping the
         // "已用 token" row triggers a second-level popup that shares
@@ -535,6 +556,19 @@ fun ChatScreen(
                 )
             }
         }
+
+        // Project drawer — rendered LAST so it sits on top of every
+        // other overlay when open. Right-edge swipe (in developer mode)
+        // sets projectDrawerOpen.
+        com.biji.notes.ui.editor.ProjectDrawer(
+            sandbox = vm.sandbox,
+            open = projectDrawerOpen,
+            onOpenFile = { rel ->
+                projectDrawerOpen = false
+                vm.openEditor(rel)
+            },
+            onDismiss = { projectDrawerOpen = false }
+        )
     }
 }
 

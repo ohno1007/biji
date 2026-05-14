@@ -338,6 +338,7 @@ class ToolExecutor(
         val append = args["append"]?.jsonPrimitive?.contentOrNull?.equals("true", true) ?: false
         return runCatching { sandbox.writeFile(path, content, append) }.fold(
             onSuccess = {
+                sandbox.markAiEdited(path)
                 val ui = buildJsonObject {
                     put("kind", Tools.WRITE_FILE)
                     put("path", path)

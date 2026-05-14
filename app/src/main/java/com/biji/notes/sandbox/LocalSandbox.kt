@@ -4,6 +4,9 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -21,6 +24,17 @@ import java.util.concurrent.TimeUnit
  * via the tool calls in [com.biji.notes.net.Tools].
  */
 class LocalSandbox(private val context: Context) {
+
+    /** Set of relative paths the assistant has written / created during
+     *  this app session. The project-drawer surfaces a small ⚡ badge
+     *  next to these so the user can see what changed. */
+    private val _aiEditedPaths = MutableStateFlow<Set<String>>(emptySet())
+    val aiEditedPaths: StateFlow<Set<String>> = _aiEditedPaths.asStateFlow()
+
+    fun markAiEdited(path: String) {
+        _aiEditedPaths.value = _aiEditedPaths.value + path.trimStart('/')
+    }
+    fun clearAiEdited() { _aiEditedPaths.value = emptySet() }
 
     /** Project root. Created lazily; survives across runs. */
     val root: File

@@ -234,6 +234,13 @@ private fun inline(
     source: String,
     baseColor: Color,
     accent: Color
+): AnnotatedString = runCatching { inlineImpl(source, baseColor, accent) }
+    .getOrElse { AnnotatedString(source) }
+
+private fun inlineImpl(
+    source: String,
+    baseColor: Color,
+    accent: Color
 ): AnnotatedString = buildAnnotatedString {
     var i = 0
     val s = source
@@ -502,7 +509,14 @@ fun MarkdownText(
     // Stronger, dark-mode-aware link background — Claude-style warm
     // pill in light, warm brown in dark. Visible at a glance.
     val linkBg = if (isDark) Color(0xFF3D3324) else Color(0xFFE8D9B5)
-    val blocks = remember(markdown) { parseBlocks(markdown) }
+    // If parseBlocks throws on a malformed input (e.g. unclosed math
+    // fence, weird Unicode), fall back to a single Paragraph instead
+    // of letting the whole chat composition crash and become unusable
+    // forever — reopening the chat would just hit the same exception.
+    val blocks = remember(markdown) {
+        runCatching { parseBlocks(markdown) }
+            .getOrElse { listOf(Block.Paragraph(markdown)) }
+    }
 
     Column(modifier.padding(contentPadding)) {
         for (b in blocks) {

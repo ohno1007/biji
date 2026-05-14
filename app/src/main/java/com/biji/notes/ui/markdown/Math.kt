@@ -7,7 +7,10 @@ package com.biji.notes.ui.markdown
  * super/sub-scripts, common operators, simple fractions) into Unicode
  * so the rendered text reads like math at a glance.
  */
-internal fun latexToUnicode(raw: String): String {
+internal fun latexToUnicode(raw: String): String =
+    runCatching { latexToUnicodeImpl(raw) }.getOrElse { raw }
+
+private fun latexToUnicodeImpl(raw: String): String {
     var s = raw.trim()
     // Strip the outer `$` if the inline path didn't already.
     s = s.removePrefix("$$").removeSuffix("$$")

@@ -88,6 +88,7 @@ class ChatViewModel(
     private val toolExec: ToolExecutor,
     private val notifier: ChatNotifier,
     private val voice: VoiceRecognizer,
+    val sandbox: com.biji.notes.sandbox.LocalSandbox,
     private val isForeground: () -> Boolean
 ) : ViewModel() {
 
@@ -134,6 +135,11 @@ class ChatViewModel(
 
     private val _openWebUrl = MutableStateFlow<String?>(null)
     val openWebUrl: StateFlow<String?> = _openWebUrl.asStateFlow()
+
+    private val _openEditorPath = MutableStateFlow<String?>(null)
+    val openEditorPath: StateFlow<String?> = _openEditorPath.asStateFlow()
+    fun openEditor(path: String) { _openEditorPath.value = path }
+    fun closeEditor() { _openEditorPath.value = null }
 
     val voiceState: StateFlow<VoiceState> = voice.state
     private val _voiceVisible = MutableStateFlow(false)
@@ -787,12 +793,13 @@ class ChatViewModel(
             toolExec: ToolExecutor,
             notifier: ChatNotifier,
             voice: VoiceRecognizer,
+            sandbox: com.biji.notes.sandbox.LocalSandbox,
             isForeground: () -> Boolean
         ) = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
                 ChatViewModel(
-                    chat, settings, client, memory, toolExec, notifier, voice, isForeground
+                    chat, settings, client, memory, toolExec, notifier, voice, sandbox, isForeground
                 ) as T
         }
     }
