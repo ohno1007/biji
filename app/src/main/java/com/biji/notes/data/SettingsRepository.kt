@@ -31,7 +31,11 @@ data class AppSettings(
     /** Enable the developer / engineering sandbox tool trio
      *  (read_file / write_file / run_shell_command). When off, the
      *  assistant can't touch the local filesystem. */
-    val developerMode: Boolean = false
+    val developerMode: Boolean = false,
+    /** Route every shell command through `su -c …`. The user has to
+     *  flip this on explicitly *and* the OS has to grant superuser via
+     *  Magisk / SuperSU. Off by default. */
+    val useRoot: Boolean = false
 ) {
     /** True if the *currently selected model* itself does thinking (i.e.
      *  deepseek-reasoner). For per-conversation thinking, look at the
@@ -52,6 +56,7 @@ class SettingsRepository(private val ctx: Context) {
         val NOTIFY = booleanPreferencesKey("notify")
         val DEFAULT_THINKING = booleanPreferencesKey("default_thinking")
         val DEVELOPER_MODE = booleanPreferencesKey("developer_mode")
+        val USE_ROOT = booleanPreferencesKey("use_root")
     }
 
     val settings: Flow<AppSettings> = ctx.settingsStore.data.map { p ->
@@ -65,7 +70,8 @@ class SettingsRepository(private val ctx: Context) {
             longMemory = p[K.LONG_MEMORY] ?: true,
             notify = p[K.NOTIFY] ?: true,
             defaultThinking = p[K.DEFAULT_THINKING] ?: false,
-            developerMode = p[K.DEVELOPER_MODE] ?: false
+            developerMode = p[K.DEVELOPER_MODE] ?: false,
+            useRoot = p[K.USE_ROOT] ?: false
         )
     }
 
@@ -92,6 +98,9 @@ class SettingsRepository(private val ctx: Context) {
     }
     suspend fun setDeveloperMode(v: Boolean) {
         ctx.settingsStore.edit { it[K.DEVELOPER_MODE] = v }
+    }
+    suspend fun setUseRoot(v: Boolean) {
+        ctx.settingsStore.edit { it[K.USE_ROOT] = v }
     }
 
     // -----------------------------------------------------------------

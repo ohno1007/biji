@@ -86,6 +86,7 @@ import com.biji.notes.data.MODEL_REASONER
 import com.biji.notes.ui.chat.BalanceState
 import com.biji.notes.ui.chat.ChatViewModel
 import com.biji.notes.ui.glass.bouncyClickable
+import kotlinx.coroutines.launch
 
 // iOS-style grouped settings: rows of a group share one rounded surface
 // separated by inset hairlines; the cream background "镂空" between
@@ -301,6 +302,12 @@ fun SettingsScreen(
                         if (settings.developerMode) {
                             InsetDivider()
                             SandboxPathRow(vm.sandbox.projectsBase.absolutePath)
+                            InsetDivider()
+                            RootAccessRow(
+                                enabled = settings.useRoot,
+                                onToggle = vm::setUseRoot,
+                                onProbe = { vm.probeRoot() }
+                            )
                             InsetDivider()
                             DevEnvRow()
                         }
@@ -667,6 +674,102 @@ private fun SandboxPathRow(path: String) {
                 color = if (copied) cs.primary else cs.onSurfaceVariant,
                 fontWeight = FontWeight.Medium
             )
+        }
+    }
+}
+
+/**
+ * Root toggle + on-demand `su -c id` probe. The toggle persists in
+ * settings; flipping it on routes every subsequent shell tool call
+ * through `su -c …`. The "申请权限" button does an explicit probe so
+ * the user can pre-grant in Magisk / SuperSU before running tools.
+ */
+@Composable
+private fun RootAccessRow(
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+    onProbe: suspend () -> Boolean
+) {
+    val cs = MaterialTheme.colorScheme
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var probing by remember { mutableStateOf(false) }
+    var lastResult by remember { mutableStateOf<Boolean?>(null) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Outlined.Build,
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = cs.onSurface
+            )
+            Spacer(Modifier.size(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Root 模式",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = cs.onSurface,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    when (lastResult) {
+                        true -> "su 可用 · 命令将通过 su -c 执行"
+                        false -> "su 不可用或被拒绝"
+                        null -> if (enabled) "命令将通过 su -c 执行"
+                        else "命令以普通进程执行"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = when (lastResult) {
+                        true -> cs.primary
+                        false -> cs.error
+                        null -> cs.onSurfaceVariant
+                    }
+                )
+            }
+            androidx.compose.material3.Switch(
+                checked = enabled,
+                onCheckedChange = onToggle
+            )
+        }
+        Spacer(Modifier.size(8.dp))
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(cs.primary.copy(alpha = 0.14f))
+                .bouncyClickable(enabled = !probing, pressedScale = 0.96f) {
+                    probing = true
+                    scope.launch {
+                        lastResult = runCatching { onProbe() }.getOrDefault(false)
+                        probing = false
+                    }
+                }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (probing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    color = cs.primary,
+                    strokeWidth = 2.dp
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    "正在请求 su…",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cs.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            } else {
+                Text(
+                    "申请 root 权限",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cs.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
         }
     }
 }

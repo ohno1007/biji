@@ -202,7 +202,11 @@ class ToolExecutor(
      *            (sent back to the model)
      *   second = a structured JSON payload for the chat UI to render
      *            (search results / extracted article / shell run).  */
-    suspend fun run(call: ToolCall, projectFolder: String? = null): Pair<String, JsonObject> {
+    suspend fun run(
+        call: ToolCall,
+        projectFolder: String? = null,
+        useRoot: Boolean = false
+    ): Pair<String, JsonObject> {
         val args = runCatching { json.parseToJsonElement(call.arguments).jsonObject }
             .getOrElse { JsonObject(emptyMap()) }
         return when (call.name) {
@@ -211,7 +215,7 @@ class ToolExecutor(
             Tools.LIST_DIRECTORY -> runListDirectory(args, projectFolder)
             Tools.READ_FILE -> runReadFile(args, projectFolder)
             Tools.WRITE_FILE -> runWriteFile(args, projectFolder)
-            Tools.RUN_SHELL -> runShellCommand(args, projectFolder)
+            Tools.RUN_SHELL -> runShellCommand(args, projectFolder, useRoot)
             else -> "Unknown tool: ${call.name}" to buildJsonObject {
                 put("kind", "error")
                 put("message", "Unknown tool: ${call.name}")
@@ -374,7 +378,11 @@ class ToolExecutor(
         )
     }
 
-    private suspend fun runShellCommand(args: JsonObject, folder: String?): Pair<String, JsonObject> {
+    private suspend fun runShellCommand(
+        args: JsonObject,
+        folder: String?,
+        useRoot: Boolean
+    ): Pair<String, JsonObject> {
         val cmd = args["command"]?.jsonPrimitive?.contentOrNull.orEmpty()
         val cwd = args["cwd"]?.jsonPrimitive?.contentOrNull
         val timeoutMs = args["timeoutMs"]?.jsonPrimitive?.intOrNull?.toLong()?.coerceIn(500, 60_000)
@@ -382,7 +390,7 @@ class ToolExecutor(
         if (cmd.isBlank()) {
             return "command 不能为空" to errorJson(Tools.RUN_SHELL, "Empty command")
         }
-        return runCatching { sandbox.runShell(folder, cmd, cwd, timeoutMs) }.fold(
+        return runCatching { sandbox.runShell(folder, cmd, cwd, timeoutMs, asRoot = useRoot) }.fold(
             onSuccess = { r ->
                 val ui = buildJsonObject {
                     put("kind", Tools.RUN_SHELL)
@@ -397,9 +405,10 @@ class ToolExecutor(
                         put("blocked", true)
                         r.blockedReason?.let { put("blockedReason", it) }
                     }
+                    if (r.ranAsRoot) put("ranAsRoot", true)
                 }
                 val forModel = buildString {
-                    appendLine("$ ${r.command}    (cwd=${r.workingDir}, exit=${r.exitCode}${if (r.timedOut) ", TIMEOUT" else ""}${if (r.blocked) ", BLOCKED" else ""}, ${r.durationMs}ms)")
+                    appendLine("$ ${if (r.ranAsRoot) "sudo " else ""}${r.command}    (cwd=${r.workingDir}, exit=${r.exitCode}${if (r.timedOut) ", TIMEOUT" else ""}${if (r.blocked) ", BLOCKED" else ""}, ${r.durationMs}ms)")
                     if (r.blocked) {
                         appendLine("命令被拒绝执行：${r.blockedReason ?: "危险命令"}")
                     }

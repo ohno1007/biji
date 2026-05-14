@@ -155,8 +155,31 @@ class LocalSandbox(private val context: Context) {
         val timedOut: Boolean,
         /** True if the denylist rejected the command before exec. */
         val blocked: Boolean = false,
-        val blockedReason: String? = null
+        val blockedReason: String? = null,
+        /** True if this command was executed through `su -c …`. */
+        val ranAsRoot: Boolean = false
     )
+
+    /**
+     * Probe for Magisk / SuperSU style root. Returns true if `su -c id`
+     * completes within a short window with a `uid=0(` line. Suppressed
+     * exceptions just count as "no root". This call DOES trigger the
+     * superuser prompt on rooted devices the first time, which is the
+     * intended behaviour for the Settings "申请 root 权限" button.
+     */
+    suspend fun probeRoot(timeoutMs: Long = 8_000L): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val p = ProcessBuilder("su", "-c", "id").redirectErrorStream(true).start()
+                val finished = p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+                if (!finished) {
+                    p.destroyForcibly()
+                    return@runCatching false
+                }
+                val out = p.inputStream.bufferedReader().use { it.readText() }
+                p.exitValue() == 0 && out.contains("uid=0(")
+            }.getOrDefault(false)
+        }
 
     /**
      * Run a shell command in the global Android environment via
@@ -164,12 +187,19 @@ class LocalSandbox(private val context: Context) {
      * NOT restricted to the project — the user explicitly opted out of
      * sandbox semantics for shell — but we refuse a handful of
      * obviously-destructive shapes via [isDangerousCommand].
+     *
+     * When [asRoot] is true the command is launched through `su -c`
+     * instead. This still respects the denylist (so the model can't
+     * `rm -rf /` even with elevation). If `su` is missing the call
+     * comes back with a non-zero exit and a stderr noting that root
+     * isn't available.
      */
     suspend fun runShell(
         folder: String?,
         command: String,
         cwd: String? = null,
-        timeoutMs: Long = 30_000L
+        timeoutMs: Long = 30_000L,
+        asRoot: Boolean = false
     ): ShellResult = coroutineScope {
         withContext(Dispatchers.IO) {
             val reason = isDangerousCommandReason(command)
@@ -190,14 +220,39 @@ class LocalSandbox(private val context: Context) {
                     durationMs = 0L,
                     timedOut = false,
                     blocked = true,
-                    blockedReason = reason
+                    blockedReason = reason,
+                    ranAsRoot = asRoot
                 )
             }
             val start = System.currentTimeMillis()
-            val process = ProcessBuilder("sh", "-c", command)
-                .directory(workDir)
-                .redirectErrorStream(false)
-                .start()
+            val pb = if (asRoot) {
+                // Wrap the user's command in `cd <wd> && <cmd>` so we
+                // still honour the chosen cwd even though `su` itself
+                // resets working directory.
+                ProcessBuilder(
+                    "su",
+                    "-c",
+                    "cd ${shellQuote(workDirDisplay)} && $command"
+                )
+            } else {
+                ProcessBuilder("sh", "-c", command).directory(workDir)
+            }
+            pb.redirectErrorStream(false)
+            val process = try {
+                pb.start()
+            } catch (e: Exception) {
+                return@withContext ShellResult(
+                    command = command,
+                    workingDir = workDirDisplay,
+                    stdout = "",
+                    stderr = if (asRoot) "无法启动 su：${e.message ?: e.javaClass.simpleName}（设备未 root？）"
+                    else (e.message ?: e.javaClass.simpleName),
+                    exitCode = -1,
+                    durationMs = System.currentTimeMillis() - start,
+                    timedOut = false,
+                    ranAsRoot = asRoot
+                )
+            }
             val outFuture = async(Dispatchers.IO) {
                 process.inputStream.bufferedReader().use { it.readText() }
             }
@@ -214,10 +269,14 @@ class LocalSandbox(private val context: Context) {
                 stderr = errFuture.await(),
                 exitCode = exit,
                 durationMs = System.currentTimeMillis() - start,
-                timedOut = !finished
+                timedOut = !finished,
+                ranAsRoot = asRoot
             )
         }
     }
+
+    private fun shellQuote(s: String): String =
+        "'" + s.replace("'", "'\\''") + "'"
 
     companion object {
         const val DEFAULT_FOLDER = "default"

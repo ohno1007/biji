@@ -406,7 +406,11 @@ class ChatViewModel(
                     state = WorkflowStepState.RUNNING
                 )
                 val (forModel, uiJson) = runCatching {
-                    toolExec.run(call, projectFolder = activeProjectFolder.value)
+                    toolExec.run(
+                        call,
+                        projectFolder = activeProjectFolder.value,
+                        useRoot = settings.value.useRoot
+                    )
                 }
                     .getOrElse { e ->
                         "工具失败: ${e.message}" to buildJsonObject {
@@ -755,6 +759,11 @@ class ChatViewModel(
     fun setDeveloperMode(on: Boolean) = viewModelScope.launch {
         settingsRepo.setDeveloperMode(on)
     }
+    fun setUseRoot(on: Boolean) = viewModelScope.launch { settingsRepo.setUseRoot(on) }
+
+    /** One-shot root probe — fires `su -c id` and reports the result.
+     *  Surfaces the standard Magisk / SuperSU prompt the first time. */
+    suspend fun probeRoot(): Boolean = sandbox.probeRoot()
     fun setSystemPrompt(v: String) = viewModelScope.launch { settingsRepo.setSystemPrompt(v) }
     fun setTemperature(v: Float) = viewModelScope.launch { settingsRepo.setTemperature(v) }
     fun setWebSearch(v: Boolean) = viewModelScope.launch { settingsRepo.setWebSearch(v) }
