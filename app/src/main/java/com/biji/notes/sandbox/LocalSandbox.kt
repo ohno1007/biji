@@ -145,6 +145,43 @@ class LocalSandbox(private val context: Context) {
         }
     }
 
+    /**
+     * Copy whatever sits behind [uri] into the active project folder
+     * as a binary blob, picking a non-clobbering filename derived from
+     * the picker's display name (or the URI's last segment). Returns
+     * the in-project relative path plus the final byte count so the
+     * chat can post a "attached foo.zip (12 KB)" notice the AI sees.
+     */
+    suspend fun importUri(
+        folder: String?,
+        uri: android.net.Uri,
+        displayName: String?
+    ): Pair<String, Long> = withContext(Dispatchers.IO) {
+        val cleanName = (displayName ?: uri.lastPathSegment ?: "attachment.bin")
+            .substringAfterLast('/')
+            .replace(Regex("""[^A-Za-z0-9._\- ]"""), "_")
+            .ifBlank { "attachment.bin" }
+        val root = projectRoot(folder)
+        // Avoid stomping on an existing file with the same name.
+        var target = File(root, cleanName)
+        if (target.exists()) {
+            val base = cleanName.substringBeforeLast('.', cleanName)
+            val ext = cleanName.substringAfterLast('.', "").let { if (it.isBlank()) "" else ".$it" }
+            var n = 1
+            while (target.exists()) {
+                target = File(root, "$base-$n$ext")
+                n++
+            }
+        }
+        target.parentFile?.mkdirs()
+        val bytes = context.contentResolver.openInputStream(uri).use { input ->
+            if (input == null) error("cannot open content uri")
+            target.outputStream().use { out -> input.copyTo(out) }
+        }
+        markAiEdited(folder, target.relativeTo(root).path)
+        target.relativeTo(root).path to bytes
+    }
+
     data class ShellResult(
         val command: String,
         val workingDir: String,
@@ -180,6 +217,23 @@ class LocalSandbox(private val context: Context) {
                 p.exitValue() == 0 && out.contains("uid=0(")
             }.getOrDefault(false)
         }
+
+    /**
+     * Detect whether Termux is installed at its canonical sandbox path.
+     * Needs root because the Termux app's private data dir isn't
+     * world-readable on stock Android. Returns the bin path on success
+     * (so the caller can splice it into PATH), null otherwise.
+     */
+    suspend fun detectTermuxBin(): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val p = ProcessBuilder("su", "-c", "test -x $TERMUX_BIN/sh && echo OK")
+                .redirectErrorStream(true).start()
+            val finished = p.waitFor(4_000, TimeUnit.MILLISECONDS)
+            if (!finished) { p.destroyForcibly(); return@runCatching null }
+            val out = p.inputStream.bufferedReader().use { it.readText() }
+            if (p.exitValue() == 0 && out.contains("OK")) TERMUX_BIN else null
+        }.getOrDefault(null)
+    }
 
     /**
      * Run a shell command in the global Android environment via
@@ -226,13 +280,23 @@ class LocalSandbox(private val context: Context) {
             }
             val start = System.currentTimeMillis()
             val pb = if (asRoot) {
-                // Wrap the user's command in `cd <wd> && <cmd>` so we
-                // still honour the chosen cwd even though `su` itself
-                // resets working directory.
+                // Wrap the user's command so the inner shell:
+                //  - lands in the chosen cwd (`su` resets it),
+                //  - has Termux's bin/lib prepended to PATH/LD_LIBRARY_PATH
+                //    (otherwise `gcc / cmake / git / python` etc. that
+                //    the user installed via `pkg install …` are
+                //    invisible — that's the bug the user hit),
+                //  - has HOME pointed at Termux's home so tooling (git
+                //    config, python pip, ssh) finds its dotfiles.
+                val envPrelude = buildString {
+                    append("export PATH=$TERMUX_BIN:${'$'}PATH; ")
+                    append("export LD_LIBRARY_PATH=$TERMUX_LIB:${'$'}{LD_LIBRARY_PATH:-}; ")
+                    append("export HOME=$TERMUX_HOME; ")
+                }
                 ProcessBuilder(
                     "su",
                     "-c",
-                    "cd ${shellQuote(workDirDisplay)} && $command"
+                    "$envPrelude cd ${shellQuote(workDirDisplay)} && $command"
                 )
             } else {
                 ProcessBuilder("sh", "-c", command).directory(workDir)
@@ -280,6 +344,14 @@ class LocalSandbox(private val context: Context) {
 
     companion object {
         const val DEFAULT_FOLDER = "default"
+        /** Termux's canonical bin path under app-private data. Splicing
+         *  this into PATH lets us call `gcc / cmake / clang / make / git
+         *  / python` etc. that the user installed via `pkg install …` —
+         *  the directory itself is unreadable to other apps on stock
+         *  Android, so calls only land if biji is running as root. */
+        const val TERMUX_BIN = "/data/data/com.termux/files/usr/bin"
+        const val TERMUX_LIB = "/data/data/com.termux/files/usr/lib"
+        const val TERMUX_HOME = "/data/data/com.termux/files/home"
 
         /** Return a short human-readable reason if [cmd] looks
          *  unambiguously destructive, else null. Matches on the raw

@@ -796,12 +796,20 @@ private fun RootAccessRow(
 private fun DevEnvRow(runShell: (suspend (String) -> Pair<Int, String>)? = null) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val cs = MaterialTheme.colorScheme
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var open by remember { mutableStateOf(false) }
     var probing by remember { mutableStateOf(false) }
     // (tool, present, path-or-stderr) — surfaces inline after a probe.
     var probeReport by remember { mutableStateOf<List<Triple<String, Boolean, String>>>(emptyList()) }
     val tools = listOf("gcc", "clang", "cmake", "make", "git", "python", "python3", "node")
+    // Re-check Termux every time the dialog opens, since the user might
+    // come back from installing it while the dialog is closed.
+    val termuxInstalled = remember(open) {
+        runCatching { ctx.packageManager.getPackageInfo("com.termux", 0) }.isSuccess
+    }
+    val installCmd =
+        "pkg update -y && pkg install -y build-essential cmake clang make git python"
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -843,11 +851,31 @@ private fun DevEnvRow(runShell: (suspend (String) -> Pair<Int, String>)? = null)
             },
             text = {
                 Column {
-                    Text(
-                        "biji 跑在 Android 沙箱里，无法直接 apt install cmake / ndk / gcc，也不能在应用进程内编译 native 代码。",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Spacer(Modifier.size(8.dp))
+                    // Adaptive banner — different wording depending on whether
+                    // Termux is already on-device. Either way we surface the
+                    // install command + a one-tap launcher; without Termux
+                    // basic toybox commands still work, but the AI can't
+                    // touch native compilers.
+                    val statusText = if (termuxInstalled)
+                        "✓ 已检测到 Termux 已安装。点下方按钮可一键复制安装命令并尝试在 Termux 里执行。"
+                    else
+                        "⚠ 还没装 Termux。biji 自带的 sh 只能跑 toybox 自带命令（ls / cat / grep / find / awk / sed 等），AI 无法调用 gcc / cmake / clang。"
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (termuxInstalled) cs.primary.copy(alpha = 0.14f)
+                                else cs.errorContainer.copy(alpha = 0.6f)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            statusText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (termuxInstalled) cs.primary else cs.onErrorContainer
+                        )
+                    }
+                    Spacer(Modifier.size(10.dp))
                     Text(
                         "推荐流程：",
                         style = MaterialTheme.typography.labelLarge,
@@ -855,10 +883,16 @@ private fun DevEnvRow(runShell: (suspend (String) -> Pair<Int, String>)? = null)
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        "1. 安装 Termux（F-Droid 版本最稳）。\n" +
-                            "2. 在 Termux 里执行：\n" +
-                            "   pkg update && pkg install build-essential cmake clang make git python\n" +
-                            "3. 回到 biji，工具链命令通过 sh -c 走 PATH 即可调用。",
+                        if (termuxInstalled)
+                            "1. 打开 Root 模式并授权 su（biji 通过 su -c 进入 Termux 的 PATH）。\n" +
+                                "2. 安装命令（已复制到剪贴板）：\n" +
+                                "   $installCmd\n" +
+                                "3. 安装完成后，AI 直接走 run_shell_command 即可调用 gcc / cmake / clang / git。"
+                        else
+                            "1. 安装 Termux（F-Droid 版本最稳）。\n" +
+                                "2. 在 Termux 里执行：\n" +
+                                "   $installCmd\n" +
+                                "3. 回到 biji，打开 Root 模式让命令穿过沙箱使用 Termux 的 PATH。",
                         style = MaterialTheme.typography.bodySmall,
                         color = cs.onSurfaceVariant,
                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
@@ -949,11 +983,39 @@ private fun DevEnvRow(runShell: (suspend (String) -> Pair<Int, String>)? = null)
             },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
-                    val pkg = "com.termux"
-                    val launch = ctx.packageManager.getLaunchIntentForPackage(pkg)
-                    if (launch != null) {
-                        ctx.startActivity(launch)
+                    if (termuxInstalled) {
+                        // Copy the install command into the clipboard so the
+                        // user can paste it as soon as Termux opens. Try a
+                        // RUN_COMMAND broadcast first — it actually executes
+                        // the command in Termux but requires the user to
+                        // have enabled the matching whitelist setting.
+                        clipboard.setText(
+                            androidx.compose.ui.text.AnnotatedString(installCmd)
+                        )
+                        runCatching {
+                            val runIntent = android.content.Intent()
+                                .setClassName(
+                                    "com.termux",
+                                    "com.termux.app.RunCommandService"
+                                )
+                                .setAction("com.termux.RUN_COMMAND")
+                                .putExtra(
+                                    "com.termux.RUN_COMMAND_PATH",
+                                    "/data/data/com.termux/files/usr/bin/bash"
+                                )
+                                .putExtra(
+                                    "com.termux.RUN_COMMAND_ARGUMENTS",
+                                    arrayOf("-c", installCmd)
+                                )
+                                .putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
+                            ctx.startService(runIntent)
+                        }
+                        val launch = ctx.packageManager
+                            .getLaunchIntentForPackage("com.termux")
+                        if (launch != null) ctx.startActivity(launch)
                     } else {
+                        // Not installed — open the F-Droid listing so the
+                        // user can sideload Termux.
                         val intent = android.content.Intent(
                             android.content.Intent.ACTION_VIEW,
                             android.net.Uri.parse("https://f-droid.org/packages/com.termux/")
@@ -963,7 +1025,10 @@ private fun DevEnvRow(runShell: (suspend (String) -> Pair<Int, String>)? = null)
                     }
                     open = false
                 }) {
-                    Text("打开 Termux")
+                    Text(
+                        if (termuxInstalled) "在 Termux 里跑安装命令"
+                        else "去安装 Termux"
+                    )
                 }
             },
             dismissButton = {

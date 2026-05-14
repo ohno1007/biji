@@ -29,6 +29,7 @@ object Tools {
     const val READ_FILE = "read_file"
     const val WRITE_FILE = "write_file"
     const val RUN_SHELL = "run_shell_command"
+    const val CHECK_ENV = "check_environment"
 
     /** Build the full tools list shown to the model, depending on
      *  which feature toggles are on. */
@@ -152,10 +153,25 @@ object Tools {
         buildJsonObject {
             put("type", "function")
             put("function", buildJsonObject {
+                put("name", CHECK_ENV)
+                put(
+                    "description",
+                    "探测当前设备的开发环境：是否 root、Termux 是否安装、Android shell 与（如果可用的话）Termux 中的常见工具链（gcc / clang / cmake / make / git / python / python3 / node / ndk-build）是否在 PATH 上。在需要编译、调试或调用任何非系统二进制之前先调用一次，避免向 run_shell_command 发出注定失败的命令。无参数。"
+                )
+                put("parameters", buildJsonObject {
+                    put("type", "object")
+                    put("properties", buildJsonObject {})
+                    put("required", buildJsonArray {})
+                })
+            })
+        },
+        buildJsonObject {
+            put("type", "function")
+            put("function", buildJsonObject {
                 put("name", RUN_SHELL)
                 put(
                     "description",
-                    "在全局 Android 进程环境中通过 `sh -c` 执行 shell 命令。默认 cwd 为当前会话绑定的项目目录；命令本身不受沙箱限制（除非匹配危险命令黑名单：rm -rf /、mkfs、dd of=/dev/、shred、fork bomb、关机/重启）。30 秒超时；返回 stdout / stderr / exit 码。"
+                    "在全局 Android 进程环境中通过 `sh -c` 执行 shell 命令。默认 cwd 为当前会话绑定的项目目录。如果用户开启了 Root 模式，命令会通过 su -c 执行，并自动注入 Termux 的 PATH/LD_LIBRARY_PATH/HOME，因此 Termux 里 pkg install 的 gcc/clang/cmake/make/git/python 等都能直接调用。命令本身不受沙箱限制（除非匹配危险命令黑名单：rm -rf /、mkfs、dd of=/dev/、shred、fork bomb、关机/重启）。30 秒超时；返回 stdout / stderr / exit 码。在调用之前如果不确定工具是否可用，可以先调用 check_environment 工具。"
                 )
                 put("parameters", buildJsonObject {
                     put("type", "object")
@@ -216,6 +232,7 @@ class ToolExecutor(
             Tools.READ_FILE -> runReadFile(args, projectFolder)
             Tools.WRITE_FILE -> runWriteFile(args, projectFolder)
             Tools.RUN_SHELL -> runShellCommand(args, projectFolder, useRoot)
+            Tools.CHECK_ENV -> runCheckEnvironment(useRoot)
             else -> "Unknown tool: ${call.name}" to buildJsonObject {
                 put("kind", "error")
                 put("message", "Unknown tool: ${call.name}")
@@ -376,6 +393,66 @@ class ToolExecutor(
                 "write_file 失败: $msg" to errorJson(Tools.WRITE_FILE, msg, "path" to path)
             }
         )
+    }
+
+    private suspend fun runCheckEnvironment(useRoot: Boolean): Pair<String, JsonObject> {
+        // Single shell invocation so we don't pay 1 fork + 1 su prompt
+        // per binary. `command -v` is POSIX, present in toybox/busybox
+        // and Termux's bash alike.
+        val tools = listOf(
+            "sh", "ls", "cat", "grep", "awk", "sed", "find", "tar", "curl", "wget",
+            "gcc", "clang", "g++", "cmake", "make", "ninja", "ar", "ld", "ndk-build",
+            "git", "python", "python3", "pip", "pip3", "node", "npm", "ruby", "java"
+        )
+        val script = tools.joinToString("\n") {
+            "printf '%s\\t' '$it'; command -v $it 2>/dev/null || echo NONE"
+        }
+        val r = runCatching {
+            sandbox.runShell(folder = null, command = script, asRoot = useRoot, timeoutMs = 8_000L)
+        }.getOrNull()
+        val map = mutableMapOf<String, String?>()
+        r?.stdout?.lineSequence()?.forEach { line ->
+            val idx = line.indexOf('\t')
+            if (idx > 0) {
+                val name = line.substring(0, idx)
+                val path = line.substring(idx + 1).trim()
+                map[name] = if (path == "NONE" || path.isEmpty()) null else path
+            }
+        }
+        val termuxLikely = map.values.any { it != null && it.startsWith("/data/data/com.termux/") }
+        val ui = buildJsonObject {
+            put("kind", Tools.CHECK_ENV)
+            put("useRoot", useRoot)
+            put("termuxDetected", termuxLikely)
+            put("tools", buildJsonObject {
+                for (t in tools) {
+                    val path = map[t]
+                    put(t, buildJsonObject {
+                        put("present", path != null)
+                        if (path != null) put("path", path)
+                    })
+                }
+            })
+            r?.let {
+                put("exitCode", it.exitCode)
+                if (it.stderr.isNotEmpty()) put("stderr", it.stderr.take(2000))
+            }
+        }
+        val forModel = buildString {
+            appendLine("环境探测 (root=${if (useRoot) "on" else "off"}, Termux=${if (termuxLikely) "detected" else "not visible"}):")
+            for (t in tools) {
+                val path = map[t]
+                appendLine("  ${if (path != null) "✓" else "✗"} $t  ${path.orEmpty()}")
+            }
+            if (!termuxLikely && !useRoot) {
+                appendLine()
+                appendLine("提示：用户没开 Root 模式，所以 Termux 里的 pkg install 工具（gcc / cmake 等）不可见。基础 toybox 命令（ls / cat / grep / find / awk / sed）仍然可用。如需调用 native 编译器，建议指导用户在「设置 → 工程模式 → Root 模式」里授权 su，并确保 Termux 已 pkg install 相应工具。")
+            } else if (!termuxLikely && useRoot) {
+                appendLine()
+                appendLine("提示：root 已授予，但没检测到 Termux 路径。可建议用户安装 Termux 并 `pkg install build-essential cmake clang make git python`。")
+            }
+        }
+        return forModel to ui
     }
 
     private suspend fun runShellCommand(

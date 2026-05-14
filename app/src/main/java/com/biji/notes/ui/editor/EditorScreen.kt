@@ -26,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.CompareArrows
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -62,7 +63,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class EditorMode { VIEW, EDIT, DIFF }
+private enum class EditorMode { VIEW, EDIT, DIFF, PREVIEW }
 
 /**
  * In-app sandbox-scoped code editor. Three modes:
@@ -170,6 +171,41 @@ fun EditorScreen(
                     mode == EditorMode.DIFF -> {
                         val before = sandbox.snapshotBefore(folder, path).orEmpty()
                         DiffView(before = before, after = fieldValue.text)
+                    }
+                    mode == EditorMode.PREVIEW -> {
+                        // WebView preview — load the live buffer (with
+                        // unsaved edits) as the document, baseUrl set to
+                        // the project root via file:// so relative <link>
+                        // / <script src> against sibling .css / .js
+                        // resolve correctly. JS enabled because the user
+                        // explicitly opted in by clicking PREVIEW.
+                        val rootDir = remember(folder) { sandbox.projectRoot(folder) }
+                        val baseUrl = remember(rootDir, path) {
+                            val rel = path.substringBeforeLast('/', "")
+                            val dir = if (rel.isBlank()) rootDir
+                            else java.io.File(rootDir, rel)
+                            "file://${dir.absolutePath}/"
+                        }
+                        androidx.compose.ui.viewinterop.AndroidView(
+                            factory = { ctx ->
+                                android.webkit.WebView(ctx).apply {
+                                    settings.javaScriptEnabled = true
+                                    settings.domStorageEnabled = true
+                                    settings.allowFileAccess = true
+                                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                }
+                            },
+                            update = { wv ->
+                                wv.loadDataWithBaseURL(
+                                    baseUrl,
+                                    fieldValue.text,
+                                    "text/html",
+                                    "UTF-8",
+                                    null
+                                )
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
                     }
                     mode == EditorMode.EDIT -> {
                         val hScroll = rememberScrollState()
@@ -292,6 +328,7 @@ fun EditorScreen(
                     when {
                         dirty -> "未保存 · $lang"
                         mode == EditorMode.DIFF -> "Diff · 对比 AI 修改前"
+                        mode == EditorMode.PREVIEW -> "网页预览 · WebView"
                         else -> "$lang · ${fieldValue.text.length} chars"
                     },
                     style = MaterialTheme.typography.labelSmall,
@@ -306,6 +343,23 @@ fun EditorScreen(
                     {
                         mode = if (mode == EditorMode.DIFF) EditorMode.VIEW
                         else EditorMode.DIFF
+                    }
+                )
+            }
+            // HTML / web-page preview — only for .html / .htm files (CSS
+            // and JS get loaded by the HTML's own <link>/<script> when
+            // it's the active doc; standalone .css / .js previews don't
+            // really make sense).
+            val canPreview = remember(path) {
+                path.substringAfterLast('.', "").lowercase() in setOf("html", "htm")
+            }
+            if (canPreview) {
+                EditorIconButton(
+                    Icons.Filled.PlayArrow,
+                    "网页预览",
+                    {
+                        mode = if (mode == EditorMode.PREVIEW) EditorMode.VIEW
+                        else EditorMode.PREVIEW
                     }
                 )
             }

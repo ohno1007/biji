@@ -273,6 +273,31 @@ fun ChatScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted -> if (granted) vm.startVoice() }
 
+    // File-picker launcher for the composer's "+" button. SAF returns
+    // a content:// Uri; we feed it (plus the display name we pull from
+    // ContentResolver) to ChatViewModel.attachFile which copies it into
+    // the active conversation's project folder.
+    val ctxRef = LocalContext.current
+    val attachPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                ctxRef.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            val name = runCatching {
+                ctxRef.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+                }
+            }.getOrNull()
+            vm.attachFile(uri, name)
+        }
+    }
+
     LaunchedEffect(messages.size, streaming, workflow.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
     }
@@ -449,6 +474,7 @@ fun ChatScreen(
                         android.content.pm.PackageManager.PERMISSION_GRANTED
                     if (granted) vm.startVoice() else micPerm.launch(Manifest.permission.RECORD_AUDIO)
                 },
+                onAttach = { attachPicker.launch(arrayOf("*/*")) },
                 modelPickerVisible = modelPickerOpen,
                 sharedTransitionScope = sharedTransitionScope,
                 modifier = composerModifier.then(sharedModifier)
@@ -1247,6 +1273,7 @@ private fun Composer(
     onStop: () -> Unit,
     onOpenModelSheet: () -> Unit,
     onVoice: () -> Unit,
+    onAttach: () -> Unit,
     modelPickerVisible: Boolean = false,
     sharedTransitionScope: androidx.compose.animation.SharedTransitionScope? = null,
     modifier: Modifier = Modifier
@@ -1290,8 +1317,8 @@ private fun Composer(
         ) {
             CircleAction(
                 icon = Icons.Outlined.Add,
-                contentDescription = "更多",
-                onClick = { /* reserved */ }
+                contentDescription = "添加附件",
+                onClick = onAttach
             )
             Spacer(Modifier.width(6.dp))
             ComposerModelChip(

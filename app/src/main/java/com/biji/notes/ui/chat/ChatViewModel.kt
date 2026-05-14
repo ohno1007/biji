@@ -761,6 +761,50 @@ class ChatViewModel(
     }
     fun setUseRoot(on: Boolean) = viewModelScope.launch { settingsRepo.setUseRoot(on) }
 
+    /**
+     * Import the file behind [uri] into the active conversation's
+     * project folder and announce it via a USER message so the model
+     * sees there's an attachment available to work with. Returns the
+     * in-project relative path (e.g. "report.zip") so callers can
+     * surface a toast / chip if they want to.
+     */
+    fun attachFile(uri: android.net.Uri, displayName: String?) {
+        val convoId = _activeConvoId.value ?: run {
+            // No active chat yet — create one so the file has a home.
+            viewModelScope.launch {
+                val id = chat.createConversation(model = settings.value.model)
+                _activeConvoId.value = id
+                attachFileInto(id, uri, displayName)
+            }
+            return
+        }
+        attachFileInto(convoId, uri, displayName)
+    }
+
+    private fun attachFileInto(convoId: Long, uri: android.net.Uri, displayName: String?) {
+        viewModelScope.launch {
+            runCatching {
+                val (relPath, bytes) = sandbox.importUri(
+                    folder = activeProjectFolder.value,
+                    uri = uri,
+                    displayName = displayName
+                )
+                val size = when {
+                    bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
+                    bytes >= 1_024 -> "%.1f KB".format(bytes / 1_024.0)
+                    else -> "$bytes B"
+                }
+                chat.addMessage(
+                    convoId,
+                    Role.USER,
+                    "（已上传附件到项目目录）\n路径: $relPath\n大小: $size\n请基于这个文件继续处理（必要时用 run_shell_command 解压或读取）。"
+                )
+            }.onFailure { err ->
+                _streamError.value = "附件上传失败: ${err.message ?: err.javaClass.simpleName}"
+            }
+        }
+    }
+
     /** One-shot root probe — fires `su -c id` and reports the result.
      *  Surfaces the standard Magisk / SuperSU prompt the first time. */
     suspend fun probeRoot(): Boolean = sandbox.probeRoot()
