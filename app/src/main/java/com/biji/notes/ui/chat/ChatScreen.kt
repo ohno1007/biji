@@ -23,6 +23,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -56,6 +57,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
@@ -307,7 +309,8 @@ fun ChatScreen(
             if (messages.isEmpty()) {
                 item { EmptyChatHint() }
             } else {
-                val rendered = groupChatItems(messages)
+                val rendered = runCatching { groupChatItems(messages) }
+                    .getOrElse { emptyList() }
                 items(rendered, key = { it.key }) { item ->
                     when (item) {
                         is ChatItem.Plain ->
@@ -358,6 +361,7 @@ fun ChatScreen(
             usage = ctxUsage,
             onBack = onBack,
             onTapRing = { contextStatsOpen = true },
+            onTapDrawer = { projectDrawerOpen = true },
             ringVisible = !contextStatsOpen,
             sharedTransitionScope = sharedTransitionScope,
             modifier = Modifier
@@ -475,18 +479,20 @@ fun ChatScreen(
             )
         }
 
-        // Right-edge invisible swipe handle. Catches a 24-dp wide strip
-        // along the trailing edge so the gesture doesn't conflict with
-        // the LazyColumn's vertical scroll. Only armed in developer
-        // mode so non-developers don't accidentally trip a drawer.
-        if (settings.developerMode && !projectDrawerOpen) {
+        // Right-edge invisible swipe handle. 36-dp wide strip along the
+        // trailing edge, with `systemGestureExclusion` claiming the
+        // area so Android's right-edge back gesture stops eating our
+        // drag. Drag-from-right-to-left opens the project drawer. The
+        // handle hides while the drawer is already open.
+        if (!projectDrawerOpen) {
             Box(
                 Modifier
                     .align(Alignment.CenterEnd)
                     .fillMaxHeight()
-                    .width(24.dp)
+                    .width(36.dp)
+                    .systemGestureExclusion()
                     .pointerInput(Unit) {
-                        val threshold = with(density) { 4.dp.toPx() }
+                        val threshold = with(density) { 6.dp.toPx() }
                         detectHorizontalDragGestures { _, dx ->
                             if (dx < -threshold) projectDrawerOpen = true
                         }
@@ -675,6 +681,7 @@ private fun TopBar(
     usage: ContextUsage,
     onBack: () -> Unit,
     onTapRing: () -> Unit,
+    onTapDrawer: () -> Unit,
     ringVisible: Boolean,
     sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
     modifier: Modifier = Modifier
@@ -697,6 +704,14 @@ private fun TopBar(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
+        )
+        // Project-drawer entry point (also accessible by swipe from
+        // the right edge). Discoverable for users on full-screen
+        // gesture nav where the swipe might fight the system back.
+        IconBtn(
+            icon = Icons.Outlined.FolderOpen,
+            contentDescription = "项目文件",
+            onClick = onTapDrawer
         )
         // Keep the ring's slot 40dp wide even when hidden, so the title's
         // weighted layout doesn't reflow when the popup opens. The

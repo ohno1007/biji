@@ -27,8 +27,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Info
@@ -339,6 +342,8 @@ fun SettingsScreen(
                             title = "Biji 1.2",
                             trailing = {}
                         )
+                        InsetDivider()
+                        CrashLogRow()
                     }
                 }
             }
@@ -660,6 +665,84 @@ private fun SandboxPathRow(path: String) {
                 fontWeight = FontWeight.Medium
             )
         }
+    }
+}
+
+/** Tap to open a dialog showing the captured crash log + a clear
+ *  button. Reads via [CrashHandler.readCrashes]. Empty → "暂无". */
+@Composable
+private fun CrashLogRow() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    var open by remember { mutableStateOf(false) }
+    var log by remember { mutableStateOf("") }
+    androidx.compose.runtime.LaunchedEffect(open) {
+        if (open) log = com.biji.notes.CrashHandler.readCrashes(ctx)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 60.dp)
+            .bouncyClickable(pressedScale = 0.99f) { open = true }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            androidx.compose.material.icons.Icons.Outlined.BugReport,
+            contentDescription = null,
+            modifier = Modifier.size(22.dp),
+            tint = cs.onSurface
+        )
+        Spacer(Modifier.size(16.dp))
+        Text(
+            "崩溃日志",
+            style = MaterialTheme.typography.titleMedium,
+            color = cs.onSurface,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f)
+        )
+        Icon(
+            Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = cs.onSurfaceVariant
+        )
+    }
+    if (open) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { open = false },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    com.biji.notes.CrashHandler.clearCrashes(ctx)
+                    log = ""
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { open = false }) {
+                    Text("关闭")
+                }
+            },
+            title = { Text("崩溃日志") },
+            text = {
+                if (log.isBlank()) {
+                    Text("暂无", color = cs.onSurfaceVariant)
+                } else {
+                    Box(
+                        Modifier
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            log,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            ),
+                            color = cs.onSurface
+                        )
+                    }
+                }
+            }
+        )
     }
 }
 

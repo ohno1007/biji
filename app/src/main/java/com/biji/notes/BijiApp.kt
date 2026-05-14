@@ -34,6 +34,11 @@ class BijiApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Capture any uncaught exception (compose, coroutines, JNI) to a
+        // file the user can view from Settings. We don't suppress the
+        // crash itself — the OS still kills the process normally — but
+        // the trace survives across the relaunch.
+        CrashHandler.install(this)
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) { foreground = true }
             override fun onStop(owner: LifecycleOwner) { foreground = false }
