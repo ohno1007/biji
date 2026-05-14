@@ -93,4 +93,31 @@ class SettingsRepository(private val ctx: Context) {
     suspend fun setDeveloperMode(v: Boolean) {
         ctx.settingsStore.edit { it[K.DEVELOPER_MODE] = v }
     }
+
+    // -----------------------------------------------------------------
+    // Per-conversation project folder.
+    //
+    // Each conversation can pick its own working folder name. The
+    // assistant's read/write tools are restricted to that folder (a
+    // subdirectory under `projects/<folder>` in app-private storage),
+    // while the shell tool runs in the global environment with the
+    // folder as the default cwd. Empty / null means "no project bound";
+    // tools fall back to the legacy `projects/default` root.
+    // -----------------------------------------------------------------
+
+    private fun convoFolderKey(convoId: Long) =
+        stringPreferencesKey("convo_folder_$convoId")
+
+    /** Stream the folder name bound to [convoId]. Empty string when
+     *  none has been set. */
+    fun convoFolder(convoId: Long): Flow<String> =
+        ctx.settingsStore.data.map { it[convoFolderKey(convoId)].orEmpty() }
+
+    suspend fun setConvoFolder(convoId: Long, folder: String) {
+        val cleaned = folder.trim().trim('/')
+        ctx.settingsStore.edit {
+            if (cleaned.isEmpty()) it.remove(convoFolderKey(convoId))
+            else it[convoFolderKey(convoId)] = cleaned
+        }
+    }
 }

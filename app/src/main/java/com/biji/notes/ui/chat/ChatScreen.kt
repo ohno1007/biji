@@ -22,6 +22,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -258,6 +259,8 @@ fun ChatScreen(
     var cacheDetailsOpen by remember { mutableStateOf(false) }
     var modelPickerOpen by remember { mutableStateOf(false) }
     var projectDrawerOpen by remember { mutableStateOf(false) }
+    var folderRenameOpen by remember { mutableStateOf(false) }
+    val activeProjectFolder by vm.activeProjectFolder.collectAsState()
     val latestUsage by vm.latestUsage.collectAsState()
     val sessionSpentMap by vm.sessionTokenSpent.collectAsState()
     val sessionSpent = sessionSpentMap[convoId ?: -1L] ?: 0L
@@ -364,6 +367,7 @@ fun ChatScreen(
             onBack = onBack,
             onTapRing = { contextStatsOpen = true },
             onTapDrawer = { projectDrawerOpen = true },
+            onLongPressDrawer = { folderRenameOpen = true },
             ringVisible = !contextStatsOpen,
             sharedTransitionScope = sharedTransitionScope,
             modifier = Modifier
@@ -572,6 +576,7 @@ fun ChatScreen(
         // sets projectDrawerOpen.
         com.biji.notes.ui.editor.ProjectDrawer(
             sandbox = vm.sandbox,
+            folder = activeProjectFolder,
             open = projectDrawerOpen,
             onOpenFile = { rel ->
                 projectDrawerOpen = false
@@ -579,7 +584,64 @@ fun ChatScreen(
             },
             onDismiss = { projectDrawerOpen = false }
         )
+
+        if (folderRenameOpen) {
+            FolderRenameDialog(
+                currentFolder = activeProjectFolder,
+                onConfirm = { name ->
+                    vm.setActiveProjectFolder(name)
+                    folderRenameOpen = false
+                },
+                onDismiss = { folderRenameOpen = false }
+            )
+        }
     }
+}
+
+@Composable
+private fun FolderRenameDialog(
+    currentFolder: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var text by remember(currentFolder) { mutableStateOf(currentFolder) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "项目目录",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    "为这个会话选一个工作目录名称。AI 的 read_file / write_file / list_directory 工具会限定在这个目录里，shell 命令以它为默认 cwd 但不受限制。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = text,
+                    onValueChange = { v ->
+                        text = v.filter { it.isLetterOrDigit() || it == '_' || it == '-' || it == '.' }
+                    },
+                    placeholder = { Text("default") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = { onConfirm(text.trim()) }) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }
 
 /** Dimmed scrim under our custom popups — tap to dismiss. The scrim
@@ -686,6 +748,7 @@ private fun TopBar(
     onBack: () -> Unit,
     onTapRing: () -> Unit,
     onTapDrawer: () -> Unit,
+    onLongPressDrawer: () -> Unit,
     ringVisible: Boolean,
     sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
     modifier: Modifier = Modifier
@@ -710,12 +773,13 @@ private fun TopBar(
             modifier = Modifier.weight(1f)
         )
         // Project-drawer entry point (also accessible by swipe from
-        // the right edge). Discoverable for users on full-screen
-        // gesture nav where the swipe might fight the system back.
-        IconBtn(
+        // the right edge). Long-press opens a rename dialog so each
+        // conversation can pick its own folder name.
+        IconBtnCombined(
             icon = Icons.Outlined.FolderOpen,
             contentDescription = "项目文件",
-            onClick = onTapDrawer
+            onClick = onTapDrawer,
+            onLongClick = onLongPressDrawer
         )
         Spacer(Modifier.width(2.dp))
         // Keep the ring's slot 40dp wide even when hidden, so the title's
@@ -751,6 +815,43 @@ private fun IconBtn(
             .size(40.dp)
             .clip(CircleShape)
             .bouncyClickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(20.dp),
+            tint = cs.onSurface
+        )
+    }
+}
+
+/** Same shape as [IconBtn] but supports a long-press secondary action.
+ *  Uses Compose's [androidx.compose.foundation.combinedClickable] since
+ *  the bouncy modifier doesn't expose a long-press hook. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun IconBtnCombined(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String?,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    haptics.performHapticFeedback(
+                        androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress
+                    )
+                    onLongClick()
+                }
+            ),
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -1912,9 +2013,7 @@ private fun ContextStatsPopup(
                     tint = cs.onSurfaceVariant
                 )
             }
-            Spacer(Modifier.height(6.dp))
             StatsRow(label = "上下文窗口", value = formatTokens(usage.limit))
-            Spacer(Modifier.height(6.dp))
             StatsRow(
                 label = "剩余预算",
                 value = formatTokens((usage.limit - usage.tokens).coerceAtLeast(0L))
@@ -1943,7 +2042,18 @@ private fun ContextStatsPopup(
 @Composable
 private fun StatsRow(label: String, value: String) {
     val cs = MaterialTheme.colorScheme
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    // Match the clickable "已用 token >" row's geometry so every value
+    // column lands at the same right-edge x: same horizontal padding
+    // (10 dp), same vertical padding (8 dp), and a 22-dp trailing
+    // phantom space (16 dp chevron + 6 dp pre-spacer) the clickable
+    // row reserves. Without this the chevron-bearing row shoved its
+    // value left while the rest stayed right-aligned.
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Text(
             label,
             style = MaterialTheme.typography.bodyMedium,
@@ -1956,6 +2066,7 @@ private fun StatsRow(label: String, value: String) {
             color = cs.onSurface,
             fontWeight = FontWeight.SemiBold
         )
+        Spacer(Modifier.width(22.dp))
     }
 }
 
@@ -2096,17 +2207,11 @@ private fun CacheDetailsPopup(
             }
             Spacer(Modifier.height(14.dp))
             StatsRow(label = "缓存命中", value = formatTokens(details.cacheHit))
-            Spacer(Modifier.height(6.dp))
             StatsRow(label = "缓存未命中", value = formatTokens(details.cacheMiss))
-            Spacer(Modifier.height(6.dp))
             StatsRow(label = "Prompt tokens", value = formatTokens(details.prompt))
-            Spacer(Modifier.height(6.dp))
             StatsRow(label = "Completion tokens", value = formatTokens(details.completion))
-            Spacer(Modifier.height(6.dp))
             StatsRow(label = "本次请求总计", value = formatTokens(details.total))
-            Spacer(Modifier.height(6.dp))
             StatsRow(label = "上下文占用", value = formatTokens(usage.tokens))
-            Spacer(Modifier.height(6.dp))
             StatsRow(label = "本会话累计", value = formatTokens(sessionSpent))
             Spacer(Modifier.height(14.dp))
             Box(

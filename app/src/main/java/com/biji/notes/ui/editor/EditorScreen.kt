@@ -73,6 +73,7 @@ private enum class EditorMode { VIEW, EDIT, DIFF }
 @Composable
 fun EditorScreen(
     sandbox: LocalSandbox,
+    folder: String,
     path: String,
     onBack: () -> Unit
 ) {
@@ -86,11 +87,15 @@ fun EditorScreen(
     var mode by remember { mutableStateOf(EditorMode.VIEW) }
     val scope = rememberCoroutineScope()
     val aiEdited by sandbox.aiEditedPaths.collectAsState()
-    val hasDiff = path.trimStart('/') in aiEdited && sandbox.snapshotBefore(path) != null
+    val editKeyForPath = remember(folder, path) {
+        val f = folder.ifEmpty { LocalSandbox.DEFAULT_FOLDER }
+        "$f/${path.trimStart('/')}"
+    }
+    val hasDiff = editKeyForPath in aiEdited && sandbox.snapshotBefore(folder, path) != null
 
     LaunchedEffect(path) {
         val body = withContext(Dispatchers.IO) {
-            runCatching { sandbox.readFile(path, maxBytes = 256 * 1024) }
+            runCatching { sandbox.readFile(folder, path, maxBytes = 256 * 1024) }
         }
         body.fold(
             onSuccess = { content ->
@@ -179,7 +184,7 @@ fun EditorScreen(
                             scope.launch {
                                 runCatching {
                                     withContext(Dispatchers.IO) {
-                                        sandbox.writeFile(path, fieldValue.text, append = false)
+                                        sandbox.writeFile(folder, path, fieldValue.text, append = false)
                                     }
                                 }
                                 dirty = false
@@ -226,7 +231,7 @@ fun EditorScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
                     mode == EditorMode.DIFF -> {
-                        val before = sandbox.snapshotBefore(path).orEmpty()
+                        val before = sandbox.snapshotBefore(folder, path).orEmpty()
                         DiffView(before = before, after = fieldValue.text)
                     }
                     mode == EditorMode.EDIT -> {

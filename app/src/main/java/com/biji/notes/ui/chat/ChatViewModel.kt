@@ -107,6 +107,23 @@ class ChatViewModel(
         .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else chat.observeMessages(id) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** Folder name bound to the active conversation. Empty string means
+     *  "no project chosen" — sandbox tools fall back to the default
+     *  root. Re-emits whenever the user switches conversations or
+     *  renames the project. */
+    val activeProjectFolder: StateFlow<String> = _activeConvoId
+        .flatMapLatest { id ->
+            if (id == null) flowOf("") else settingsRepo.convoFolder(id)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
+
+    /** Persist a project folder name for the currently active
+     *  conversation. Empty string clears the binding. */
+    fun setActiveProjectFolder(folder: String) {
+        val id = _activeConvoId.value ?: return
+        viewModelScope.launch { settingsRepo.setConvoFolder(id, folder) }
+    }
+
     private val _isStreaming = MutableStateFlow(false)
     val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
 
@@ -388,7 +405,9 @@ class ChatViewModel(
                     label = stepLabel,
                     state = WorkflowStepState.RUNNING
                 )
-                val (forModel, uiJson) = runCatching { toolExec.run(call) }
+                val (forModel, uiJson) = runCatching {
+                    toolExec.run(call, projectFolder = activeProjectFolder.value)
+                }
                     .getOrElse { e ->
                         "工具失败: ${e.message}" to buildJsonObject {
                             put("kind", "error")

@@ -72,6 +72,7 @@ private data class TreeNode(
 @Composable
 fun ProjectDrawer(
     sandbox: LocalSandbox,
+    folder: String,
     open: Boolean,
     onOpenFile: (String) -> Unit,
     onDismiss: () -> Unit
@@ -104,6 +105,7 @@ fun ProjectDrawer(
             ) {
                 DrawerBody(
                     sandbox = sandbox,
+                    folder = folder,
                     onOpenFile = {
                         onOpenFile(it)
                         onDismiss()
@@ -117,6 +119,7 @@ fun ProjectDrawer(
 @Composable
 private fun DrawerBody(
     sandbox: LocalSandbox,
+    folder: String,
     onOpenFile: (String) -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
@@ -125,10 +128,14 @@ private fun DrawerBody(
     var tree by remember { mutableStateOf<TreeNode?>(null) }
     // Track which directories are expanded; defaults to root open.
     val expanded = remember { mutableStateMapOf<String, Boolean>().apply { put("", true) } }
+    val projectRoot = remember(folder) { sandbox.projectRoot(folder) }
+    val folderKeyPrefix = remember(folder) {
+        (folder.ifEmpty { LocalSandbox.DEFAULT_FOLDER }) + "/"
+    }
 
-    LaunchedEffect(refreshKey, aiEdited.size) {
+    LaunchedEffect(refreshKey, folder, aiEdited.size) {
         val built = withContext(Dispatchers.IO) {
-            buildTree(sandbox.root, sandbox.root, depth = 0)
+            buildTree(projectRoot, projectRoot, depth = 0)
         }
         tree = built
     }
@@ -147,13 +154,23 @@ private fun DrawerBody(
                 .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                "项目文件",
-                style = MaterialTheme.typography.titleMedium,
-                color = cs.onSurface,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f)
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "项目文件",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = cs.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    folder.ifEmpty { LocalSandbox.DEFAULT_FOLDER },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             if (aiEdited.isNotEmpty()) {
                 Row(
                     modifier = Modifier
@@ -179,7 +196,7 @@ private fun DrawerBody(
             }
         }
         Text(
-            sandbox.root.path,
+            projectRoot.path,
             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
             color = cs.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp),
@@ -214,7 +231,7 @@ private fun DrawerBody(
                         FileRow(
                             node = node,
                             isExpanded = expanded[node.relPath] == true,
-                            highlighted = node.relPath in aiEdited,
+                            highlighted = (folderKeyPrefix + node.relPath) in aiEdited,
                             onClick = {
                                 if (node.file.isDirectory) {
                                     expanded[node.relPath] = !(expanded[node.relPath] ?: false)

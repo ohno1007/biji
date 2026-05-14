@@ -12,67 +12,82 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
- * Local app-scoped sandbox: read/write/list inside the app's private
- * external files dir and run small shell commands inside the same
- * tree. All paths are resolved relative to [root] and checked to make
- * sure they never escape it (no `../` traversal, no absolute paths
- * pointing outside the sandbox).
+ * Per-conversation project workspace plus a global shell.
  *
- * The user can populate this dir with their own files via the system
- * file picker (it's under `Android/data/com.biji.notes/files/projects/
- * default`) and the assistant gets read / write / shell access to it
- * via the tool calls in [com.biji.notes.net.Tools].
+ * File-system reads / writes / listings are scoped to a per-conversation
+ * project folder living under `<external files>/projects/<folder>`.
+ * Each conversation can pick its own folder name (see
+ * SettingsRepository.setConvoFolder); paths handed to read_file /
+ * write_file / list_directory are resolved relative to that folder and
+ * cannot escape it.
+ *
+ * `runShell`, by contrast, runs in the global Android environment — it
+ * uses the project folder as the default cwd but the command itself can
+ * touch anywhere the app process can reach. A small denylist refuses
+ * the obviously-destructive shapes (`rm -rf /`, fork bombs, `mkfs`,
+ * `dd of=/dev/`, `shred`).
  */
 class LocalSandbox(private val context: Context) {
 
-    /** Set of relative paths the assistant has written / created during
-     *  this app session. The project-drawer surfaces a small ⚡ badge
-     *  next to these so the user can see what changed. */
+    /** Set of relative paths (prefixed with `<folder>/`) the assistant
+     *  has written / created during this app session. The project drawer
+     *  surfaces a small ⚡ badge next to these. */
     private val _aiEditedPaths = MutableStateFlow<Set<String>>(emptySet())
     val aiEditedPaths: StateFlow<Set<String>> = _aiEditedPaths.asStateFlow()
 
     /** Pre-edit snapshots of each file the assistant has modified this
-     *  session, keyed by relative path. Captured *before* the write
-     *  applies, so the diff view can compare on-disk → on-disk-after. */
+     *  session, keyed by `<folder>/<relpath>`. The snapshot is the
+     *  on-disk content captured *before* the write applies — earliest
+     *  per session wins. */
     private val preEditSnapshots = mutableMapOf<String, String>()
 
-    fun markAiEdited(path: String) {
-        _aiEditedPaths.value = _aiEditedPaths.value + path.trimStart('/')
+    private fun editKey(folder: String?, path: String): String {
+        val f = (folder ?: DEFAULT_FOLDER).trim('/')
+        val p = path.trimStart('/')
+        return "$f/$p"
     }
 
-    /** Stash the current content of [path] (if any) so a later
-     *  [snapshotBefore] retrieval can render a diff. Idempotent on the
-     *  same path within a session — we keep the *earliest* snapshot so
-     *  the diff always traces back to the user's original file. */
-    fun captureSnapshot(path: String, content: String) {
-        val key = path.trimStart('/')
+    fun markAiEdited(folder: String?, path: String) {
+        _aiEditedPaths.value = _aiEditedPaths.value + editKey(folder, path)
+    }
+
+    fun captureSnapshot(folder: String?, path: String, content: String) {
+        val key = editKey(folder, path)
         if (key !in preEditSnapshots) preEditSnapshots[key] = content
     }
 
-    fun snapshotBefore(path: String): String? =
-        preEditSnapshots[path.trimStart('/')]
+    fun snapshotBefore(folder: String?, path: String): String? =
+        preEditSnapshots[editKey(folder, path)]
 
     fun clearAiEdited() {
         _aiEditedPaths.value = emptySet()
         preEditSnapshots.clear()
     }
 
-    /** Project root. Created lazily; survives across runs. */
-    val root: File
+    /** Base directory that contains every per-conversation project root. */
+    val projectsBase: File
         get() {
-            val base = context.getExternalFilesDir(null)
-                ?: context.filesDir
-            return File(base, "projects/default").also { it.mkdirs() }
+            val base = context.getExternalFilesDir(null) ?: context.filesDir
+            return File(base, "projects").also { it.mkdirs() }
         }
 
-    /** Map a user-supplied relative path to a real [File] inside [root].
-     *  Throws [SecurityException] if the resolved path would escape. */
-    fun resolveInRoot(path: String): File {
+    /** Project root for [folder]. Falls back to `projects/default` when
+     *  the folder is null or blank. Created lazily; survives across runs. */
+    fun projectRoot(folder: String?): File {
+        val name = folder?.trim()?.trim('/')?.ifEmpty { null } ?: DEFAULT_FOLDER
+        return File(projectsBase, name).also { it.mkdirs() }
+    }
+
+    /** Map a user-supplied relative path to a real [File] inside the
+     *  [folder]'s project root. Throws [SecurityException] if the
+     *  resolved path would escape. */
+    fun resolveInProject(folder: String?, path: String): File {
+        val root = projectRoot(folder)
         val cleaned = path.trim().trimStart('/')
         val target = File(root, cleaned).canonicalFile
         val rootCanon = root.canonicalFile.path
         if (target.path != rootCanon && !target.path.startsWith("$rootCanon/")) {
-            throw SecurityException("Path escapes sandbox: $path")
+            throw SecurityException("Path escapes project: $path")
         }
         return target
     }
@@ -85,35 +100,45 @@ class LocalSandbox(private val context: Context) {
         val lastModified: Long
     )
 
-    suspend fun listDirectory(path: String): List<FileEntry> = withContext(Dispatchers.IO) {
-        val dir = resolveInRoot(path)
-        if (!dir.exists()) error("Path not found: $path")
-        if (!dir.isDirectory) error("Not a directory: $path")
-        (dir.listFiles() ?: emptyArray()).map { f ->
-            FileEntry(
-                name = f.name,
-                path = f.relativeTo(root).path,
-                isDirectory = f.isDirectory,
-                sizeBytes = if (f.isDirectory) -1L else f.length(),
-                lastModified = f.lastModified()
-            )
-        }.sortedWith(compareBy({ !it.isDirectory }, { it.name }))
-    }
-
-    suspend fun readFile(path: String, maxBytes: Int = 64 * 1024): String =
+    suspend fun listDirectory(folder: String?, path: String): List<FileEntry> =
         withContext(Dispatchers.IO) {
-            val file = resolveInRoot(path)
-            if (!file.exists()) error("File not found: $path")
-            if (file.isDirectory) error("Path is a directory: $path")
-            val bytes = file.readBytes()
-            if (bytes.size <= maxBytes) String(bytes, Charsets.UTF_8)
-            else String(bytes.copyOfRange(0, maxBytes), Charsets.UTF_8) +
-                "\n…[truncated at $maxBytes bytes, total ${bytes.size}]"
+            val dir = resolveInProject(folder, path)
+            if (!dir.exists()) error("Path not found: $path")
+            if (!dir.isDirectory) error("Not a directory: $path")
+            val root = projectRoot(folder)
+            (dir.listFiles() ?: emptyArray()).map { f ->
+                FileEntry(
+                    name = f.name,
+                    path = f.relativeTo(root).path,
+                    isDirectory = f.isDirectory,
+                    sizeBytes = if (f.isDirectory) -1L else f.length(),
+                    lastModified = f.lastModified()
+                )
+            }.sortedWith(compareBy({ !it.isDirectory }, { it.name }))
         }
 
-    suspend fun writeFile(path: String, content: String, append: Boolean = false) {
+    suspend fun readFile(
+        folder: String?,
+        path: String,
+        maxBytes: Int = 64 * 1024
+    ): String = withContext(Dispatchers.IO) {
+        val file = resolveInProject(folder, path)
+        if (!file.exists()) error("File not found: $path")
+        if (file.isDirectory) error("Path is a directory: $path")
+        val bytes = file.readBytes()
+        if (bytes.size <= maxBytes) String(bytes, Charsets.UTF_8)
+        else String(bytes.copyOfRange(0, maxBytes), Charsets.UTF_8) +
+            "\n…[truncated at $maxBytes bytes, total ${bytes.size}]"
+    }
+
+    suspend fun writeFile(
+        folder: String?,
+        path: String,
+        content: String,
+        append: Boolean = false
+    ) {
         withContext(Dispatchers.IO) {
-            val file = resolveInRoot(path)
+            val file = resolveInProject(folder, path)
             file.parentFile?.mkdirs()
             if (append) file.appendText(content, Charsets.UTF_8)
             else file.writeText(content, Charsets.UTF_8)
@@ -127,23 +152,47 @@ class LocalSandbox(private val context: Context) {
         val stderr: String,
         val exitCode: Int,
         val durationMs: Long,
-        val timedOut: Boolean
+        val timedOut: Boolean,
+        /** True if the denylist rejected the command before exec. */
+        val blocked: Boolean = false,
+        val blockedReason: String? = null
     )
 
     /**
-     * Run a shell command via `sh -c` inside the sandbox. stdout and
-     * stderr are drained on separate threads to avoid pipe deadlock for
-     * large outputs. Times out after [timeoutMs] and reports the
-     * partial output.
+     * Run a shell command in the global Android environment via
+     * `sh -c`. The project folder is the default cwd. The command is
+     * NOT restricted to the project — the user explicitly opted out of
+     * sandbox semantics for shell — but we refuse a handful of
+     * obviously-destructive shapes via [isDangerousCommand].
      */
     suspend fun runShell(
+        folder: String?,
         command: String,
         cwd: String? = null,
         timeoutMs: Long = 30_000L
     ): ShellResult = coroutineScope {
         withContext(Dispatchers.IO) {
-            val workDir = if (cwd.isNullOrBlank()) root else resolveInRoot(cwd)
+            val reason = isDangerousCommandReason(command)
+            val workDir = when {
+                cwd.isNullOrBlank() -> projectRoot(folder)
+                else -> runCatching { resolveInProject(folder, cwd) }
+                    .getOrElse { File(cwd) }
+            }
             if (!workDir.exists()) workDir.mkdirs()
+            val workDirDisplay = workDir.canonicalPath
+            if (reason != null) {
+                return@withContext ShellResult(
+                    command = command,
+                    workingDir = workDirDisplay,
+                    stdout = "",
+                    stderr = "拒绝执行：$reason",
+                    exitCode = -1,
+                    durationMs = 0L,
+                    timedOut = false,
+                    blocked = true,
+                    blockedReason = reason
+                )
+            }
             val start = System.currentTimeMillis()
             val process = ProcessBuilder("sh", "-c", command)
                 .directory(workDir)
@@ -160,13 +209,44 @@ class LocalSandbox(private val context: Context) {
             val exit = if (finished) process.exitValue() else -1
             ShellResult(
                 command = command,
-                workingDir = workDir.relativeToOrSelf(root).path.ifEmpty { "." },
+                workingDir = workDirDisplay,
                 stdout = outFuture.await(),
                 stderr = errFuture.await(),
                 exitCode = exit,
                 durationMs = System.currentTimeMillis() - start,
                 timedOut = !finished
             )
+        }
+    }
+
+    companion object {
+        const val DEFAULT_FOLDER = "default"
+
+        /** Return a short human-readable reason if [cmd] looks
+         *  unambiguously destructive, else null. Matches on the raw
+         *  text — we intentionally don't try to lex the shell, just
+         *  catch a handful of obvious shapes. */
+        fun isDangerousCommand(cmd: String): Boolean = isDangerousCommandReason(cmd) != null
+
+        fun isDangerousCommandReason(cmd: String): String? {
+            val c = cmd.trim()
+            // rm -rf on a filesystem root or HOME
+            val rmRf = Regex("""\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-rf|-fr)\b""")
+            if (rmRf.containsMatchIn(c)) {
+                val targets = Regex("""\brm\s+-[rRfF]+\s+(--no-preserve-root\s+)?(/[^\s|;&]*|[$]HOME|~|\*)""")
+                if (targets.containsMatchIn(c)) return "rm -rf 在系统根或 \$HOME"
+            }
+            if (Regex("""\bmkfs(\.[a-zA-Z0-9]+)?\b""").containsMatchIn(c)) return "mkfs 会格式化设备"
+            if (Regex("""\bdd\b[^|;&]*\bof=/dev/""").containsMatchIn(c)) return "dd 写入块设备"
+            if (Regex("""\bshred\b""").containsMatchIn(c)) return "shred 不可恢复擦除"
+            // Classic fork bomb :(){ :|:& };:
+            if (c.replace(" ", "").contains(":(){:|:&};:")) return "fork bomb"
+            // Stupidly dangerous: chmod 000 /  or  chown -R nobody /
+            if (Regex("""\bchmod\s+[-0-7]+\s+/(?:\s|$)""").containsMatchIn(c)) return "chmod 改根目录权限"
+            if (Regex("""\bchown\s+[^|;&]*\s+/(?:\s|$)""").containsMatchIn(c)) return "chown 改根目录归属"
+            // Reboot / shutdown
+            if (Regex("""\b(reboot|shutdown|halt|poweroff)\b""").containsMatchIn(c)) return "关机 / 重启"
+            return null
         }
     }
 }

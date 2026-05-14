@@ -299,7 +299,7 @@ fun SettingsScreen(
                         )
                         if (settings.developerMode) {
                             InsetDivider()
-                            SandboxPathRow(vm.sandbox.root.absolutePath)
+                            SandboxPathRow(vm.sandbox.projectsBase.absolutePath)
                         }
                     }
                 }

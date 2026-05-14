@@ -155,7 +155,7 @@ object Tools {
                 put("name", RUN_SHELL)
                 put(
                     "description",
-                    "在本地项目沙箱中通过 `sh -c` 执行 shell 命令。沙箱根作为默认工作目录；可选 cwd 参数切换到子目录。30 秒超时；返回 stdout / stderr / exit 码。"
+                    "在全局 Android 进程环境中通过 `sh -c` 执行 shell 命令。默认 cwd 为当前会话绑定的项目目录；命令本身不受沙箱限制（除非匹配危险命令黑名单：rm -rf /、mkfs、dd of=/dev/、shred、fork bomb、关机/重启）。30 秒超时；返回 stdout / stderr / exit 码。"
                 )
                 put("parameters", buildJsonObject {
                     put("type", "object")
@@ -193,21 +193,25 @@ class ToolExecutor(
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
 
-    /** Execute a tool. Returns:
+    /** Execute a tool against the project folder bound to the active
+     *  conversation. [projectFolder] is the folder name selected for
+     *  that conversation (null/empty falls back to the default root).
+     *
+     *  Returns:
      *   first  = a human-readable JSON content for the `tool` message
      *            (sent back to the model)
      *   second = a structured JSON payload for the chat UI to render
      *            (search results / extracted article / shell run).  */
-    suspend fun run(call: ToolCall): Pair<String, JsonObject> {
+    suspend fun run(call: ToolCall, projectFolder: String? = null): Pair<String, JsonObject> {
         val args = runCatching { json.parseToJsonElement(call.arguments).jsonObject }
             .getOrElse { JsonObject(emptyMap()) }
         return when (call.name) {
             Tools.WEB_SEARCH -> runWebSearch(args)
             Tools.READ_URL -> runReadUrl(args)
-            Tools.LIST_DIRECTORY -> runListDirectory(args)
-            Tools.READ_FILE -> runReadFile(args)
-            Tools.WRITE_FILE -> runWriteFile(args)
-            Tools.RUN_SHELL -> runShellCommand(args)
+            Tools.LIST_DIRECTORY -> runListDirectory(args, projectFolder)
+            Tools.READ_FILE -> runReadFile(args, projectFolder)
+            Tools.WRITE_FILE -> runWriteFile(args, projectFolder)
+            Tools.RUN_SHELL -> runShellCommand(args, projectFolder)
             else -> "Unknown tool: ${call.name}" to buildJsonObject {
                 put("kind", "error")
                 put("message", "Unknown tool: ${call.name}")
@@ -274,9 +278,9 @@ class ToolExecutor(
         return forModel to ui
     }
 
-    private suspend fun runListDirectory(args: JsonObject): Pair<String, JsonObject> {
+    private suspend fun runListDirectory(args: JsonObject, folder: String?): Pair<String, JsonObject> {
         val path = args["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        return runCatching { sandbox.listDirectory(path) }.fold(
+        return runCatching { sandbox.listDirectory(folder, path) }.fold(
             onSuccess = { entries ->
                 val ui = buildJsonObject {
                     put("kind", Tools.LIST_DIRECTORY)
@@ -309,9 +313,9 @@ class ToolExecutor(
         )
     }
 
-    private suspend fun runReadFile(args: JsonObject): Pair<String, JsonObject> {
+    private suspend fun runReadFile(args: JsonObject, folder: String?): Pair<String, JsonObject> {
         val path = args["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        return runCatching { sandbox.readFile(path) }.fold(
+        return runCatching { sandbox.readFile(folder, path) }.fold(
             onSuccess = { body ->
                 val ui = buildJsonObject {
                     put("kind", Tools.READ_FILE)
@@ -332,25 +336,25 @@ class ToolExecutor(
         )
     }
 
-    private suspend fun runWriteFile(args: JsonObject): Pair<String, JsonObject> {
+    private suspend fun runWriteFile(args: JsonObject, folder: String?): Pair<String, JsonObject> {
         val path = args["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
         val content = args["content"]?.jsonPrimitive?.contentOrNull.orEmpty()
         val append = args["append"]?.jsonPrimitive?.contentOrNull?.equals("true", true) ?: false
         // Capture the pre-edit content so the editor can render a diff
         // afterwards. Silently swallow read errors — if the file
         // doesn't exist yet the snapshot is just empty.
-        val priorContent = runCatching { sandbox.readFile(path, maxBytes = 256 * 1024) }
+        val priorContent = runCatching { sandbox.readFile(folder, path, maxBytes = 256 * 1024) }
             .getOrDefault("")
-        sandbox.captureSnapshot(path, priorContent)
+        sandbox.captureSnapshot(folder, path, priorContent)
         // Cap each side at 32 KB when round-tripping through the DB so a
         // huge file rewrite can't bloat the chat message blob.
         val capBytes = 32 * 1024
         val beforeCapped = priorContent.take(capBytes)
         val afterCapped = content.take(capBytes)
         val truncated = priorContent.length > capBytes || content.length > capBytes
-        return runCatching { sandbox.writeFile(path, content, append) }.fold(
+        return runCatching { sandbox.writeFile(folder, path, content, append) }.fold(
             onSuccess = {
-                sandbox.markAiEdited(path)
+                sandbox.markAiEdited(folder, path)
                 val ui = buildJsonObject {
                     put("kind", Tools.WRITE_FILE)
                     put("path", path)
@@ -370,7 +374,7 @@ class ToolExecutor(
         )
     }
 
-    private suspend fun runShellCommand(args: JsonObject): Pair<String, JsonObject> {
+    private suspend fun runShellCommand(args: JsonObject, folder: String?): Pair<String, JsonObject> {
         val cmd = args["command"]?.jsonPrimitive?.contentOrNull.orEmpty()
         val cwd = args["cwd"]?.jsonPrimitive?.contentOrNull
         val timeoutMs = args["timeoutMs"]?.jsonPrimitive?.intOrNull?.toLong()?.coerceIn(500, 60_000)
@@ -378,7 +382,7 @@ class ToolExecutor(
         if (cmd.isBlank()) {
             return "command 不能为空" to errorJson(Tools.RUN_SHELL, "Empty command")
         }
-        return runCatching { sandbox.runShell(cmd, cwd, timeoutMs) }.fold(
+        return runCatching { sandbox.runShell(folder, cmd, cwd, timeoutMs) }.fold(
             onSuccess = { r ->
                 val ui = buildJsonObject {
                     put("kind", Tools.RUN_SHELL)
@@ -389,9 +393,16 @@ class ToolExecutor(
                     put("timedOut", r.timedOut)
                     put("stdout", r.stdout)
                     put("stderr", r.stderr)
+                    if (r.blocked) {
+                        put("blocked", true)
+                        r.blockedReason?.let { put("blockedReason", it) }
+                    }
                 }
                 val forModel = buildString {
-                    appendLine("$ ${r.command}    (cwd=${r.workingDir}, exit=${r.exitCode}${if (r.timedOut) ", TIMEOUT" else ""}, ${r.durationMs}ms)")
+                    appendLine("$ ${r.command}    (cwd=${r.workingDir}, exit=${r.exitCode}${if (r.timedOut) ", TIMEOUT" else ""}${if (r.blocked) ", BLOCKED" else ""}, ${r.durationMs}ms)")
+                    if (r.blocked) {
+                        appendLine("命令被拒绝执行：${r.blockedReason ?: "危险命令"}")
+                    }
                     if (r.stdout.isNotEmpty()) {
                         appendLine("--- stdout ---")
                         append(r.stdout)

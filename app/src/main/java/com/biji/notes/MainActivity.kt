@@ -118,6 +118,7 @@ private fun AppRoot(vm: ChatViewModel) {
     val activeConvo by vm.activeConvoId.collectAsState()
     val openWebUrl by vm.openWebUrl.collectAsState()
     val openEditorPath by vm.openEditorPath.collectAsState()
+    val activeProjectFolder by vm.activeProjectFolder.collectAsState()
     val showBottomBar = activeConvo == null && openWebUrl == null && openEditorPath == null
 
     // POST_NOTIFICATIONS – ask once on launch on API 33+.
@@ -219,6 +220,7 @@ private fun AppRoot(vm: ChatViewModel) {
                 BackHandler { vm.closeEditor() }
                 com.biji.notes.ui.editor.EditorScreen(
                     sandbox = vm.sandbox,
+                    folder = activeProjectFolder,
                     path = path,
                     onBack = { vm.closeEditor() }
                 )
