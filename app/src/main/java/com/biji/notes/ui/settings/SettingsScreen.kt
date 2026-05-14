@@ -118,7 +118,9 @@ fun SettingsScreen(
 
     LaunchedEffect(settings.apiKey, settings.baseUrl) { vm.ensureModelsLoaded() }
 
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    // Pinned scroll behavior — the large title stays fixed at the top
+    // instead of collapsing on scroll.
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     Scaffold(
         modifier = Modifier

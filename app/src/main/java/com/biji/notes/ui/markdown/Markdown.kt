@@ -223,6 +223,23 @@ private fun inline(
     val s = source
     while (i < s.length) {
         if (s[i] == '\n') { append('\n'); i++; continue }
+        // Inline math $$...$$ on a single line — common shorthand when
+        // the assistant wraps a one-liner formula. Parsed before single $.
+        if (i + 1 < s.length && s[i] == '$' && s[i + 1] == '$') {
+            val end = s.indexOf("$$", i + 2)
+            if (end != -1 && end > i + 2) {
+                val raw = s.substring(i + 2, end)
+                withStyle(
+                    SpanStyle(
+                        fontFamily = FontFamily.Serif,
+                        fontStyle = FontStyle.Italic,
+                        color = baseColor,
+                        background = baseColor.copy(alpha = 0.08f)
+                    )
+                ) { append(' '); append(latexToUnicode(raw)); append(' ') }
+                i = end + 2; continue
+            }
+        }
         // Inline math $...$
         if (s[i] == '$' && (i + 1 < s.length && s[i + 1] != '$')) {
             val end = s.indexOf('$', i + 1)

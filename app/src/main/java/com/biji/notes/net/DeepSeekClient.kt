@@ -31,7 +31,17 @@ sealed interface ChatEvent {
     data class Delta(val content: String) : ChatEvent
     data class Reasoning(val content: String) : ChatEvent
     data class ToolCalls(val calls: List<ToolCall>) : ChatEvent
-    data class Usage(val prompt: Long, val completion: Long, val total: Long) : ChatEvent
+    data class Usage(
+        val prompt: Long,
+        val completion: Long,
+        val total: Long,
+        /** Tokens that hit DeepSeek's prefix cache (free or discounted).
+         *  Mirrors the `prompt_cache_hit_tokens` field. */
+        val cacheHit: Long = 0L,
+        /** Tokens that missed the cache. Mirrors
+         *  `prompt_cache_miss_tokens`. */
+        val cacheMiss: Long = 0L
+    ) : ChatEvent
     data object Done : ChatEvent
     data class Error(val message: String) : ChatEvent
 }
@@ -343,7 +353,9 @@ class DeepSeekClient {
                     ChatEvent.Usage(
                         prompt = u.longOrNull("prompt_tokens") ?: 0L,
                         completion = u.longOrNull("completion_tokens") ?: 0L,
-                        total = u.longOrNull("total_tokens") ?: 0L
+                        total = u.longOrNull("total_tokens") ?: 0L,
+                        cacheHit = u.longOrNull("prompt_cache_hit_tokens") ?: 0L,
+                        cacheMiss = u.longOrNull("prompt_cache_miss_tokens") ?: 0L
                     )
                 )
             }
@@ -396,7 +408,9 @@ class DeepSeekClient {
                     ChatEvent.Usage(
                         prompt = u.longOrNull("prompt_tokens") ?: 0L,
                         completion = u.longOrNull("completion_tokens") ?: 0L,
-                        total = u.longOrNull("total_tokens") ?: 0L
+                        total = u.longOrNull("total_tokens") ?: 0L,
+                        cacheHit = u.longOrNull("prompt_cache_hit_tokens") ?: 0L,
+                        cacheMiss = u.longOrNull("prompt_cache_miss_tokens") ?: 0L
                     )
                 )
             }

@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -58,6 +59,7 @@ import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Mic
@@ -207,7 +209,9 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     var modelSheetOpen by remember { mutableStateOf(false) }
     var contextStatsOpen by remember { mutableStateOf(false) }
+    var cacheDetailsOpen by remember { mutableStateOf(false) }
     var modelPickerOpen by remember { mutableStateOf(false) }
+    val latestUsage by vm.latestUsage.collectAsState()
 
     // Pull a fresh models list as soon as we land on a chat screen.
     LaunchedEffect(settings.apiKey, settings.baseUrl) { vm.ensureModelsLoaded() }
@@ -409,9 +413,11 @@ fun ChatScreen(
         }
 
         // Context-stats popup. Its bounds morph out of the ContextRing
-        // (shared content state CONTEXT_STATS_KEY).
+        // (shared content state CONTEXT_STATS_KEY). Tapping the
+        // "已用 token" row triggers a second-level popup that shares
+        // its bounds with that row via CACHE_DETAILS_KEY.
         AnimatedVisibility(
-            visible = contextStatsOpen,
+            visible = contextStatsOpen && !cacheDetailsOpen,
             enter = fadeIn(tween(180)),
             exit = fadeOut(tween(140)),
             modifier = Modifier.fillMaxSize()
@@ -422,7 +428,24 @@ fun ChatScreen(
                     model = settings.model,
                     sharedTransitionScope = sharedTransitionScope,
                     animatedVisibilityScope = this@AnimatedVisibility,
+                    onUsedRowClick = { cacheDetailsOpen = true },
                     onDismiss = { contextStatsOpen = false }
+                )
+            }
+        }
+        AnimatedVisibility(
+            visible = cacheDetailsOpen,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            ContextStatsScrim(onDismiss = { cacheDetailsOpen = false }) {
+                CacheDetailsPopup(
+                    usage = ctxUsage,
+                    details = latestUsage,
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = this@AnimatedVisibility,
+                    onBack = { cacheDetailsOpen = false }
                 )
             }
         }
@@ -733,8 +756,14 @@ private fun MessageItem(m: Message, onOpenUrl: (String) -> Unit) {
         m.content.isBlank() && m.reasoning.isNullOrBlank() && m.toolData == null) {
         return
     }
-    if (m.role == Role.ASSISTANT && m.toolData != null && m.content.isBlank()) {
-        // tool_call carrier – UI is the following tool_result row
+    // Tool-call carrier with neither reasoning nor content — invisible.
+    // (The associated tool_result message renders separately as a chip.)
+    // Carriers that DO have reasoning are kept so the chat reads
+    // chronologically: think → tool → text → think → tool → text …
+    // instead of every "thinking" being collapsed into one block at the
+    // end and the tool chips clumping above it.
+    if (m.role == Role.ASSISTANT && m.toolData != null &&
+        m.content.isBlank() && m.reasoning.isNullOrBlank()) {
         return
     }
     if (m.kind == MessageKind.TOOL_RESULT) {
@@ -831,7 +860,7 @@ private fun AssistantBlock(m: Message, onOpenUrl: (String) -> Unit = {}) {
         }
         if (m.content.isBlank() && m.reasoning.isNullOrBlank()) {
             TypingDots()
-        } else {
+        } else if (m.content.isNotBlank()) {
             MarkdownText(markdown = m.content, onOpenUrl = onOpenUrl)
             if (m.content.isNotBlank()) {
                 Spacer(Modifier.height(6.dp))
@@ -1582,6 +1611,8 @@ private fun EmptyChatHint() {
 // Context-stats popup — bounds morph from the ring's CONTEXT_STATS_KEY
 // =====================================================================
 
+private const val CACHE_DETAILS_KEY = "biji-cache-details"
+
 @OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
 @Composable
 private fun ContextStatsPopup(
@@ -1589,6 +1620,7 @@ private fun ContextStatsPopup(
     model: String,
     sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
     animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope,
+    onUsedRowClick: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
@@ -1673,7 +1705,50 @@ private fun ContextStatsPopup(
                 }
             }
             Spacer(Modifier.height(16.dp))
-            StatsRow(label = "已用 token", value = formatTokens(usage.tokens))
+            // "已用 token" row is itself a shared element — tap to expand
+            // into the cache-breakdown card.
+            val usedRowMod = if (sharedTransitionScope != null) {
+                with(sharedTransitionScope) {
+                    Modifier.sharedBounds(
+                        rememberSharedContentState(key = CACHE_DETAILS_KEY),
+                        animatedVisibilityScope = animatedVisibilityScope,
+                        enter = fadeIn(tween(200)),
+                        exit = fadeOut(tween(140)),
+                        resizeMode = androidx.compose.animation.SharedTransitionScope
+                            .ResizeMode.RemeasureToBounds
+                    )
+                }
+            } else Modifier
+            Row(
+                modifier = usedRowMod
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .bouncyClickable(pressedScale = 0.985f, onClick = onUsedRowClick)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "已用 token",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    formatTokens(usage.tokens),
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    ),
+                    color = cs.onSurface,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = cs.onSurfaceVariant
+                )
+            }
             Spacer(Modifier.height(6.dp))
             StatsRow(label = "上下文窗口", value = formatTokens(usage.limit))
             Spacer(Modifier.height(6.dp))
@@ -1727,6 +1802,147 @@ private fun formatTokens(n: Long): String =
         n >= 1_000 -> "%.1fK".format(n / 1_000.0)
         else -> n.toString()
     }
+
+// =====================================================================
+// Cache-details popup — second-level shared element from the
+// "已用 token" row of the context-stats card.
+// =====================================================================
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun CacheDetailsPopup(
+    usage: ContextUsage,
+    details: UsageDetails,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope,
+    onBack: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val sharedMod = if (sharedTransitionScope != null) {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key = CACHE_DETAILS_KEY),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(160)),
+                resizeMode = androidx.compose.animation.SharedTransitionScope
+                    .ResizeMode.RemeasureToBounds
+            )
+        }
+    } else Modifier
+
+    val totalCacheHitMiss = (details.cacheHit + details.cacheMiss).coerceAtLeast(1L)
+    val hitFraction = details.cacheHit.toFloat() / totalCacheHitMiss
+
+    Box(
+        Modifier.fillMaxSize().statusBarsPadding().padding(16.dp),
+        contentAlignment = Alignment.TopEnd
+    ) {
+        Column(
+            modifier = sharedMod
+                .widthIn(min = 280.dp, max = 360.dp)
+                .clip(RoundedCornerShape(28.dp))
+                .background(cs.surface)
+                .pointerInput(Unit) { detectTapGestures { /* eat */ } }
+                .padding(20.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .bouncyClickable(pressedScale = 0.9f, onClick = onBack),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = "返回",
+                        modifier = Modifier.size(18.dp),
+                        tint = cs.onSurface
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Token 缓存命中",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = cs.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "${(hitFraction * 100).toInt()}%",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = if (hitFraction > 0.5f) cs.primary else cs.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            // Visual hit / miss split bar.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(10.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(cs.surfaceContainerHighest)
+            ) {
+                if (details.cacheHit > 0) {
+                    Box(
+                        Modifier
+                            .weight(details.cacheHit.toFloat().coerceAtLeast(0.001f))
+                            .fillMaxHeight()
+                            .background(cs.primary)
+                    )
+                }
+                if (details.cacheMiss > 0) {
+                    Box(
+                        Modifier
+                            .weight(details.cacheMiss.toFloat().coerceAtLeast(0.001f))
+                            .fillMaxHeight()
+                            .background(cs.outline.copy(alpha = 0.5f))
+                    )
+                }
+                if (details.cacheHit == 0L && details.cacheMiss == 0L) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(cs.surfaceContainerHighest)
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            StatsRow(label = "缓存命中", value = formatTokens(details.cacheHit))
+            Spacer(Modifier.height(6.dp))
+            StatsRow(label = "缓存未命中", value = formatTokens(details.cacheMiss))
+            Spacer(Modifier.height(6.dp))
+            StatsRow(label = "Prompt tokens", value = formatTokens(details.prompt))
+            Spacer(Modifier.height(6.dp))
+            StatsRow(label = "Completion tokens", value = formatTokens(details.completion))
+            Spacer(Modifier.height(6.dp))
+            StatsRow(label = "总 token (本轮)", value = formatTokens(details.total))
+            Spacer(Modifier.height(6.dp))
+            StatsRow(label = "累计 token", value = formatTokens(usage.tokens))
+            Spacer(Modifier.height(14.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(50))
+                    .background(cs.primary)
+                    .bouncyClickable(pressedScale = 0.97f, onClick = onBack)
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "返回",
+                    color = cs.onPrimary,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
 
 // =====================================================================
 // Model-picker popup — bounds morph from the composer model chip

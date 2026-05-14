@@ -66,7 +66,9 @@ fun ConversationListScreen(
     val conversations by vm.conversations.collectAsState()
     val settings by vm.settings.collectAsState()
     val modelsState by vm.models.collectAsState()
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    // Pinned scroll behavior — the large title stays fixed at the top of
+    // the screen instead of collapsing as the user scrolls.
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     var modelSheetOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(settings.apiKey, settings.baseUrl) { vm.ensureModelsLoaded() }

@@ -60,6 +60,17 @@ data class ContextUsage(
     companion object { const val DEFAULT_LIMIT = 64_000L }
 }
 
+/** Per-turn token breakdown returned by the API. We forward
+ *  `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` so the
+ *  context-stats popup can show the cache mix. */
+data class UsageDetails(
+    val prompt: Long = 0L,
+    val completion: Long = 0L,
+    val total: Long = 0L,
+    val cacheHit: Long = 0L,
+    val cacheMiss: Long = 0L
+)
+
 enum class WorkflowStepState { RUNNING, DONE, ERROR }
 
 data class WorkflowStep(
@@ -110,6 +121,10 @@ class ChatViewModel(
     // clears when the streaming turn ends.
     private val _workflow = MutableStateFlow<List<WorkflowStep>>(emptyList())
     val workflow: StateFlow<List<WorkflowStep>> = _workflow.asStateFlow()
+
+    // Most recent usage breakdown, refreshed on every API `usage` event.
+    private val _latestUsage = MutableStateFlow(UsageDetails())
+    val latestUsage: StateFlow<UsageDetails> = _latestUsage.asStateFlow()
 
     private val _models = MutableStateFlow(ModelsState())
     val models: StateFlow<ModelsState> = _models.asStateFlow()
@@ -287,7 +302,16 @@ class ChatViewModel(
                         )
                     }
                     is ChatEvent.ToolCalls -> { toolCalls = ev.calls }
-                    is ChatEvent.Usage -> { lastUsageTotal = ev.total }
+                    is ChatEvent.Usage -> {
+                        lastUsageTotal = ev.total
+                        _latestUsage.value = UsageDetails(
+                            prompt = ev.prompt,
+                            completion = ev.completion,
+                            total = ev.total,
+                            cacheHit = ev.cacheHit,
+                            cacheMiss = ev.cacheMiss
+                        )
+                    }
                     ChatEvent.Done -> Unit
                     is ChatEvent.Error -> { sawError = ev.message }
                 }
@@ -399,7 +423,16 @@ class ChatViewModel(
                         reasoningBuf.toString()
                     )
                 }
-                is ChatEvent.Usage -> { lastUsageTotal = ev.total }
+                is ChatEvent.Usage -> {
+                    lastUsageTotal = ev.total
+                    _latestUsage.value = UsageDetails(
+                        prompt = ev.prompt,
+                        completion = ev.completion,
+                        total = ev.total,
+                        cacheHit = ev.cacheHit,
+                        cacheMiss = ev.cacheMiss
+                    )
+                }
                 is ChatEvent.Error -> { sawError = ev.message }
                 else -> Unit
             }
