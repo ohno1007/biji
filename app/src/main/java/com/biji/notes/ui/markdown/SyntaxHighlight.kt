@@ -105,9 +105,14 @@ object SyntaxHighlight {
         "as", "union", "all"
     )
 
-    fun colorize(code: String, lang: String, darkMode: Boolean): AnnotatedString {
+    fun colorize(code: String, lang: String, darkMode: Boolean): AnnotatedString =
+        runCatching { colorizeImpl(code, lang, darkMode) }
+            .getOrElse { AnnotatedString(code) }
+
+    private fun colorizeImpl(code: String, lang: String, darkMode: Boolean): AnnotatedString {
         val palette = if (darkMode) Dark else Light
-        val rules = rulesFor(lang.lowercase(), palette)
+        val rules = runCatching { rulesFor(lang.lowercase(), palette) }
+            .getOrElse { emptyList() }
         if (rules.isEmpty()) return AnnotatedString(code)
 
         val claim = BooleanArray(code.length)
@@ -191,7 +196,10 @@ object SyntaxHighlight {
         Rule(Regex("#[^\\n]*"), p.comment, Priority.CLAIM),
         Rule(Regex("\"(?:\\\\.|[^\"\\\\])*\""), p.string, Priority.CLAIM),
         Rule(Regex("'(?:\\\\.|[^'\\\\])*'"), p.string, Priority.CLAIM),
-        Rule(Regex("\\$\\{[^}]+}|\\$[A-Za-z_][A-Za-z0-9_]*"), p.keyword, Priority.FILL),
+        // Variables: `${NAME}` or `$NAME`. Android's ICU regex compiler
+        // rejects standalone `}` outside a `{n,m}` quantifier — we have
+        // to escape it via `\}`. Same goes for `\{`.
+        Rule(Regex("""\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*"""), p.keyword, Priority.FILL),
         Rule(Regex("\\b(?:if|then|else|fi|for|while|do|done|case|esac|in|function|return|export|local)\\b"), p.keyword, Priority.FILL),
         Rule(Regex("\\b\\d+\\b"), p.number, Priority.FILL)
     )

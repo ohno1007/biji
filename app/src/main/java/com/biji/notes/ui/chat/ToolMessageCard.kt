@@ -310,16 +310,40 @@ private data class SandboxPreview(
     val body: String
 )
 
-private fun describeSandbox(kind: String, data: JsonObject): SandboxPreview = when (kind) {
+private fun describeSandbox(kind: String, data: JsonObject): SandboxPreview =
+    runCatching { describeSandboxImpl(kind, data) }
+        .getOrElse { err ->
+            // ANY exception in field parsing — wrong JSON shape, missing
+            // key, weird Unicode in shell output — surfaces as a tiny
+            // notice instead of propagating into composition and
+            // crashing the chat. The trace is still captured by
+            // CrashHandler if we want to dig in later.
+            SandboxPreview(
+                icon = Icons.Outlined.Description,
+                header = "工具结果",
+                primaryLine = "解析失败: ${err.message ?: err.javaClass.simpleName}",
+                body = data.toString().take(2000)
+            )
+        }
+
+private fun JsonObject.str(key: String): String? =
+    (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+private fun JsonObject.long(key: String): Long? = str(key)?.toLongOrNull()
+private fun JsonObject.int(key: String): Int? = str(key)?.toIntOrNull()
+private fun JsonObject.bool(key: String): Boolean? = str(key)?.toBooleanStrictOrNull()
+private fun JsonObject.arr(key: String): JsonArray? = this[key] as? JsonArray
+private fun JsonObject.obj(key: String): JsonObject? = this[key] as? JsonObject
+
+private fun describeSandboxImpl(kind: String, data: JsonObject): SandboxPreview = when (kind) {
     "list_directory" -> {
-        val path = data["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val entries = (data["entries"] as? JsonArray) ?: kotlinx.serialization.json.JsonArray(emptyList())
+        val path = data.str("path").orEmpty()
+        val entries = data.arr("entries") ?: kotlinx.serialization.json.JsonArray(emptyList())
         val body = buildString {
             entries.forEach { el ->
-                val o = el.jsonObject
-                val name = o["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                val isDir = o["isDirectory"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() == true
-                val size = o["sizeBytes"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: -1L
+                val o = (el as? JsonObject) ?: return@forEach
+                val name = o.str("name").orEmpty()
+                val isDir = o.bool("isDirectory") == true
+                val size = o.long("sizeBytes") ?: -1L
                 appendLine(if (isDir) "[dir]  $name" else "${size}B  $name")
             }
             if (entries.isEmpty()) appendLine("(空目录)")
@@ -332,9 +356,9 @@ private fun describeSandbox(kind: String, data: JsonObject): SandboxPreview = wh
         )
     }
     "read_file" -> {
-        val path = data["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val bytes = data["bytes"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
-        val content = data["content"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val path = data.str("path").orEmpty()
+        val bytes = data.int("bytes") ?: 0
+        val content = data.str("content").orEmpty()
         SandboxPreview(
             icon = Icons.Outlined.Description,
             header = "读取文件",
@@ -343,9 +367,9 @@ private fun describeSandbox(kind: String, data: JsonObject): SandboxPreview = wh
         )
     }
     "write_file" -> {
-        val path = data["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val bytes = data["bytes"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
-        val append = data["append"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() == true
+        val path = data.str("path").orEmpty()
+        val bytes = data.int("bytes") ?: 0
+        val append = data.bool("append") == true
         SandboxPreview(
             icon = Icons.Outlined.Edit,
             header = if (append) "追加文件" else "写入文件",
@@ -354,13 +378,13 @@ private fun describeSandbox(kind: String, data: JsonObject): SandboxPreview = wh
         )
     }
     "run_shell_command" -> {
-        val command = data["command"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val cwd = data["workingDir"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val exit = data["exitCode"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: -1
-        val duration = data["durationMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
-        val timedOut = data["timedOut"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() == true
-        val stdout = data["stdout"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val stderr = data["stderr"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val command = data.str("command").orEmpty()
+        val cwd = data.str("workingDir").orEmpty()
+        val exit = data.int("exitCode") ?: -1
+        val duration = data.long("durationMs") ?: 0L
+        val timedOut = data.bool("timedOut") == true
+        val stdout = data.str("stdout").orEmpty()
+        val stderr = data.str("stderr").orEmpty()
         val body = buildString {
             appendLine("$ $command")
             appendLine("# cwd=$cwd  exit=$exit  ${duration}ms${if (timedOut) "  TIMEOUT" else ""}")

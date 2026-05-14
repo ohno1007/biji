@@ -18,11 +18,13 @@ private fun latexToUnicodeImpl(raw: String): String {
     // Greek + named operators.
     for ((k, v) in GreekMap) s = s.replace(k, v)
     // \frac{a}{b}  →  a / b
-    s = Regex("\\\\frac\\{([^{}]+)}\\{([^{}]+)}").replace(s) { m ->
+    // Raw-string patterns so the ICU regex compiler doesn't choke on
+    // standalone `}` (it requires `\}` outside `{n,m}` quantifiers).
+    s = Regex("""\\frac\{([^{}]+)\}\{([^{}]+)\}""").replace(s) { m ->
         "${m.groupValues[1]} / ${m.groupValues[2]}"
     }
     // \sqrt{x}  →  √x
-    s = Regex("\\\\sqrt\\{([^{}]+)}").replace(s) { m -> "√${m.groupValues[1]}" }
+    s = Regex("""\\sqrt\{([^{}]+)\}""").replace(s) { m -> "√${m.groupValues[1]}" }
     // \sum / \int  →  ∑ / ∫
     s = s.replace("\\sum", "∑").replace("\\int", "∫")
     s = s.replace("\\infty", "∞").replace("\\partial", "∂")
@@ -33,10 +35,10 @@ private fun latexToUnicodeImpl(raw: String): String {
     s = s.replace("\\Rightarrow", "⇒").replace("\\Leftarrow", "⇐")
     // Super/subscripts: ^{abc} or ^a, _{abc} or _a — translate to Unicode
     // where possible, otherwise inline the original characters.
-    s = Regex("\\^\\{([^{}]+)}").replace(s) { m -> superscript(m.groupValues[1]) }
-    s = Regex("\\^([0-9A-Za-z+\\-=()])").replace(s) { m -> superscript(m.groupValues[1]) }
-    s = Regex("_\\{([^{}]+)}").replace(s) { m -> subscript(m.groupValues[1]) }
-    s = Regex("_([0-9A-Za-z+\\-=()])").replace(s) { m -> subscript(m.groupValues[1]) }
+    s = Regex("""\^\{([^{}]+)\}""").replace(s) { m -> superscript(m.groupValues[1]) }
+    s = Regex("""\^([0-9A-Za-z+\-=()])""").replace(s) { m -> superscript(m.groupValues[1]) }
+    s = Regex("""_\{([^{}]+)\}""").replace(s) { m -> subscript(m.groupValues[1]) }
+    s = Regex("""_([0-9A-Za-z+\-=()])""").replace(s) { m -> subscript(m.groupValues[1]) }
     // Stray backslash-commands we didn't recognise: strip the slash.
     s = Regex("\\\\([A-Za-z]+)").replace(s) { m -> m.groupValues[1] }
     // Common cleanup.
