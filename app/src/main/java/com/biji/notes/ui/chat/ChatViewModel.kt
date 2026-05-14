@@ -242,30 +242,48 @@ class ChatViewModel(
         if (text.isEmpty()) return
 
         streamJob = viewModelScope.launch {
-            val convoId = _activeConvoId.value ?: run {
-                val id = chat.createConversation(model = settings.value.model)
-                _activeConvoId.value = id
-                id
-            }
-            chat.addMessage(convoId, Role.USER, text)
-            memory.invalidate()
-
-            _isStreaming.value = true
-            _streamError.value = null
-            _toolStatus.value = null
-            _workflow.value = emptyList()
-
+            // The OUTERMOST safety net. Any uncaught throwable inside
+            // `runChatTurn` (DB hiccup, JSON encoding glitch, tool
+            // exec NPE, …) would otherwise propagate out of the coroutine
+            // and hit Android's default uncaught-exception handler →
+            // the process gets killed. That's what made the chat
+            // "randomly" crash when a read/write tool ran. Surface the
+            // error as a stream-error pill instead and keep the UI alive.
             try {
-                maybeCompactContext(convoId)
-                runChatTurn(convoId, userTurnText = text)
-            } finally {
+                val convoId = _activeConvoId.value ?: run {
+                    val id = chat.createConversation(model = settings.value.model)
+                    _activeConvoId.value = id
+                    id
+                }
+                chat.addMessage(convoId, Role.USER, text)
+                memory.invalidate()
+
+                _isStreaming.value = true
+                _streamError.value = null
+                _toolStatus.value = null
+                _workflow.value = emptyList()
+
+                try {
+                    maybeCompactContext(convoId)
+                    runChatTurn(convoId, userTurnText = text)
+                } finally {
+                    _isStreaming.value = false
+                    _toolStatus.value = null
+                    _workflow.value = emptyList()
+                }
+
+                runCatching { maybeSummarizeTitle(convoId) }
+                runCatching { maybeNotify(convoId) }
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                // User pressed stop / left the screen — propagate so
+                // the coroutine cancellation chain stays clean.
+                throw cancel
+            } catch (t: Throwable) {
                 _isStreaming.value = false
                 _toolStatus.value = null
                 _workflow.value = emptyList()
+                _streamError.value = "处理失败: ${t.message ?: t.javaClass.simpleName}"
             }
-
-            maybeSummarizeTitle(convoId)
-            maybeNotify(convoId)
         }
     }
 
