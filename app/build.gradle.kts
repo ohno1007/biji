@@ -79,6 +79,12 @@ dependencies {
     implementation("androidx.webkit:webkit:1.11.0")
     implementation("androidx.lifecycle:lifecycle-process:2.8.6")
 
+    // Vosk offline speech recognition — on-device Kaldi-based ASR.
+    // Models (40–80 MB) are downloaded into app-private storage at
+    // runtime so the APK itself stays slim.
+    implementation("com.alphacephei:vosk-android:0.3.47@aar")
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

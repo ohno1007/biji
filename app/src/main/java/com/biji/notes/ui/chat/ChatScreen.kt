@@ -62,6 +62,7 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
@@ -397,6 +398,7 @@ fun ChatScreen(
             onTapRing = { contextStatsOpen = true },
             onTapDrawer = { projectDrawerOpen = true },
             onLongPressDrawer = { folderRenameOpen = true },
+            onOpenTerminal = { vm.openTerminal() },
             ringVisible = !contextStatsOpen,
             sharedTransitionScope = sharedTransitionScope,
             modifier = Modifier
@@ -795,6 +797,7 @@ private fun TopBar(
     onTapRing: () -> Unit,
     onTapDrawer: () -> Unit,
     onLongPressDrawer: () -> Unit,
+    onOpenTerminal: () -> Unit,
     ringVisible: Boolean,
     sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
     modifier: Modifier = Modifier
@@ -818,6 +821,14 @@ private fun TopBar(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
+        // Terminal — opens a persistent sh process scoped to the
+        // active conversation's project folder.
+        IconBtn(
+            icon = Icons.Outlined.Terminal,
+            contentDescription = "终端",
+            onClick = onOpenTerminal
+        )
+        Spacer(Modifier.width(2.dp))
         // Project-drawer entry point (also accessible by swipe from
         // the right edge). Long-press opens a rename dialog so each
         // conversation can pick its own folder name.

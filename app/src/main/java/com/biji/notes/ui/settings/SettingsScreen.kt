@@ -57,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
@@ -321,6 +322,13 @@ fun SettingsScreen(
                                 bootstrap = vm.bootstrap
                             )
                         }
+                    }
+                }
+
+                // ===== 语音 ================================================
+                item {
+                    Group {
+                        VoiceModelRow(offline = vm.voice.offline)
                     }
                 }
 
@@ -779,6 +787,149 @@ private fun RootAccessRow(
                     color = cs.primary,
                     fontWeight = FontWeight.SemiBold
                 )
+            }
+        }
+    }
+}
+
+/**
+ * On-device speech model (Vosk) — download / status / uninstall.
+ * When installed, biji's voice button runs ASR locally without ever
+ * touching Google Speech Services or the network. The model lives
+ * in app-private storage; default is the small Mandarin model (≈ 42
+ * MB unzipped).
+ */
+@Composable
+private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) {
+    val cs = MaterialTheme.colorScheme
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val progress by offline.install.collectAsState()
+    var installed by remember { mutableStateOf(offline.installed) }
+    // Re-check installed-ness when the install progress flow flips to
+    // Done — the boolean is derived from a file existing on disk so
+    // we'd otherwise need a recomposition trigger.
+    androidx.compose.runtime.LaunchedEffect(progress) {
+        installed = offline.installed
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Rounded.Mic,
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = cs.onSurface
+            )
+            Spacer(Modifier.size(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "离线语音识别 (Vosk)",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = cs.onSurface,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    when {
+                        installed -> "已就绪 · 录音直接在本地识别，不走任何云服务"
+                        progress is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Failed ->
+                            "下载失败"
+                        else -> "尚未下载 · 当前用系统语音识别（依赖厂商服务）"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (installed) cs.primary else cs.onSurfaceVariant
+                )
+            }
+        }
+        when (val p = progress) {
+            is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Downloading -> {
+                Spacer(Modifier.size(8.dp))
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = {
+                        if (p.total > 0) p.bytes.toFloat() / p.total else 0f
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = cs.primary
+                )
+                Text(
+                    "下载模型：${p.bytes / 1024 / 1024} / ${if (p.total > 0) (p.total / 1024 / 1024).toString() else "?"} MB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Extracting -> {
+                Spacer(Modifier.size(8.dp))
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { p.current.toFloat() / p.total.toFloat().coerceAtLeast(1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = cs.primary
+                )
+                Text(
+                    "解压：${p.current} / ${p.total}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Done -> {
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    "✓ 完成 (${p.sizeBytes / 1024 / 1024} MB on disk)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.primary
+                )
+            }
+            is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Failed -> {
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    "✗ ${p.message}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.error
+                )
+            }
+            else -> Unit
+        }
+        Spacer(Modifier.size(10.dp))
+        val busy = progress is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Downloading ||
+            progress is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Extracting
+        Row {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(cs.primary.copy(alpha = 0.14f))
+                    .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                        scope.launch { offline.installModel() }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    if (installed) "重新下载" else "下载模型 (≈42 MB)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cs.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            if (installed) {
+                Spacer(Modifier.size(8.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(cs.error.copy(alpha = 0.10f))
+                        .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                            scope.launch { offline.uninstallModel() }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        "卸载",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.error,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
     }

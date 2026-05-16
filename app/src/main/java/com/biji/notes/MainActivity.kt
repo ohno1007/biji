@@ -119,8 +119,9 @@ private fun AppRoot(vm: ChatViewModel) {
     val activeConvo by vm.activeConvoId.collectAsState()
     val openWebUrl by vm.openWebUrl.collectAsState()
     val openEditorPath by vm.openEditorPath.collectAsState()
+    val terminalOpen by vm.terminalOpen.collectAsState()
     val activeProjectFolder by vm.activeProjectFolder.collectAsState()
-    val showBottomBar = activeConvo == null && openWebUrl == null && openEditorPath == null
+    val showBottomBar = activeConvo == null && openWebUrl == null && openEditorPath == null && !terminalOpen
 
     // POST_NOTIFICATIONS – ask once on launch on API 33+.
     val notifLauncher = rememberLauncherForActivityResult(
@@ -224,6 +225,24 @@ private fun AppRoot(vm: ChatViewModel) {
                     folder = activeProjectFolder,
                     path = path,
                     onBack = { vm.closeEditor() }
+                )
+            }
+        }
+
+        // Terminal overlay — persistent sh process with bootstrap PATH.
+        AnimatedVisibility(
+            visible = terminalOpen,
+            enter = fadeIn(tween(160)) + slideInVertically { it / 4 },
+            exit = fadeOut(tween(140)) + slideOutVertically { it / 4 },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            if (terminalOpen) {
+                BackHandler { vm.closeTerminal() }
+                com.biji.notes.ui.terminal.TerminalScreen(
+                    sandbox = vm.sandbox,
+                    bootstrap = vm.bootstrap,
+                    folder = activeProjectFolder,
+                    onBack = { vm.closeTerminal() }
                 )
             }
         }

@@ -87,7 +87,7 @@ class ChatViewModel(
     private val memory: MemoryService,
     private val toolExec: ToolExecutor,
     private val notifier: ChatNotifier,
-    private val voice: VoiceRecognizer,
+    val voice: VoiceRecognizer,
     val sandbox: com.biji.notes.sandbox.LocalSandbox,
     val bootstrap: com.biji.notes.sandbox.BijiBootstrap,
     private val isForeground: () -> Boolean
@@ -208,6 +208,11 @@ class ChatViewModel(
     val openEditorPath: StateFlow<String?> = _openEditorPath.asStateFlow()
     fun openEditor(path: String) { _openEditorPath.value = path }
     fun closeEditor() { _openEditorPath.value = null }
+
+    private val _terminalOpen = MutableStateFlow(false)
+    val terminalOpen: StateFlow<Boolean> = _terminalOpen.asStateFlow()
+    fun openTerminal() { _terminalOpen.value = true }
+    fun closeTerminal() { _terminalOpen.value = false }
 
     val voiceState: StateFlow<VoiceState> = voice.state
     private val _voiceVisible = MutableStateFlow(false)

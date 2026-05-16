@@ -6,9 +6,14 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 sealed interface VoiceState {
@@ -19,24 +24,29 @@ sealed interface VoiceState {
 }
 
 /**
- * Wrapper around Android's built-in [SpeechRecognizer]. Uses the device's
- * on-device speech model when available (Android 12+ has free offline
- * recognition on most OEMs); falls back to Google's cloud service otherwise.
+ * Voice façade. Prefers the on-device Vosk recogniser when the
+ * Mandarin model is installed (works without Google Speech Services,
+ * works offline) and falls back to Android's [SpeechRecognizer] —
+ * which itself prefers `createOnDeviceSpeechRecognizer` on API 31+ —
+ * when Vosk isn't ready.
  *
- * We expose a single [state] flow plus [start] / [cancel] commands; the UI
- * consumes Listening (with partial transcript) and presents a confirm sheet
- * once a final Result arrives.
+ * The same [state] flow surface fits both back-ends so the chat UI
+ * doesn't need to care which engine actually heard the user.
  */
 class VoiceRecognizer(private val ctx: Context) {
 
     private val _state = MutableStateFlow<VoiceState>(VoiceState.Idle)
     val state: StateFlow<VoiceState> = _state.asStateFlow()
 
-    private var recognizer: SpeechRecognizer? = null
+    val offline: OfflineVoiceRecognizer = OfflineVoiceRecognizer(ctx)
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var fwdJob: Job? = null
+    private var systemRecognizer: SpeechRecognizer? = null
+
+    /** True if *something* — offline or system — can recognise. */
     fun available(): Boolean {
-        // On API 31+ on-device recognition can be present even when the
-        // regular service isn't, so check both.
+        if (offline.installed) return true
         if (SpeechRecognizer.isRecognitionAvailable(ctx)) return true
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx) }
@@ -46,10 +56,33 @@ class VoiceRecognizer(private val ctx: Context) {
         return false
     }
 
+    /** Which engine [start] will use right now. */
+    fun engineLabel(): String =
+        if (offline.installed) "biji 离线 (Vosk)"
+        else "系统语音识别"
+
     fun start(languageTag: String = Locale.getDefault().toLanguageTag()) {
-        if (recognizer == null) {
-            recognizer = createBestRecognizer().apply {
-                setRecognitionListener(listener)
+        if (offline.installed) {
+            startOffline()
+        } else {
+            startSystem(languageTag)
+        }
+    }
+
+    private fun startOffline() {
+        // Mirror Vosk's internal state into our public flow so callers
+        // can use a single VoiceState surface regardless of backend.
+        fwdJob?.cancel()
+        fwdJob = scope.launch {
+            offline.state.collect { _state.value = it }
+        }
+        scope.launch { offline.start() }
+    }
+
+    private fun startSystem(languageTag: String) {
+        if (systemRecognizer == null) {
+            systemRecognizer = createBestRecognizer().apply {
+                setRecognitionListener(systemListener)
             }
         }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -61,24 +94,28 @@ class VoiceRecognizer(private val ctx: Context) {
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.packageName)
         }
         _state.value = VoiceState.Listening("")
-        runCatching { recognizer?.startListening(intent) }
+        runCatching { systemRecognizer?.startListening(intent) }
             .onFailure { _state.value = VoiceState.Error(it.message ?: "无法启动语音识别") }
     }
 
     fun stop() {
-        runCatching { recognizer?.stopListening() }
+        if (offline.installed) offline.stop()
+        runCatching { systemRecognizer?.stopListening() }
     }
 
     fun cancel() {
-        runCatching { recognizer?.cancel() }
+        if (offline.installed) offline.cancel()
+        runCatching { systemRecognizer?.cancel() }
         _state.value = VoiceState.Idle
     }
 
     fun reset() { _state.value = VoiceState.Idle }
 
     fun destroy() {
-        runCatching { recognizer?.destroy() }
-        recognizer = null
+        fwdJob?.cancel()
+        runCatching { offline.destroy() }
+        runCatching { systemRecognizer?.destroy() }
+        systemRecognizer = null
     }
 
     /** Prefer the on-device recogniser when the OEM ships one — it's
@@ -95,11 +132,9 @@ class VoiceRecognizer(private val ctx: Context) {
         return SpeechRecognizer.createSpeechRecognizer(ctx)
     }
 
-    private val listener = object : RecognitionListener {
+    private val systemListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {
-            _state.value = VoiceState.Listening("")
-        }
+        override fun onBeginningOfSpeech() { _state.value = VoiceState.Listening("") }
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
         override fun onEndOfSpeech() {}
@@ -122,13 +157,7 @@ class VoiceRecognizer(private val ctx: Context) {
                 SpeechRecognizer.ERROR_AUDIO -> "录音错误"
                 SpeechRecognizer.ERROR_CLIENT -> "客户端错误"
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
-                    // 这条不是 biji 自己缺权限——biji 在 manifest 里已经声
-                    // 明 RECORD_AUDIO，用户也授予了。它实际上是系统语
-                    // 音识别服务本身没拿到麦克风权限，常见于：① 设备
-                    // 没安装 Google 语音服务；② 系统语音助手没设；
-                    // ③ AOSP / 去 Google 化 ROM。提示用户走真正能解决
-                    // 的路径，而不是再去开自己已经开过的权限。
-                    "系统语音识别服务没拿到麦克风权限。biji 这边权限是开的——问题在于设备的默认语音助手（系统设置 → 应用 → 默认应用 → 数字助理 / 语音助手）。可以换个识别服务或直接打字。"
+                    "系统语音识别服务没拿到麦克风权限。biji 这边权限是开的——问题在于设备的默认语音助手。建议在「设置 → 语音」里下载离线 Vosk 模型，或直接打字。"
                 SpeechRecognizer.ERROR_NETWORK -> "网络错误"
                 SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "网络超时"
                 SpeechRecognizer.ERROR_NO_MATCH -> "没听清，再试一次"
