@@ -15,15 +15,12 @@ import java.io.OutputStreamWriter
 import java.io.PrintWriter
 
 /** 长连接 shell — stdin/stdout/stderr 在多条命令之间保持打开，
- *  cwd / 环境 / 函数都跟着会话走。装了 Termux bootstrap 就用
- *  termux/usr/bin/bash 启，没装就用系统 sh。装了 proot 就把 bash
- *  包到 proot 里跑，apt / gcc 在硬编码 prefix 路径下也能正常工作。 */
+ *  cwd / 环境 / 函数都跟着会话走。用系统 sh 启，PATH 里加我们
+ *  toybox bootstrap 的目录。 */
 class InteractiveShell(
     private val workDir: File,
     private val extraPathDirs: List<String> = emptyList(),
-    private val scope: CoroutineScope,
-    private val termux: TermuxBootstrap? = null,
-    private val proot: ProotBootstrap? = null
+    private val scope: CoroutineScope
 ) {
 
     data class Chunk(val text: String, val isStderr: Boolean = false)
@@ -45,59 +42,20 @@ class InteractiveShell(
     fun start() {
         if (alive) return
         workDir.mkdirs()
-        val termuxOn = termux?.installed == true
-        val prootOn = termuxOn && proot?.installed == true
-        val shellPath = termux?.takeIf { termuxOn }?.preferredShell()?.absolutePath ?: "sh"
-        val args = when {
-            prootOn -> proot!!.wrapForProot("exec bash -l")
-            termuxOn -> listOf(shellPath, "-l")
-            else -> listOf(shellPath)
-        }
-        val pb = ProcessBuilder(args)
+        val pb = ProcessBuilder("sh")
             .directory(workDir)
             .redirectErrorStream(false)
         val env = pb.environment()
         val current = env["PATH"] ?: System.getenv("PATH") ?: "/system/bin:/system/xbin"
-        val pathParts = buildList {
-            if (termuxOn) add(termux!!.binDir.absolutePath)
-            addAll(extraPathDirs)
-            add(current)
-        }
-        env["PATH"] = pathParts.joinToString(":")
+        env["PATH"] = (extraPathDirs + current).joinToString(":")
         env["TERM"] = "xterm-256color"
         env["LANG"] = "C.UTF-8"
-        env["ANDROID_DATA"] = "/data"
-        env["ANDROID_ROOT"] = "/system"
-        if (termuxOn) {
-            termux!!.envFor().forEach { (k, v) ->
-                if (k != "PATH") env[k] = v
-            }
-            env["TERMUX_PREFIX"] = termux.usrDir.absolutePath
-            env["SHELL"] = shellPath
-            if (prootOn) {
-                // proot 自身需要 PROOT_TMP_DIR；不要再 LD_PRELOAD
-                // libtermux-exec —— proot 已经在 syscall 层改写路径。
-                proot!!.envFor().forEach { (k, v) -> env[k] = v }
-            } else {
-                val exec = java.io.File(termux.libDir, "libtermux-exec.so")
-                if (exec.exists()) env["LD_PRELOAD"] = exec.absolutePath
-            }
-        } else {
-            env["HOME"] = workDir.absolutePath
-        }
-        // Termux 二进制装在 app-private 里，targetSdk≥29 时直接
-        // ProcessBuilder.start() 会 EACCES。我们 targetSdk 28 绕开
-        // 了，但仍可能遇到 chmod 没生效之类的边缘情况 —— 把异常
-        // 转成红字提示，别再让会话整个挂掉。
-        if (termuxOn) {
-            runCatching { android.system.Os.chmod(shellPath, 0b111_101_101) }
-        }
+        env["HOME"] = workDir.absolutePath
         process = try {
             pb.start()
         } catch (e: java.io.IOException) {
             scope.launch {
                 _output.emit(Chunk("无法启动 shell: ${e.message ?: e.javaClass.simpleName}\n", true))
-                _output.emit(Chunk("路径: $shellPath\n", true))
             }
             return
         }

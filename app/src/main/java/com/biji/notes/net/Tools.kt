@@ -224,7 +224,7 @@ object Tools {
                 put("name", EXTRACT_ZIP)
                 put(
                     "description",
-                    "在沙箱内解压一个 zip 归档。不依赖 shell / Termux —— 用 Java 自带 ZipInputStream，强制走沙箱边界检查（zip-slip 防护）。返回解压出的全部条目。"
+                    "在沙箱内解压一个 zip 归档。纯 Java ZipInputStream，强制走沙箱边界检查（zip-slip 防护）。返回解压出的全部条目。"
                 )
                 put("parameters", buildJsonObject {
                     put("type", "object")
@@ -261,7 +261,7 @@ object Tools {
                 put("name", RUN_SHELL)
                 put(
                     "description",
-                    "执行 shell 命令。PATH 自动包含 biji 内置终端环境（bash / busybox / coreutils / sed / awk / grep / git / vim / apt 等，装在 app 私有目录），以及 root 模式下额外的系统路径。装了终端环境时默认用 bash。30 秒超时；返回 stdout / stderr / exit 码。命令本身不受沙箱限制（除危险命令黑名单：rm -rf /、mkfs、dd of=/dev/、shred、fork bomb、关机/重启）。不确定工具是否可用就先 check_environment。"
+                    "执行 shell 命令。PATH 含 biji 下载的 toybox bootstrap (ls / cat / grep / find / sed / awk / tar / wget 等) 和 Android 系统 /system/bin。30 秒超时；返回 stdout / stderr / exit 码。命令本身不受沙箱限制（除危险命令黑名单：rm -rf /、mkfs、dd of=/dev/、shred、fork bomb、关机/重启）。不确定工具是否可用就先 check_environment。"
                 )
                 put("parameters", buildJsonObject {
                     put("type", "object")
@@ -629,7 +629,7 @@ class ToolExecutor(
             }
             if (!haveBashEnv) {
                 appendLine()
-                appendLine("提示：bash 不在 PATH 上。基础 toybox 命令（ls / cat / grep / find / awk / sed）仍然可用。要想用 gcc / git / python 等，建议引导用户在「设置 → 工程模式 → 终端环境」里点「下载并安装」。")
+                appendLine("提示：bash 不在 PATH 上。biji 自带 toybox 提供基础命令（ls / cat / grep / find / awk / sed / tar / wget 等）已可用。要想用 gcc / git / python 等重型工具，需要用户自己装 Termux 并开启 Root 模式让 biji 调用。")
             }
         }
         return forModel to ui

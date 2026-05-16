@@ -29,9 +29,7 @@ import java.util.concurrent.TimeUnit
  */
 class LocalSandbox(
     private val context: Context,
-    private val bootstrap: BijiBootstrap? = null,
-    val termux: TermuxBootstrap? = null,
-    val proot: ProotBootstrap? = null
+    private val bootstrap: BijiBootstrap? = null
 ) {
 
     /** Set of relative paths (prefixed with `<folder>/`) the assistant
@@ -371,63 +369,27 @@ class LocalSandbox(
                 )
             }
             val start = System.currentTimeMillis()
-            // 优先级：Termux bootstrap > 我们的 toybox bootstrap > 系统 sh。
-            val termuxOn = termux?.installed == true
+            // biji 自带 toybox bootstrap 加进 PATH；root 模式时也带上
+            // Termux 默认路径让 su 进去能找到用户装的工具。
             val toyboxBin = bootstrap?.binDir?.absolutePath
             val pathParts = buildList {
-                if (termuxOn) add(termux!!.binDir.absolutePath)
                 if (!toyboxBin.isNullOrBlank()) add(toyboxBin)
                 if (asRoot) add(TERMUX_BIN)
             }
             val pathExport = if (pathParts.isNotEmpty())
                 "export PATH=${pathParts.joinToString(":")}:${'$'}PATH; " else ""
-            val termuxLib = if (termuxOn) termux!!.libDir.absolutePath else null
-            val ldExport = if (asRoot || termuxOn) buildString {
-                val parts = listOfNotNull(termuxLib, if (asRoot) TERMUX_LIB else null)
-                if (parts.isNotEmpty())
-                    append("export LD_LIBRARY_PATH=${parts.joinToString(":")}:${'$'}{LD_LIBRARY_PATH:-}; ")
-            } else ""
-            val homeExport = when {
-                asRoot -> "export HOME=$TERMUX_HOME; "
-                termuxOn -> "export HOME=${termux!!.homeDir.absolutePath}; "
-                else -> ""
-            }
-            // termux-exec.so 是 Termux 的关键：拦截 execve()，
-            // 把 #!/data/data/com.termux/files/usr/bin/xxx 这种硬编
-            // 码 shebang 实时改写到 $TERMUX_PREFIX 真实路径下，
-            // 同时还鉴别脚本里调用的 /bin/sh 之类。装上之后
-            // apt / dpkg / gcc / 一堆 perl 脚本才能跑起来。
-            val termuxExtras = if (termuxOn) {
-                val prefix = termux!!.usrDir.absolutePath
-                val exec = "$prefix/lib/libtermux-exec.so"
-                buildString {
-                    append("export PREFIX=$prefix; ")
-                    append("export TERMUX_PREFIX=$prefix; ")
-                    append("export TMPDIR=${termux.tmpDir.absolutePath}; ")
-                    append("export ANDROID_DATA=/data; export ANDROID_ROOT=/system; ")
-                    append("export SHELL=${termux.preferredShell().absolutePath}; ")
-                    append("export TERMUX_VERSION=biji; ")
-                    append("if [ -f $exec ]; then export LD_PRELOAD=$exec; fi; ")
-                }
-            } else ""
-            val shellPath = termux?.takeIf { termuxOn }?.preferredShell()?.absolutePath ?: "sh"
-            val envPrelude = pathExport + ldExport + homeExport + termuxExtras
-            // 装了 proot 又装了 Termux：所有命令穿过 proot，把
-            // Termux 硬编码的 prefix 绑回 biji 真实目录。这样 apt /
-            // dpkg / gcc 都看到自己以为的路径，user-space 完全没问题。
-            val useProot = !asRoot && termuxOn && proot?.installed == true
+            val ldExport = if (asRoot)
+                "export LD_LIBRARY_PATH=$TERMUX_LIB:${'$'}{LD_LIBRARY_PATH:-}; " else ""
+            val homeExport = if (asRoot) "export HOME=$TERMUX_HOME; " else ""
+            val envPrelude = pathExport + ldExport + homeExport
             val pb = if (asRoot) {
                 ProcessBuilder(
                     "su",
                     "-c",
                     "$envPrelude cd ${shellQuote(workDirDisplay)} && $command"
                 )
-            } else if (useProot) {
-                ProcessBuilder(proot!!.wrapForProot("$envPrelude$command")).directory(workDir).also {
-                    proot.envFor().forEach { (k, v) -> it.environment()[k] = v }
-                }
             } else {
-                ProcessBuilder(shellPath, "-c", "$envPrelude$command").directory(workDir)
+                ProcessBuilder("sh", "-c", "$envPrelude$command").directory(workDir)
             }
             pb.redirectErrorStream(false)
             val process = try {
