@@ -325,20 +325,11 @@ fun SettingsScreen(
                     }
                 }
 
-                // ===== Termux 兼容层 ======================================
+                // ===== 终端环境 ===========================================
                 if (settings.developerMode) {
                     item {
                         Group {
-                            TermuxRow(termux = vm.sandbox.termux)
-                        }
-                    }
-                }
-
-                // ===== 包管理 ==============================================
-                if (settings.developerMode) {
-                    item {
-                        Group {
-                            PackagesRow(pkg = vm.pkg)
+                            TerminalEnvRow(termux = vm.sandbox.termux)
                         }
                     }
                 }
@@ -810,12 +801,11 @@ private fun RootAccessRow(
     }
 }
 
-/** Termux bootstrap 安装面板。下载 Termux 官方 release 的 zip，
- *  解压到 app-private termux/，处理 SYMLINKS.txt 重建软链。装好
- *  以后终端 / run_shell_command 自动用 termux/usr/bin/bash 启
- *  动，apt / dpkg / git / vim 这类工具直接可用。 */
+/** 终端环境 —— 下载并解压一份基础工具集（bash + busybox + coreutils
+ *  + apt + git + vim 等）到 biji 私有目录。装好之后终端和 AI 的
+ *  run_shell_command 都会自动用它的 bash + PATH。 */
 @Composable
-private fun TermuxRow(termux: com.biji.notes.sandbox.TermuxBootstrap?) {
+private fun TerminalEnvRow(termux: com.biji.notes.sandbox.TermuxBootstrap?) {
     if (termux == null) return
     val cs = MaterialTheme.colorScheme
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -839,7 +829,7 @@ private fun TermuxRow(termux: com.biji.notes.sandbox.TermuxBootstrap?) {
             )
             Spacer(Modifier.size(16.dp))
             Text(
-                "Termux 兼容层",
+                "终端环境",
                 style = MaterialTheme.typography.titleMedium,
                 color = cs.onSurface,
                 fontWeight = FontWeight.Medium,
@@ -856,7 +846,7 @@ private fun TermuxRow(termux: com.biji.notes.sandbox.TermuxBootstrap?) {
         }
         Spacer(Modifier.size(6.dp))
         Text(
-            "下载 Termux 官方 bootstrap (~5 MB)。装好后终端用 bash，自带 apt / dpkg / busybox / coreutils / git / vim 等等。",
+            "下载约 5 MB 的基础工具集。装好后终端启 bash，自带 busybox / coreutils / sed / awk / grep / curl / git / vim / apt 等，run_shell_command 也直接能用。",
             style = MaterialTheme.typography.bodySmall,
             color = cs.onSurfaceVariant
         )
@@ -947,137 +937,6 @@ private fun TermuxRow(termux: com.biji.notes.sandbox.TermuxBootstrap?) {
                         style = MaterialTheme.typography.labelLarge,
                         color = cs.error,
                         fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** pkg 包管理面板：列出收录的工具，单击安装到 bootstrap/bin。 */
-@Composable
-private fun PackagesRow(pkg: com.biji.notes.sandbox.BijiPkg) {
-    val cs = MaterialTheme.colorScheme
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val progress by pkg.progress.collectAsState()
-    // 触发重组，让 isInstalled 刷新
-    var tick by remember { mutableStateOf(0) }
-    androidx.compose.runtime.LaunchedEffect(progress) {
-        if (progress is com.biji.notes.sandbox.BijiPkg.Progress.Done) tick++
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                Icons.Outlined.Code,
-                contentDescription = null,
-                modifier = Modifier.size(22.dp),
-                tint = cs.onSurface
-            )
-            Spacer(Modifier.size(16.dp))
-            Text(
-                "pkg 包管理",
-                style = MaterialTheme.typography.titleMedium,
-                color = cs.onSurface,
-                fontWeight = FontWeight.Medium
-            )
-        }
-        Spacer(Modifier.size(8.dp))
-        pkg.catalogue.forEach { p ->
-            val installed = remember(tick, p.id) { pkg.isInstalled(p) }
-            val downloading = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Downloading)
-                ?.takeIf { it.pkgId == p.id }
-            val installing = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Installing)
-                ?.takeIf { it.pkgId == p.id }
-            val failed = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Failed)
-                ?.takeIf { it.pkgId == p.id }
-            val busy = downloading != null || installing != null
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 6.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                p.title,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = cs.onSurface,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Spacer(Modifier.size(6.dp))
-                            Text(
-                                p.sizeLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = cs.onSurfaceVariant
-                            )
-                            if (installed) {
-                                Spacer(Modifier.size(6.dp))
-                                Text("已装", style = MaterialTheme.typography.labelSmall, color = cs.primary)
-                            }
-                        }
-                        Text(
-                            p.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = cs.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                        )
-                    }
-                    Spacer(Modifier.size(8.dp))
-                    val (label, fg, bg) = when {
-                        installed -> Triple("卸载", cs.error, cs.error.copy(alpha = 0.10f))
-                        else -> Triple("安装", cs.primary, cs.primary.copy(alpha = 0.14f))
-                    }
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(bg)
-                            .bouncyClickable(enabled = !busy, pressedScale = 0.95f) {
-                                scope.launch {
-                                    if (installed) {
-                                        pkg.uninstall(p); tick++
-                                    } else {
-                                        pkg.install(p)
-                                    }
-                                }
-                            }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = fg,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-                if (downloading != null) {
-                    Spacer(Modifier.size(4.dp))
-                    androidx.compose.material3.LinearProgressIndicator(
-                        progress = {
-                            if (downloading.total > 0) downloading.bytes.toFloat() / downloading.total
-                            else 0f
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        color = cs.primary
-                    )
-                } else if (installing != null) {
-                    Spacer(Modifier.size(4.dp))
-                    androidx.compose.material3.LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = cs.primary
-                    )
-                } else if (failed != null) {
-                    Spacer(Modifier.size(2.dp))
-                    Text(
-                        failed.message,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = cs.error
                     )
                 }
             }
