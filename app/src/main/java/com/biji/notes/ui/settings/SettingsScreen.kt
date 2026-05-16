@@ -328,6 +328,15 @@ fun SettingsScreen(
                     }
                 }
 
+                // ===== 工具包 ==============================================
+                if (settings.developerMode) {
+                    item {
+                        Group {
+                            PackagesRow(pkg = vm.pkg)
+                        }
+                    }
+                }
+
                 // ===== 语音 ================================================
                 item {
                     Group {
@@ -790,6 +799,144 @@ private fun RootAccessRow(
                     color = cs.primary,
                     fontWeight = FontWeight.SemiBold
                 )
+            }
+        }
+    }
+}
+
+/** biji 工具包：每一项是单文件静态二进制 / 从 release tarball
+ *  里抽出来的二进制。下载到 bootstrap/bin，立即 PATH 可见。完全
+ *  不依赖 Termux、proot、apt。 */
+@Composable
+private fun PackagesRow(pkg: com.biji.notes.sandbox.BijiPkg) {
+    val cs = MaterialTheme.colorScheme
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val progress by pkg.progress.collectAsState()
+    var tick by remember { mutableStateOf(0) }
+    androidx.compose.runtime.LaunchedEffect(progress) {
+        if (progress is com.biji.notes.sandbox.BijiPkg.Progress.Done) tick++
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Outlined.Code,
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = cs.onSurface
+            )
+            Spacer(Modifier.size(16.dp))
+            Text(
+                "工具包",
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium
+            )
+        }
+        Spacer(Modifier.size(4.dp))
+        Text(
+            "单文件静态二进制，下载到 app 私有目录，立刻在终端 / AI shell 里可用。",
+            style = MaterialTheme.typography.bodySmall,
+            color = cs.onSurfaceVariant
+        )
+        Spacer(Modifier.size(8.dp))
+        pkg.catalogue.forEach { p ->
+            val installed = remember(tick, p.id) { pkg.isInstalled(p) }
+            val downloading = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Downloading)
+                ?.takeIf { it.pkgId == p.id }
+            val installing = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Installing)
+                ?.takeIf { it.pkgId == p.id }
+            val failed = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Failed)
+                ?.takeIf { it.pkgId == p.id }
+            val busy = downloading != null || installing != null
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                p.title,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = cs.onSurface,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(Modifier.size(6.dp))
+                            Text(
+                                p.sizeLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = cs.onSurfaceVariant
+                            )
+                            if (installed) {
+                                Spacer(Modifier.size(6.dp))
+                                Text("已装", style = MaterialTheme.typography.labelSmall, color = cs.primary)
+                            }
+                        }
+                        Text(
+                            p.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    val (label, fg, bg) = when {
+                        installed -> Triple("卸载", cs.error, cs.error.copy(alpha = 0.10f))
+                        else -> Triple("安装", cs.primary, cs.primary.copy(alpha = 0.14f))
+                    }
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(bg)
+                            .bouncyClickable(enabled = !busy, pressedScale = 0.95f) {
+                                scope.launch {
+                                    if (installed) {
+                                        pkg.uninstall(p); tick++
+                                    } else {
+                                        pkg.install(p)
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = fg,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+                if (downloading != null) {
+                    Spacer(Modifier.size(4.dp))
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = {
+                            if (downloading.total > 0) downloading.bytes.toFloat() / downloading.total
+                            else 0f
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = cs.primary
+                    )
+                } else if (installing != null) {
+                    Spacer(Modifier.size(4.dp))
+                    androidx.compose.material3.LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = cs.primary
+                    )
+                } else if (failed != null) {
+                    Spacer(Modifier.size(2.dp))
+                    Text(
+                        failed.message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = cs.error
+                    )
+                }
             }
         }
     }
