@@ -44,38 +44,46 @@ class ProotBootstrap(
     suspend fun install(url: String? = null): Boolean = withContext(Dispatchers.IO) {
         try {
             rootDir.mkdirs()
-            // 没指定 URL 时去查 Termux 索引拿当前 proot 的 Filename。
-            val resolved = url ?: run {
-                _progress.value = Progress.Downloading(0L, 0L)
-                resolveDebUrl("proot")
-                    ?: run {
-                        _progress.value = Progress.Failed("Termux 索引里找不到 proot 包")
-                        return@withContext false
-                    }
-            }
+            // 1) 拿 proot 本体。
             _progress.value = Progress.Downloading(0L, 0L)
-            val deb = File(rootDir, "proot.deb")
-            if (!downloadTo(resolved, deb)) return@withContext false
-
-            _progress.value = Progress.Extracting
-            // .deb 是个 ar 归档，里面有 control.tar.xz / data.tar.xz。
-            // 找 data.tar.xz，xz 解出 tar 流，再从 tar 里挖出
-            // ./data/data/com.termux/files/usr/bin/proot。
-            val dataTarXz = extractArEntry(deb, "data.tar.xz")
-                ?: run {
-                    _progress.value = Progress.Failed("deb 里没有 data.tar.xz")
-                    return@withContext false
-                }
-            val ok = XZInputStream(dataTarXz.inputStream()).use { xin ->
-                extractTarMember(xin, "data/data/com.termux/files/usr/bin/proot", binary)
+            val prootUrl = url ?: run {
+                resolveDebUrl("proot")
+                    ?: return@withContext false // resolveDebUrl 自己已经写过 Failed
             }
-            dataTarXz.delete()
-            deb.delete()
-            if (!ok) {
-                _progress.value = Progress.Failed("tar 里找不到 proot")
+            val prootDeb = File(rootDir, "proot.deb")
+            if (!downloadTo(prootUrl, prootDeb)) return@withContext false
+            _progress.value = Progress.Extracting
+            val prootOk = extractDebSingleFile(
+                prootDeb,
+                "data/data/com.termux/files/usr/bin/proot",
+                binary
+            )
+            prootDeb.delete()
+            if (!prootOk) {
+                _progress.value = Progress.Failed("tar 里找不到 proot 主程序")
                 return@withContext false
             }
             runCatching { android.system.Os.chmod(binary.absolutePath, 0b111_101_101) }
+
+            // 2) proot 依赖 libtalloc.so.2，Termux bootstrap 不自带。
+            //    把 libtalloc 的 usr/lib/* 全部摊到 termux/usr/lib。
+            _progress.value = Progress.Downloading(0L, 0L)
+            val tallocUrl = resolveDebUrl("libtalloc")
+                ?: return@withContext false
+            val tallocDeb = File(rootDir, "libtalloc.deb")
+            if (!downloadTo(tallocUrl, tallocDeb)) return@withContext false
+            _progress.value = Progress.Extracting
+            val n = extractDebPrefixToDir(
+                tallocDeb,
+                "data/data/com.termux/files/usr/lib/",
+                termux.libDir
+            )
+            tallocDeb.delete()
+            if (n == 0) {
+                _progress.value = Progress.Failed("libtalloc 里没解出文件")
+                return@withContext false
+            }
+
             _progress.value = Progress.Done
             true
         } catch (e: Exception) {
@@ -207,6 +215,85 @@ class ProotBootstrap(
             }
         }
         true
+    }
+
+    /** 从 .deb 里挖单个文件到目标位置。 */
+    private fun extractDebSingleFile(deb: File, target: String, dst: File): Boolean {
+        val dataTar = extractArEntry(deb, "data.tar.xz") ?: return false
+        val ok = XZInputStream(dataTar.inputStream()).use { xin ->
+            extractTarMember(xin, target, dst)
+        }
+        dataTar.delete()
+        return ok
+    }
+
+    /** 从 .deb 里挖所有以 [srcPrefix] 开头的条目（文件和软链）摊到
+     *  [dstDir]。保留软链。返回挖出的条目数。 */
+    private fun extractDebPrefixToDir(deb: File, srcPrefix: String, dstDir: File): Int {
+        val dataTar = extractArEntry(deb, "data.tar.xz") ?: return 0
+        var count = 0
+        dstDir.mkdirs()
+        XZInputStream(dataTar.inputStream()).use { xin ->
+            val header = ByteArray(512)
+            while (true) {
+                val read = readFully(xin, header)
+                if (read < 512) break
+                if (header.all { it == 0.toByte() }) break
+                val rawName = String(header, 0, 100, Charsets.US_ASCII).trimEnd(0.toChar())
+                val sizeOctal = String(header, 124, 12, Charsets.US_ASCII)
+                    .trimEnd(0.toChar(), ' ').trim()
+                val size = sizeOctal.toLongOrNull(8) ?: 0L
+                val padded = ((size + 511) / 512) * 512
+                val type = header[156]
+                val linkName = String(header, 157, 100, Charsets.US_ASCII).trimEnd(0.toChar())
+                val fullName = rawName.removePrefix("./")
+
+                val inPrefix = fullName.startsWith(srcPrefix)
+                val target: File? = if (inPrefix) {
+                    val rel = fullName.substring(srcPrefix.length).trimStart('/')
+                    if (rel.isEmpty()) null else File(dstDir, rel)
+                } else null
+
+                val isDir = type == '5'.code.toByte()
+                val isSym = type == '2'.code.toByte()
+                val isFile = !isDir && !isSym // 把 type='0'/0 和 '7' 也算文件
+
+                if (inPrefix && target != null) {
+                    when {
+                        isDir -> target.mkdirs()
+                        isSym -> {
+                            target.parentFile?.mkdirs()
+                            target.delete()
+                            runCatching {
+                                android.system.Os.symlink(linkName, target.absolutePath)
+                            }
+                            count++
+                        }
+                        else -> {
+                            target.parentFile?.mkdirs()
+                            target.delete()
+                            target.outputStream().use { out -> copyExactly(xin, out, size) }
+                            runCatching {
+                                android.system.Os.chmod(target.absolutePath, 0b110_100_100)
+                            }
+                            count++
+                        }
+                    }
+                }
+                // 只有 type='0'/'7' 也就是普通文件项目才会真带数据。
+                // 已经在上面写出的也走这里 skip 掉对应的 padding。
+                if (isFile) {
+                    // 若我们刚才已经写了 size 字节，剩 padded-size 跳过；
+                    // 没写就跳整个 padded。两种情况整合：把不属于已读
+                    // 的剩余字节跳掉。
+                    val alreadyConsumed = if (inPrefix && target != null && !isDir && !isSym) size else 0L
+                    val skip = padded - alreadyConsumed
+                    if (skip > 0) xin.skip(skip)
+                }
+            }
+        }
+        dataTar.delete()
+        return count
     }
 
     // --- minimal ar / tar helpers --------------------------------------
