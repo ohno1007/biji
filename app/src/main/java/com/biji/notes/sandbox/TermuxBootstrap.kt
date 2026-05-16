@@ -1,0 +1,213 @@
+package com.biji.notes.sandbox
+
+import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.zip.ZipInputStream
+
+/** Termux 上游 bootstrap —— 把 termux-packages/releases 里的
+ *  bootstrap-aarch64.zip 抓到 app-private，结构跟 Termux 一致：
+ *      <root>/usr/{bin, lib, etc, var, share, tmp}
+ *      <root>/home
+ *  Termux 的 zip 不能保存符号链接，所以根目录有个 SYMLINKS.txt
+ *  记录 target←source，要在解压完后手动建。 */
+class TermuxBootstrap(private val context: Context) {
+
+    val rootDir: File get() = File(context.filesDir, "termux").also { it.mkdirs() }
+    val usrDir: File get() = File(rootDir, "usr").also { it.mkdirs() }
+    val binDir: File get() = File(usrDir, "bin")
+    val libDir: File get() = File(usrDir, "lib")
+    val etcDir: File get() = File(usrDir, "etc")
+    val tmpDir: File get() = File(usrDir, "tmp").also { it.mkdirs() }
+    val homeDir: File get() = File(rootDir, "home").also { it.mkdirs() }
+
+    /** 装上以后这俩都有：bash + applets 索引 SYMLINKS 处理过。 */
+    val installed: Boolean
+        get() = File(binDir, "bash").exists() || File(binDir, "sh").exists()
+
+    sealed interface Progress {
+        data object Idle : Progress
+        data class Downloading(val bytes: Long, val total: Long) : Progress
+        data class Extracting(val current: Int, val total: Int) : Progress
+        data class Linking(val current: Int, val total: Int) : Progress
+        data class Done(val sizeBytes: Long) : Progress
+        data class Failed(val message: String) : Progress
+    }
+
+    private val _progress = MutableStateFlow<Progress>(Progress.Idle)
+    val progress: StateFlow<Progress> = _progress.asStateFlow()
+
+    fun defaultUrlForAbi(): String {
+        val abi = (android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a").lowercase()
+        val arch = when {
+            abi.startsWith("arm64") || abi.contains("aarch64") -> "aarch64"
+            abi.startsWith("armeabi") || abi.contains("armv7") -> "arm"
+            abi.contains("x86_64") -> "x86_64"
+            abi.startsWith("x86") -> "i686"
+            else -> "aarch64"
+        }
+        // Termux 把 "latest" 软链到最新 release。
+        return "https://github.com/termux/termux-packages/releases/latest/download/bootstrap-$arch.zip"
+    }
+
+    suspend fun install(url: String? = null): Boolean = withContext(Dispatchers.IO) {
+        try {
+            _progress.value = Progress.Downloading(0L, 0L)
+            rootDir.deleteRecursively()
+            usrDir.mkdirs()
+            binDir.mkdirs()
+            libDir.mkdirs()
+            etcDir.mkdirs()
+            tmpDir.mkdirs()
+            homeDir.mkdirs()
+
+            val effectiveUrl = url ?: defaultUrlForAbi()
+            val zipFile = File(rootDir, "bootstrap.zip")
+            if (!download(effectiveUrl, zipFile)) return@withContext false
+
+            // 先数条目
+            val entryNames = mutableListOf<String>()
+            ZipInputStream(zipFile.inputStream()).use { zin ->
+                while (true) {
+                    val e = zin.nextEntry ?: break
+                    entryNames += e.name
+                    zin.closeEntry()
+                }
+            }
+            val total = entryNames.size
+
+            // 真解压
+            var idx = 0
+            ZipInputStream(zipFile.inputStream()).use { zin ->
+                while (true) {
+                    val e = zin.nextEntry ?: break
+                    idx++
+                    _progress.value = Progress.Extracting(idx, total)
+                    if (e.name == "SYMLINKS.txt") {
+                        // 单独读到 etc 下，下面用
+                        File(usrDir, "etc/SYMLINKS.txt").also { it.parentFile?.mkdirs() }
+                            .outputStream().use { out -> zin.copyTo(out) }
+                        zin.closeEntry()
+                        continue
+                    }
+                    val target = File(usrDir, e.name)
+                    if (e.isDirectory) {
+                        target.mkdirs()
+                    } else {
+                        target.parentFile?.mkdirs()
+                        target.outputStream().use { os ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                val n = zin.read(buf)
+                                if (n <= 0) break
+                                os.write(buf, 0, n)
+                            }
+                        }
+                    }
+                    zin.closeEntry()
+                }
+            }
+            zipFile.delete()
+
+            // SYMLINKS.txt 每行 "target←source"（符号链接的目标
+            // 和源），用 Os.symlink 重建。
+            val symlinksFile = File(usrDir, "etc/SYMLINKS.txt")
+            if (symlinksFile.exists()) {
+                val lines = symlinksFile.readLines()
+                lines.forEachIndexed { i, raw ->
+                    val parts = raw.split("←")
+                    if (parts.size != 2) return@forEachIndexed
+                    val (targetName, linkName) = parts
+                    val link = File(usrDir, linkName)
+                    _progress.value = Progress.Linking(i + 1, lines.size)
+                    link.parentFile?.mkdirs()
+                    if (link.exists()) link.delete()
+                    runCatching { android.system.Os.symlink(targetName, link.absolutePath) }
+                }
+            }
+
+            // 把所有 bin/* 标可执行
+            binDir.listFiles()?.forEach { it.setExecutable(true, false) }
+            libDir.walkTopDown().forEach { if (it.isFile) it.setExecutable(true, false) }
+
+            val totalBytes = rootDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+            _progress.value = Progress.Done(totalBytes)
+            true
+        } catch (e: Exception) {
+            _progress.value = Progress.Failed(e.message ?: e.javaClass.simpleName)
+            false
+        }
+    }
+
+    suspend fun uninstall() = withContext(Dispatchers.IO) {
+        rootDir.deleteRecursively()
+        rootDir.mkdirs()
+        _progress.value = Progress.Idle
+    }
+
+    private suspend fun download(url: String, dst: File): Boolean = withContext(Dispatchers.IO) {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 60_000
+            instanceFollowRedirects = true
+        }
+        conn.connect()
+        if (conn.responseCode !in 200..299) {
+            _progress.value = Progress.Failed("HTTP ${conn.responseCode} — $url")
+            return@withContext false
+        }
+        val total = conn.contentLengthLong.coerceAtLeast(0L)
+        dst.outputStream().use { out ->
+            conn.inputStream.use { input ->
+                val buf = ByteArray(64 * 1024)
+                var read = 0L
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    out.write(buf, 0, n)
+                    read += n
+                    _progress.value = Progress.Downloading(read, total)
+                }
+            }
+        }
+        true
+    }
+
+    /** 给 ProcessBuilder 用的 PATH / LD_LIBRARY_PATH / HOME / PREFIX
+     *  等环境变量。装了之后随便包到任意 sh 进程上都能用 Termux 的
+     *  bash + busybox + coreutils。 */
+    fun envFor(): Map<String, String> {
+        val basePath = "/system/bin:/system/xbin"
+        val termuxPath = "${binDir.absolutePath}:$basePath"
+        return mapOf(
+            "PREFIX" to usrDir.absolutePath,
+            "HOME" to homeDir.absolutePath,
+            "PATH" to termuxPath,
+            "LD_LIBRARY_PATH" to libDir.absolutePath,
+            "TMPDIR" to tmpDir.absolutePath,
+            "TERM" to "xterm-256color",
+            "LANG" to "C.UTF-8",
+            // bash 启动时会找 /etc/bash.bashrc，把 ETC_BASHRC 指过去
+            // 也没用 —— 大多数 termux 工具不读环境覆盖。这条主要是
+            // 防 bash 警告 \"_bash: /etc/bash.bashrc: No such...\"。
+            "BASH_ENV" to File(usrDir, "etc/bash.bashrc").absolutePath
+        )
+    }
+
+    /** 推荐用的 shell 路径 —— 装了 bash 用 bash，没装用 sh。 */
+    fun preferredShell(): File {
+        val bash = File(binDir, "bash")
+        val sh = File(binDir, "sh")
+        return when {
+            bash.exists() && bash.canExecute() -> bash
+            sh.exists() && sh.canExecute() -> sh
+            else -> File("/system/bin/sh")
+        }
+    }
+}

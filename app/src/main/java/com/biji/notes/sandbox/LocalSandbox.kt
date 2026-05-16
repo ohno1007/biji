@@ -29,7 +29,8 @@ import java.util.concurrent.TimeUnit
  */
 class LocalSandbox(
     private val context: Context,
-    private val bootstrap: BijiBootstrap? = null
+    private val bootstrap: BijiBootstrap? = null,
+    val termux: TermuxBootstrap? = null
 ) {
 
     /** Set of relative paths (prefixed with `<folder>/`) the assistant
@@ -369,40 +370,40 @@ class LocalSandbox(
                 )
             }
             val start = System.currentTimeMillis()
-            // Build a PATH prelude that gets prepended for both root
-            // and non-root invocations:
-            //   1. our own bootstrap/bin (toybox-class binaries we
-            //      downloaded — Termux's own trick, no root needed)
-            //   2. Termux's PATH (only meaningful under root since the
-            //      directory is private to com.termux)
-            // Both get exported via `export PATH=…:$PATH` so any
-            // existing entries (system paths) stay reachable.
-            val bootstrapBin = bootstrap?.binDir?.absolutePath
+            // 优先级：Termux bootstrap > 我们的 toybox bootstrap > 系统 sh。
+            // PATH 把这些都串起来，让 AI 一条命令能跨多个 prefix 找。
+            val termuxOn = termux?.installed == true
+            val toyboxBin = bootstrap?.binDir?.absolutePath
             val pathParts = buildList {
-                if (!bootstrapBin.isNullOrBlank()) add(bootstrapBin)
+                if (termuxOn) add(termux!!.binDir.absolutePath)
+                if (!toyboxBin.isNullOrBlank()) add(toyboxBin)
                 if (asRoot) add(TERMUX_BIN)
             }
-            val pathExport = if (pathParts.isNotEmpty()) {
-                "export PATH=${pathParts.joinToString(":")}:${'$'}PATH; "
+            val pathExport = if (pathParts.isNotEmpty())
+                "export PATH=${pathParts.joinToString(":")}:${'$'}PATH; " else ""
+            val termuxLib = if (termuxOn) termux!!.libDir.absolutePath else null
+            val ldExport = if (asRoot || termuxOn) buildString {
+                val parts = listOfNotNull(termuxLib, if (asRoot) TERMUX_LIB else null)
+                if (parts.isNotEmpty())
+                    append("export LD_LIBRARY_PATH=${parts.joinToString(":")}:${'$'}{LD_LIBRARY_PATH:-}; ")
             } else ""
+            val homeExport = when {
+                asRoot -> "export HOME=$TERMUX_HOME; "
+                termuxOn -> "export HOME=${termux!!.homeDir.absolutePath}; "
+                else -> ""
+            }
+            val prefixExport = if (termuxOn) "export PREFIX=${termux!!.usrDir.absolutePath}; " else ""
+            val tmpExport = if (termuxOn) "export TMPDIR=${termux!!.tmpDir.absolutePath}; " else ""
+            val shellPath = termux?.takeIf { termuxOn }?.preferredShell()?.absolutePath ?: "sh"
+            val envPrelude = pathExport + ldExport + homeExport + prefixExport + tmpExport
             val pb = if (asRoot) {
-                // su wraps the command so it can resolve the bionic
-                // dynamic linker and Termux's libs/home properly.
-                val envPrelude = buildString {
-                    append(pathExport)
-                    append("export LD_LIBRARY_PATH=$TERMUX_LIB:${'$'}{LD_LIBRARY_PATH:-}; ")
-                    append("export HOME=$TERMUX_HOME; ")
-                }
                 ProcessBuilder(
                     "su",
                     "-c",
                     "$envPrelude cd ${shellQuote(workDirDisplay)} && $command"
                 )
-            } else if (pathExport.isNotEmpty()) {
-                // Wrap so the bootstrap PATH applies even without su.
-                ProcessBuilder("sh", "-c", "$pathExport$command").directory(workDir)
             } else {
-                ProcessBuilder("sh", "-c", command).directory(workDir)
+                ProcessBuilder(shellPath, "-c", "$envPrelude$command").directory(workDir)
             }
             pb.redirectErrorStream(false)
             val process = try {

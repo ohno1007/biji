@@ -14,12 +14,14 @@ import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
 
-/** 长连接 `sh` — stdin/stdout/stderr 在多条命令之间保持打开，
- *  cwd / 环境 / 函数都跟着会话走。 */
+/** 长连接 shell — stdin/stdout/stderr 在多条命令之间保持打开，
+ *  cwd / 环境 / 函数都跟着会话走。装了 Termux bootstrap 就用
+ *  termux/usr/bin/bash 启，没装就用系统 sh。 */
 class InteractiveShell(
     private val workDir: File,
     private val extraPathDirs: List<String> = emptyList(),
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val termux: TermuxBootstrap? = null
 ) {
 
     data class Chunk(val text: String, val isStderr: Boolean = false)
@@ -41,15 +43,29 @@ class InteractiveShell(
     fun start() {
         if (alive) return
         workDir.mkdirs()
-        val pb = ProcessBuilder("sh")
+        val termuxOn = termux?.installed == true
+        val shellPath = termux?.takeIf { termuxOn }?.preferredShell()?.absolutePath ?: "sh"
+        val args = if (termuxOn) listOf(shellPath, "-l") else listOf(shellPath)
+        val pb = ProcessBuilder(args)
             .directory(workDir)
             .redirectErrorStream(false)
         val env = pb.environment()
         val current = env["PATH"] ?: System.getenv("PATH") ?: "/system/bin:/system/xbin"
-        env["PATH"] = (extraPathDirs + current).joinToString(":")
-        env["HOME"] = workDir.absolutePath
+        val pathParts = buildList {
+            if (termuxOn) add(termux!!.binDir.absolutePath)
+            addAll(extraPathDirs)
+            add(current)
+        }
+        env["PATH"] = pathParts.joinToString(":")
         env["TERM"] = "xterm-256color"
         env["LANG"] = "C.UTF-8"
+        if (termuxOn) {
+            termux!!.envFor().forEach { (k, v) ->
+                if (k != "PATH") env[k] = v
+            }
+        } else {
+            env["HOME"] = workDir.absolutePath
+        }
         process = pb.start()
         val p = process ?: return
         stdin = p.outputStream

@@ -325,6 +325,15 @@ fun SettingsScreen(
                     }
                 }
 
+                // ===== Termux 兼容层 ======================================
+                if (settings.developerMode) {
+                    item {
+                        Group {
+                            TermuxRow(termux = vm.sandbox.termux)
+                        }
+                    }
+                }
+
                 // ===== 包管理 ==============================================
                 if (settings.developerMode) {
                     item {
@@ -796,6 +805,150 @@ private fun RootAccessRow(
                     color = cs.primary,
                     fontWeight = FontWeight.SemiBold
                 )
+            }
+        }
+    }
+}
+
+/** Termux bootstrap 安装面板。下载 Termux 官方 release 的 zip，
+ *  解压到 app-private termux/，处理 SYMLINKS.txt 重建软链。装好
+ *  以后终端 / run_shell_command 自动用 termux/usr/bin/bash 启
+ *  动，apt / dpkg / git / vim 这类工具直接可用。 */
+@Composable
+private fun TermuxRow(termux: com.biji.notes.sandbox.TermuxBootstrap?) {
+    if (termux == null) return
+    val cs = MaterialTheme.colorScheme
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val progress by termux.progress.collectAsState()
+    var installed by remember { mutableStateOf(termux.installed) }
+    androidx.compose.runtime.LaunchedEffect(progress) { installed = termux.installed }
+    val busy = progress is com.biji.notes.sandbox.TermuxBootstrap.Progress.Downloading ||
+        progress is com.biji.notes.sandbox.TermuxBootstrap.Progress.Extracting ||
+        progress is com.biji.notes.sandbox.TermuxBootstrap.Progress.Linking
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Outlined.Code,
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = if (installed) cs.primary else cs.onSurface
+            )
+            Spacer(Modifier.size(16.dp))
+            Text(
+                "Termux 兼容层",
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            if (installed) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(cs.primary)
+                )
+            }
+        }
+        Spacer(Modifier.size(6.dp))
+        Text(
+            "下载 Termux 官方 bootstrap (~5 MB)。装好后终端用 bash，自带 apt / dpkg / busybox / coreutils / git / vim 等等。",
+            style = MaterialTheme.typography.bodySmall,
+            color = cs.onSurfaceVariant
+        )
+        when (val p = progress) {
+            is com.biji.notes.sandbox.TermuxBootstrap.Progress.Downloading -> {
+                Spacer(Modifier.size(8.dp))
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { if (p.total > 0) p.bytes.toFloat() / p.total else 0f },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = cs.primary
+                )
+                Text(
+                    "下载: ${p.bytes / 1024} / ${if (p.total > 0) (p.total / 1024).toString() else "?"} KB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            is com.biji.notes.sandbox.TermuxBootstrap.Progress.Extracting -> {
+                Spacer(Modifier.size(8.dp))
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { p.current.toFloat() / p.total.toFloat().coerceAtLeast(1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = cs.primary
+                )
+                Text(
+                    "解压: ${p.current} / ${p.total}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            is com.biji.notes.sandbox.TermuxBootstrap.Progress.Linking -> {
+                Spacer(Modifier.size(8.dp))
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { p.current.toFloat() / p.total.toFloat().coerceAtLeast(1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = cs.primary
+                )
+                Text(
+                    "建链: ${p.current} / ${p.total}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            is com.biji.notes.sandbox.TermuxBootstrap.Progress.Failed -> {
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    p.message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.error
+                )
+            }
+            else -> Unit
+        }
+        Spacer(Modifier.size(10.dp))
+        Row {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(cs.primary.copy(alpha = 0.14f))
+                    .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                        scope.launch { termux.install() }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    if (installed) "重装" else "下载并安装",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cs.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            if (installed) {
+                Spacer(Modifier.size(8.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(cs.error.copy(alpha = 0.10f))
+                        .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                            scope.launch { termux.uninstall() }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        "卸载",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.error,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
     }

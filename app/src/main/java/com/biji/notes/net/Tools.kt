@@ -298,7 +298,7 @@ object Tools {
                 put("name", RUN_SHELL)
                 put(
                     "description",
-                    "通过 `sh -c` 执行 shell 命令。biji 用 Termux 同款的用户态做法：把一份自带的多工具二进制（toybox 之类）下载到 app-private 的 bootstrap/bin 目录，再把这个目录 prepend 到 PATH 上 —— 因此 ls / cat / grep / find / sed / awk / tar / wget 等基础命令在没装 Termux、没 root 时也能用。Root 模式还会再把 Termux 的 /data/data/com.termux/files/usr/bin 加到 PATH（如果用户在 Termux 里 pkg install 了 gcc / clang / cmake / make / git / python，这时就能直接调用）。命令本身不受沙箱限制（除危险命令黑名单：rm -rf /、mkfs、dd of=/dev/、shred、fork bomb、关机/重启）。30 秒超时；返回 stdout / stderr / exit 码。不确定工具是否可用就先 check_environment。"
+                    "执行 shell 命令。PATH 自动包含：(1) 用户态 toybox bootstrap (ls/cat/grep/find/sed/awk 等)，(2) 装了 Termux 兼容层时，包含 Termux 官方 bootstrap (bash/apt/dpkg/busybox/coreutils/git/vim)，(3) Root 模式时还包含 /data/data/com.termux/files/usr/bin。装了 Termux 兼容层时默认用 bash 而不是 sh。30 秒超时；返回 stdout / stderr / exit 码。命令本身不受沙箱限制（除危险命令黑名单：rm -rf /、mkfs、dd of=/dev/、shred、fork bomb、关机/重启）。不确定工具是否可用就先 check_environment。"
                 )
                 put("parameters", buildJsonObject {
                     put("type", "object")
