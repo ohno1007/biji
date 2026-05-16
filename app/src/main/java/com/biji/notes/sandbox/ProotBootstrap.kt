@@ -37,40 +37,25 @@ class ProotBootstrap(
     private val _progress = MutableStateFlow<Progress>(Progress.Idle)
     val progress: StateFlow<Progress> = _progress.asStateFlow()
 
-    /** Termux 主源 proot 包。版本随时间动，但 5.4.0-2 已经稳跑一阵
-     *  子了；用户可以传别的 URL 覆盖。 */
-    val defaultDebUrl: String =
-        "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.4.0-2_aarch64.deb"
+    /** Termux 主源根。具体 proot deb 文件名版本会变，所以我们
+     *  动态从 dists/stable Packages.xz 索引里查当前 Filename。 */
+    private val termuxApt = "https://packages.termux.dev/apt/termux-main"
 
     suspend fun install(url: String? = null): Boolean = withContext(Dispatchers.IO) {
         try {
-            _progress.value = Progress.Downloading(0L, 0L)
             rootDir.mkdirs()
-            val deb = File(rootDir, "proot.deb")
-            val conn = (URL(url ?: defaultDebUrl).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15_000
-                readTimeout = 60_000
-                instanceFollowRedirects = true
-            }
-            conn.connect()
-            if (conn.responseCode !in 200..299) {
-                _progress.value = Progress.Failed("HTTP ${conn.responseCode}")
-                return@withContext false
-            }
-            val total = conn.contentLengthLong.coerceAtLeast(0L)
-            deb.outputStream().use { out ->
-                conn.inputStream.use { input ->
-                    val buf = ByteArray(64 * 1024)
-                    var read = 0L
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n <= 0) break
-                        out.write(buf, 0, n)
-                        read += n
-                        _progress.value = Progress.Downloading(read, total)
+            // 没指定 URL 时去查 Termux 索引拿当前 proot 的 Filename。
+            val resolved = url ?: run {
+                _progress.value = Progress.Downloading(0L, 0L)
+                resolveDebUrl("proot")
+                    ?: run {
+                        _progress.value = Progress.Failed("Termux 索引里找不到 proot 包")
+                        return@withContext false
                     }
-                }
             }
+            _progress.value = Progress.Downloading(0L, 0L)
+            val deb = File(rootDir, "proot.deb")
+            if (!downloadTo(resolved, deb)) return@withContext false
 
             _progress.value = Progress.Extracting
             // .deb 是个 ar 归档，里面有 control.tar.xz / data.tar.xz。
@@ -123,6 +108,78 @@ class ProotBootstrap(
             "-w", "/data/data/com.termux/files/home",
             bash, "-c", command
         )
+    }
+
+    /** 查 Termux 主源 dists/stable 的 Packages.xz，解出 dpkg 格式
+     *  的索引，找匹配 Package 名的段，返回它的 Filename 拼成完整
+     *  URL。这样不用硬编码版本号——版本变了自动跟上。 */
+    private suspend fun resolveDebUrl(packageName: String): String? =
+        withContext(Dispatchers.IO) {
+            val arch = abiToTermuxArch()
+            val indexUrl =
+                "$termuxApt/dists/stable/main/binary-$arch/Packages.xz"
+            val raw = runCatching {
+                val conn = (URL(indexUrl).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15_000
+                    readTimeout = 60_000
+                    instanceFollowRedirects = true
+                }
+                conn.connect()
+                if (conn.responseCode !in 200..299) return@runCatching null
+                val baos = java.io.ByteArrayOutputStream()
+                XZInputStream(conn.inputStream).use { it.copyTo(baos) }
+                String(baos.toByteArray(), Charsets.UTF_8)
+            }.getOrNull() ?: return@withContext null
+            // Packages 文件每段空行分割；找 Package: <name> 那段。
+            val target = "Package: $packageName"
+            val sections = raw.split(Regex("\\r?\\n\\r?\\n"))
+            val sect = sections.firstOrNull { it.lineSequence().any { l -> l.trim() == target } }
+                ?: return@withContext null
+            val filename = sect.lineSequence()
+                .firstOrNull { it.startsWith("Filename:") }
+                ?.substringAfter(":")
+                ?.trim()
+                ?: return@withContext null
+            "$termuxApt/$filename"
+        }
+
+    private fun abiToTermuxArch(): String {
+        val abi = (android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a").lowercase()
+        return when {
+            abi.startsWith("arm64") || abi.contains("aarch64") -> "aarch64"
+            abi.startsWith("armeabi") || abi.contains("armv7") -> "arm"
+            abi.contains("x86_64") -> "x86_64"
+            abi.startsWith("x86") -> "i686"
+            else -> "aarch64"
+        }
+    }
+
+    private suspend fun downloadTo(url: String, dst: File): Boolean = withContext(Dispatchers.IO) {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 60_000
+            instanceFollowRedirects = true
+        }
+        conn.connect()
+        if (conn.responseCode !in 200..299) {
+            _progress.value = Progress.Failed("HTTP ${conn.responseCode} — $url")
+            return@withContext false
+        }
+        val total = conn.contentLengthLong.coerceAtLeast(0L)
+        dst.outputStream().use { out ->
+            conn.inputStream.use { input ->
+                val buf = ByteArray(64 * 1024)
+                var read = 0L
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    out.write(buf, 0, n)
+                    read += n
+                    _progress.value = Progress.Downloading(read, total)
+                }
+            }
+        }
+        true
     }
 
     // --- minimal ar / tar helpers --------------------------------------

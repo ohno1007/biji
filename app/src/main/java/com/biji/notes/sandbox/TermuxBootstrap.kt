@@ -158,6 +158,12 @@ class TermuxBootstrap(private val context: Context) {
     }
 
     suspend fun uninstall() = withContext(Dispatchers.IO) {
+        // 卸载前先把可能存在的 /data/data/com.termux 软链清掉，
+        // 否则那个 dangling symlink 留着碍事。
+        runCatching {
+            ProcessBuilder("su", "-c", "rm -f /data/data/com.termux/files/usr /data/data/com.termux/files/home")
+                .redirectErrorStream(true).start().waitFor(4_000, java.util.concurrent.TimeUnit.MILLISECONDS)
+        }
         rootDir.deleteRecursively()
         rootDir.mkdirs()
         _progress.value = Progress.Idle
@@ -175,7 +181,8 @@ class TermuxBootstrap(private val context: Context) {
             append("mkdir -p /data/data/com.termux/files; ")
             append("ln -sfn ${usrDir.absolutePath} /data/data/com.termux/files/usr; ")
             append("ln -sfn ${homeDir.absolutePath} /data/data/com.termux/files/home; ")
-            append("ls -la /data/data/com.termux/files/usr/bin/bash; ")
+            // 用 readlink 反查软链目标，输出已知字符串证明指对了。
+            append("readlink /data/data/com.termux/files/usr && echo BIJI_LINK_OK; ")
         }
         val p = runCatching {
             ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
@@ -183,19 +190,32 @@ class TermuxBootstrap(private val context: Context) {
         val finished = p.waitFor(10_000, java.util.concurrent.TimeUnit.MILLISECONDS)
         if (!finished) { p.destroyForcibly(); return@withContext false to "su 超时" }
         val out = p.inputStream.bufferedReader().use { it.readText() }
-        val ok = p.exitValue() == 0 && File("/data/data/com.termux/files/usr/bin/bash").exists()
+        val ok = p.exitValue() == 0 &&
+            out.contains("BIJI_LINK_OK") &&
+            out.contains(usrDir.absolutePath)
+        if (ok) {
+            runCatching { linkMarker.writeText(usrDir.absolutePath) }
+        }
         ok to out
     }
 
-    /** True if /data/data/com.termux/files/usr 解析到了我们的
-     *  usrDir —— apt / dpkg / gcc 看到的硬编码路径就匹配上了。 */
-    fun linkedAsTermuxPrefix(): Boolean {
-        if (!installed) return false
-        val canonical = runCatching {
-            File("/data/data/com.termux/files/usr").canonicalPath
-        }.getOrNull() ?: return false
-        return canonical == usrDir.canonicalPath
+    suspend fun unlinkTermuxPrefix(): Boolean = withContext(Dispatchers.IO) {
+        val cmd = "rm -f /data/data/com.termux/files/usr /data/data/com.termux/files/home; echo BIJI_UNLINK_OK"
+        val ok = runCatching {
+            val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
+            p.waitFor(8_000, java.util.concurrent.TimeUnit.MILLISECONDS) && p.exitValue() == 0
+        }.getOrDefault(false)
+        if (ok) linkMarker.delete()
+        ok
     }
+
+    /** 软链是否已建好。biji 进程不在 com.termux 沙箱里，
+     *  /data/data/com.termux 整个对我们是不可读的（连 stat 都拒），
+     *  所以不能用 File.exists/canonicalPath 判断 —— 那俩永远 false。
+     *  改记一个我们自己的标记文件，linkAsTermuxPrefix 成功时落地。 */
+    private val linkMarker: File get() = File(rootDir, ".link-ok")
+
+    fun linkedAsTermuxPrefix(): Boolean = installed && linkMarker.exists()
 
     /** 跑一条 shell 命令，环境按 [envFor] 注入，让 apt / dpkg 跑起来。
      *  返回 (exitCode, stdout, stderr)。给「一键装编译器」UI 用。 */
