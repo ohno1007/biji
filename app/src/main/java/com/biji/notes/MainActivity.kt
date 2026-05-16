@@ -98,6 +98,7 @@ class MainActivity : ComponentActivity() {
                         voice = app.voiceRecognizer,
                         sandbox = app.localSandbox,
                         bootstrap = app.bootstrap,
+                        pkg = app.pkg,
                         isForeground = app::isForeground
                     )
                 )

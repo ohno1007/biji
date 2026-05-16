@@ -325,6 +325,15 @@ fun SettingsScreen(
                     }
                 }
 
+                // ===== 包管理 ==============================================
+                if (settings.developerMode) {
+                    item {
+                        Group {
+                            PackagesRow(pkg = vm.pkg)
+                        }
+                    }
+                }
+
                 // ===== 语音 ================================================
                 item {
                     Group {
@@ -792,6 +801,137 @@ private fun RootAccessRow(
     }
 }
 
+/** pkg 包管理面板：列出收录的工具，单击安装到 bootstrap/bin。 */
+@Composable
+private fun PackagesRow(pkg: com.biji.notes.sandbox.BijiPkg) {
+    val cs = MaterialTheme.colorScheme
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val progress by pkg.progress.collectAsState()
+    // 触发重组，让 isInstalled 刷新
+    var tick by remember { mutableStateOf(0) }
+    androidx.compose.runtime.LaunchedEffect(progress) {
+        if (progress is com.biji.notes.sandbox.BijiPkg.Progress.Done) tick++
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Outlined.Code,
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = cs.onSurface
+            )
+            Spacer(Modifier.size(16.dp))
+            Text(
+                "pkg 包管理",
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium
+            )
+        }
+        Spacer(Modifier.size(8.dp))
+        pkg.catalogue.forEach { p ->
+            val installed = remember(tick, p.id) { pkg.isInstalled(p) }
+            val downloading = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Downloading)
+                ?.takeIf { it.pkgId == p.id }
+            val installing = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Installing)
+                ?.takeIf { it.pkgId == p.id }
+            val failed = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Failed)
+                ?.takeIf { it.pkgId == p.id }
+            val busy = downloading != null || installing != null
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                p.title,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = cs.onSurface,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(Modifier.size(6.dp))
+                            Text(
+                                p.sizeLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = cs.onSurfaceVariant
+                            )
+                            if (installed) {
+                                Spacer(Modifier.size(6.dp))
+                                Text("已装", style = MaterialTheme.typography.labelSmall, color = cs.primary)
+                            }
+                        }
+                        Text(
+                            p.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    val (label, fg, bg) = when {
+                        installed -> Triple("卸载", cs.error, cs.error.copy(alpha = 0.10f))
+                        else -> Triple("安装", cs.primary, cs.primary.copy(alpha = 0.14f))
+                    }
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(bg)
+                            .bouncyClickable(enabled = !busy, pressedScale = 0.95f) {
+                                scope.launch {
+                                    if (installed) {
+                                        pkg.uninstall(p); tick++
+                                    } else {
+                                        pkg.install(p)
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = fg,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+                if (downloading != null) {
+                    Spacer(Modifier.size(4.dp))
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = {
+                            if (downloading.total > 0) downloading.bytes.toFloat() / downloading.total
+                            else 0f
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = cs.primary
+                    )
+                } else if (installing != null) {
+                    Spacer(Modifier.size(4.dp))
+                    androidx.compose.material3.LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = cs.primary
+                    )
+                } else if (failed != null) {
+                    Spacer(Modifier.size(2.dp))
+                    Text(
+                        failed.message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = cs.error
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) {
     val cs = MaterialTheme.colorScheme
@@ -811,6 +951,7 @@ private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) 
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
+        // 标题行 —— 标题一行写完，模型 chip 单独一行，避免标题被压成竖排
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 Icons.Rounded.Mic,
@@ -824,45 +965,65 @@ private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) 
                 style = MaterialTheme.typography.titleMedium,
                 color = cs.onSurface,
                 fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f)
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
-            Box {
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(cs.surfaceContainerHigh)
-                        .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
-                            menuOpen = true
-                        }
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "${picked.label} · ${picked.sizeLabel}",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = cs.onSurface
-                    )
-                    Spacer(Modifier.size(4.dp))
-                    Icon(
-                        Icons.Rounded.ChevronRight,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = cs.onSurfaceVariant
-                    )
-                }
-                androidx.compose.material3.DropdownMenu(
-                    expanded = menuOpen,
-                    onDismissRequest = { menuOpen = false }
-                ) {
-                    offline.availableModels.forEach { m ->
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("${m.label} · ${m.sizeLabel}") },
-                            onClick = {
-                                picked = m
-                                menuOpen = false
-                            }
-                        )
+            if (installed) {
+                Spacer(Modifier.size(8.dp))
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(cs.primary)
+                )
+            }
+        }
+        Spacer(Modifier.size(10.dp))
+        Box {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(50))
+                    .background(cs.surfaceContainerHigh)
+                    .bouncyClickable(enabled = !busy, pressedScale = 0.98f) {
+                        menuOpen = true
                     }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    picked.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cs.onSurface,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Text(
+                    picked.sizeLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant
+                )
+                Spacer(Modifier.size(6.dp))
+                Icon(
+                    Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = cs.onSurfaceVariant
+                )
+            }
+            androidx.compose.material3.DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false }
+            ) {
+                offline.availableModels.forEach { m ->
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("${m.label} · ${m.sizeLabel}") },
+                        onClick = {
+                            picked = m
+                            menuOpen = false
+                        }
+                    )
                 }
             }
         }

@@ -85,6 +85,9 @@ fun TerminalScreen(
     val lines = remember { mutableStateListOf<InteractiveShell.Chunk>() }
     var input by remember { mutableStateOf(TextFieldValue("")) }
     val listState = rememberLazyListState()
+    // 命令历史 + 当前游标（-1 表示「不在历史里」）。
+    val history = remember { mutableStateListOf<String>() }
+    var histPos by remember { mutableStateOf(-1) }
 
     LaunchedEffect(shell) {
         shell.start()
@@ -145,15 +148,46 @@ fun TerminalScreen(
             }
 
             TerminalFnKeyRow(
-                onKey = { keys -> shell.sendRaw(keys) }
+                onKey = { tag, keys ->
+                    when (tag) {
+                        // ↑ ↓ 切历史命令；其余原样写入 stdin
+                        "↑" -> if (history.isNotEmpty()) {
+                            histPos = if (histPos < 0) history.lastIndex
+                            else (histPos - 1).coerceAtLeast(0)
+                            input = TextFieldValue(
+                                history[histPos],
+                                selection = androidx.compose.ui.text.TextRange(history[histPos].length)
+                            )
+                        }
+                        "↓" -> if (history.isNotEmpty() && histPos >= 0) {
+                            histPos = (histPos + 1).coerceAtMost(history.lastIndex + 1)
+                            input = if (histPos > history.lastIndex) {
+                                histPos = -1
+                                TextFieldValue("")
+                            } else {
+                                TextFieldValue(
+                                    history[histPos],
+                                    selection = androidx.compose.ui.text.TextRange(history[histPos].length)
+                                )
+                            }
+                        }
+                        else -> shell.sendRaw(keys)
+                    }
+                }
             )
 
             TerminalInput(
                 value = input,
-                onValueChange = { input = it },
+                onValueChange = {
+                    input = it
+                    if (it.text.isEmpty()) histPos = -1
+                },
                 onSubmit = {
                     val line = input.text
                     if (line.isNotEmpty()) {
+                        if (history.lastOrNull() != line) history += line
+                        if (history.size > 200) history.removeAt(0)
+                        histPos = -1
                         shell.send(line)
                         input = TextFieldValue("")
                     }
@@ -254,7 +288,7 @@ private fun TerminalLine(chunk: InteractiveShell.Chunk) {
 }
 
 @Composable
-private fun TerminalFnKeyRow(onKey: (String) -> Unit) {
+private fun TerminalFnKeyRow(onKey: (String, String) -> Unit) {
     // Termux-equivalent hardware key strip. ESC / arrows etc. use the
     // standard ANSI / xterm byte sequences — sh without a PTY won't
     // act on cursor keys but the bytes still arrive on stdin so any
@@ -288,7 +322,7 @@ private fun TerminalFnKeyRow(onKey: (String) -> Unit) {
                     .padding(horizontal = 3.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(Color(0xFF1C1C1C))
-                    .bouncyClickable(pressedScale = 0.92f) { onKey(seq) }
+                    .bouncyClickable(pressedScale = 0.92f) { onKey(label, seq) }
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 Text(

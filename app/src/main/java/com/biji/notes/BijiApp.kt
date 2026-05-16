@@ -23,8 +23,11 @@ class BijiApp : Application() {
     val deepSeekClient: DeepSeekClient by lazy { DeepSeekClient() }
     val webSearchService: WebSearchService by lazy { WebSearchService() }
     val bootstrap: BijiBootstrap by lazy { BijiBootstrap(this) }
+    val pkg: com.biji.notes.sandbox.BijiPkg by lazy {
+        com.biji.notes.sandbox.BijiPkg(this, bootstrap)
+    }
     val localSandbox: LocalSandbox by lazy { LocalSandbox(this, bootstrap) }
-    val toolExecutor: ToolExecutor by lazy { ToolExecutor(webSearchService, localSandbox) }
+    val toolExecutor: ToolExecutor by lazy { ToolExecutor(webSearchService, localSandbox, pkg) }
     val memoryService: MemoryService by lazy { MemoryService(chatRepository) }
     val chatNotifier: ChatNotifier by lazy { ChatNotifier(this) }
     val voiceRecognizer: com.biji.notes.voice.VoiceRecognizer by lazy {

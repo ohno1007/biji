@@ -34,6 +34,8 @@ object Tools {
     const val EXTRACT_ZIP = "extract_zip"
     const val RUN_SHELL = "run_shell_command"
     const val CHECK_ENV = "check_environment"
+    const val LIST_PKGS = "list_packages"
+    const val INSTALL_PKG = "install_package"
 
     /** Build the full tools list shown to the model, depending on
      *  which feature toggles are on. */
@@ -243,6 +245,41 @@ object Tools {
         buildJsonObject {
             put("type", "function")
             put("function", buildJsonObject {
+                put("name", LIST_PKGS)
+                put(
+                    "description",
+                    "列出 biji pkg 包管理器里收录的可安装工具（tcc / ripgrep / fd / bat / jq / curl 等），返回每个包的 id、说明、是否已安装。无参数。"
+                )
+                put("parameters", buildJsonObject {
+                    put("type", "object")
+                    put("properties", buildJsonObject {})
+                    put("required", buildJsonArray {})
+                })
+            })
+        },
+        buildJsonObject {
+            put("type", "function")
+            put("function", buildJsonObject {
+                put("name", INSTALL_PKG)
+                put(
+                    "description",
+                    "通过 biji pkg 安装一个工具（先调 list_packages 看可选项）。下载预编译二进制到 bootstrap/bin，安装完直接可以 run_shell_command 调用。参数 package_id：包 ID。"
+                )
+                put("parameters", buildJsonObject {
+                    put("type", "object")
+                    put("properties", buildJsonObject {
+                        put("package_id", buildJsonObject {
+                            put("type", "string")
+                            put("description", "list_packages 返回里的 id 字段")
+                        })
+                    })
+                    put("required", buildJsonArray { add("package_id") })
+                })
+            })
+        },
+        buildJsonObject {
+            put("type", "function")
+            put("function", buildJsonObject {
                 put("name", CHECK_ENV)
                 put(
                     "description",
@@ -295,7 +332,8 @@ data class ToolCall(
 
 class ToolExecutor(
     private val search: WebSearchService,
-    private val sandbox: LocalSandbox
+    private val sandbox: LocalSandbox,
+    private val pkg: com.biji.notes.sandbox.BijiPkg
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
 
@@ -327,6 +365,8 @@ class ToolExecutor(
             Tools.EXTRACT_ZIP -> runExtractZip(args, projectFolder)
             Tools.RUN_SHELL -> runShellCommand(args, projectFolder, useRoot)
             Tools.CHECK_ENV -> runCheckEnvironment(useRoot)
+            Tools.LIST_PKGS -> runListPackages()
+            Tools.INSTALL_PKG -> runInstallPackage(args)
             else -> "Unknown tool: ${call.name}" to buildJsonObject {
                 put("kind", "error")
                 put("message", "Unknown tool: ${call.name}")
@@ -575,6 +615,47 @@ class ToolExecutor(
                 )
             }
         )
+    }
+
+    private fun runListPackages(): Pair<String, JsonObject> {
+        val pkgs = pkg.catalogue
+        val ui = buildJsonObject {
+            put("kind", Tools.LIST_PKGS)
+            put("packages", buildJsonArray {
+                pkgs.forEach { p ->
+                    add(buildJsonObject {
+                        put("id", p.id)
+                        put("title", p.title)
+                        put("description", p.description)
+                        put("size", p.sizeLabel)
+                        put("bin", p.binName)
+                        put("installed", pkg.isInstalled(p))
+                    })
+                }
+            })
+        }
+        val forModel = buildString {
+            appendLine("可安装的工具:")
+            pkgs.forEach { p ->
+                val tag = if (pkg.isInstalled(p)) "✓" else " "
+                appendLine("  $tag ${p.id.padEnd(10)} ${p.sizeLabel.padEnd(10)} ${p.title} — ${p.description}")
+            }
+        }
+        return forModel to ui
+    }
+
+    private suspend fun runInstallPackage(args: JsonObject): Pair<String, JsonObject> {
+        val id = args["package_id"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val p = pkg.catalogue.firstOrNull { it.id == id }
+            ?: return "没有这个包: $id" to errorJson(Tools.INSTALL_PKG, "unknown", "package_id" to id)
+        val ok = runCatching { pkg.install(p) }.getOrDefault(false)
+        val ui = buildJsonObject {
+            put("kind", Tools.INSTALL_PKG)
+            put("package_id", id)
+            put("installed", ok)
+        }
+        val msg = if (ok) "已安装 ${p.binName}，run_shell_command 现在可以直接调用。" else "安装失败: $id"
+        return msg to ui
     }
 
     private suspend fun runCheckEnvironment(useRoot: Boolean): Pair<String, JsonObject> {
