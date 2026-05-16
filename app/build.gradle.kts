@@ -82,6 +82,9 @@ dependencies {
     implementation("androidx.webkit:webkit:1.11.0")
     implementation("androidx.lifecycle:lifecycle-process:2.8.6")
 
+    // 解 Termux 的 .deb 包要用：deb = ar 归档 + data.tar.xz。
+    implementation("org.tukaani:xz:1.9")
+
     // Vosk offline speech recognition — on-device Kaldi-based ASR.
     // Models (40–80 MB) are downloaded into app-private storage at
     // runtime so the APK itself stays slim.

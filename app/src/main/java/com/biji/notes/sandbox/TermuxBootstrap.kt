@@ -201,25 +201,30 @@ class TermuxBootstrap(private val context: Context) {
      *  返回 (exitCode, stdout, stderr)。给「一键装编译器」UI 用。 */
     suspend fun runOnce(
         command: String,
+        proot: ProotBootstrap? = null,
         timeoutMs: Long = 600_000L,
         onLine: (String, Boolean) -> Unit = { _, _ -> }
     ): Triple<Int, String, String> = kotlinx.coroutines.coroutineScope {
         withContext(Dispatchers.IO) {
             if (!installed) return@withContext Triple(-1, "", "终端环境未安装")
             val shellFile = preferredShell()
-            // 再保险一次：哪怕安装时已经 chmod 过，也可能被某些
-            // 备份/恢复机制重置。exec 前先把 bash 的 +x 重新打上。
             runCatching { android.system.Os.chmod(shellFile.absolutePath, 0b111_101_101) }
             if (!shellFile.canExecute()) {
                 return@withContext Triple(-1, "", "shell 不可执行: ${shellFile.absolutePath}（可能是 Android W^X 限制）")
             }
-            val pb = ProcessBuilder(shellFile.absolutePath, "-c", command)
-                .directory(homeDir)
-                .redirectErrorStream(false)
+            val useProot = proot?.installed == true
+            val pb = if (useProot) {
+                ProcessBuilder(proot!!.wrapForProot(command))
+            } else {
+                ProcessBuilder(shellFile.absolutePath, "-c", command)
+            }
+            pb.directory(homeDir).redirectErrorStream(false)
             val env = pb.environment()
             envFor().forEach { (k, v) -> env[k] = v }
-            val exec = File(libDir, "libtermux-exec.so")
-            if (exec.exists()) env["LD_PRELOAD"] = exec.absolutePath
+            if (!useProot) {
+                val exec = File(libDir, "libtermux-exec.so")
+                if (exec.exists()) env["LD_PRELOAD"] = exec.absolutePath
+            }
             val p = try {
                 pb.start()
             } catch (e: java.io.IOException) {

@@ -82,7 +82,7 @@ fun TerminalScreen(
         listOf(bootstrap.binDir.absolutePath)
     }
     val shell = remember(workDir) {
-        InteractiveShell(workDir, extraPath, scope, sandbox.termux)
+        InteractiveShell(workDir, extraPath, scope, sandbox.termux, sandbox.proot)
     }
     val lines = remember { mutableStateListOf<InteractiveShell.Chunk>() }
     var input by remember { mutableStateOf(TextFieldValue("")) }

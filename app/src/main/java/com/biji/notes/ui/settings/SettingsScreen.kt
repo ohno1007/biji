@@ -332,7 +332,10 @@ fun SettingsScreen(
                 if (settings.developerMode) {
                     item {
                         Group {
-                            TerminalEnvRow(termux = vm.sandbox.termux)
+                            TerminalEnvRow(
+                                termux = vm.sandbox.termux,
+                                proot = vm.sandbox.proot
+                            )
                         }
                     }
                 }
@@ -808,7 +811,10 @@ private fun RootAccessRow(
  *  + apt + git + vim 等）到 biji 私有目录。装好之后终端和 AI 的
  *  run_shell_command 都会自动用它的 bash + PATH。 */
 @Composable
-private fun TerminalEnvRow(termux: com.biji.notes.sandbox.TermuxBootstrap?) {
+private fun TerminalEnvRow(
+    termux: com.biji.notes.sandbox.TermuxBootstrap?,
+    proot: com.biji.notes.sandbox.ProotBootstrap?
+) {
     if (termux == null) return
     val cs = MaterialTheme.colorScheme
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -944,12 +950,127 @@ private fun TerminalEnvRow(termux: com.biji.notes.sandbox.TermuxBootstrap?) {
                 }
             }
         }
-        // 装好终端环境后才显示链接 + 编译器装。
+        // 装好终端环境后才显示 proot + 链接 + 编译器装。
         if (installed) {
+            if (proot != null) {
+                Spacer(Modifier.size(14.dp))
+                ProotInstallRow(proot = proot)
+            }
             Spacer(Modifier.size(14.dp))
             TermuxLinkRow(termux = termux)
             Spacer(Modifier.size(14.dp))
-            ToolchainInstallRow(termux = termux)
+            ToolchainInstallRow(termux = termux, proot = proot)
+        }
+    }
+}
+
+/** 下载 proot —— 一个不要 root 的用户态 chroot。装上以后所有命令
+ *  在它里面跑，路径绑定让 /data/data/com.termux/files/usr 等于
+ *  biji 的目录。apt / dpkg / gcc 看到 Termux 自己以为的路径，一切
+ *  跟在真 Termux 里跑没区别。 */
+@Composable
+private fun ProotInstallRow(proot: com.biji.notes.sandbox.ProotBootstrap) {
+    val cs = MaterialTheme.colorScheme
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val progress by proot.progress.collectAsState()
+    var installed by remember { mutableStateOf(proot.installed) }
+    androidx.compose.runtime.LaunchedEffect(progress) { installed = proot.installed }
+    val busy = progress is com.biji.notes.sandbox.ProotBootstrap.Progress.Downloading ||
+        progress is com.biji.notes.sandbox.ProotBootstrap.Progress.Extracting
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "proot (无 root 路径伪造)",
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurface,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            if (installed) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(cs.primary)
+                )
+            }
+        }
+        Text(
+            if (installed) "已就绪 · apt / dpkg / gcc 无 root 直接可用"
+            else "下载 Termux 的 proot 二进制 (~1 MB)。装好后所有命令都通过它跑，伪造 Termux prefix 路径，不要 root。",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (installed) cs.primary else cs.onSurfaceVariant
+        )
+        when (val p = progress) {
+            is com.biji.notes.sandbox.ProotBootstrap.Progress.Downloading -> {
+                Spacer(Modifier.size(8.dp))
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { if (p.total > 0) p.bytes.toFloat() / p.total else 0f },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = cs.primary
+                )
+                Text(
+                    "${p.bytes / 1024} / ${if (p.total > 0) (p.total / 1024).toString() else "?"} KB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            is com.biji.notes.sandbox.ProotBootstrap.Progress.Extracting -> {
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    "解 deb…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant
+                )
+            }
+            is com.biji.notes.sandbox.ProotBootstrap.Progress.Failed -> {
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    p.message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.error
+                )
+            }
+            else -> Unit
+        }
+        Spacer(Modifier.size(8.dp))
+        Row {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(cs.primary.copy(alpha = 0.14f))
+                    .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                        scope.launch { proot.install() }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    if (installed) "重新下载" else "下载并安装",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cs.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            if (installed) {
+                Spacer(Modifier.size(8.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(cs.error.copy(alpha = 0.10f))
+                        .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                            scope.launch { proot.uninstall() }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        "卸载",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.error,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
         }
     }
 }
@@ -1043,9 +1164,14 @@ private fun TermuxLinkRow(termux: com.biji.notes.sandbox.TermuxBootstrap) {
 }
 
 /** 在装好的终端环境上跑 `apt update && apt install -y …` 一键装齐
- *  C/C++ 编译器、git、python、cmake。日志实时打到下面一个滚动框。 */
+ *  C/C++ 编译器、git、python、cmake。日志实时打到下面一个滚动框。
+ *  若装了 proot 就通过它跑（apt 在硬编码 prefix 下能正常工作）；
+ *  否则要求先建软链或装 proot。 */
 @Composable
-private fun ToolchainInstallRow(termux: com.biji.notes.sandbox.TermuxBootstrap) {
+private fun ToolchainInstallRow(
+    termux: com.biji.notes.sandbox.TermuxBootstrap,
+    proot: com.biji.notes.sandbox.ProotBootstrap?
+) {
     val cs = MaterialTheme.colorScheme
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var running by remember { mutableStateOf(false) }
@@ -1080,8 +1206,10 @@ private fun ToolchainInstallRow(termux: com.biji.notes.sandbox.TermuxBootstrap) 
                         log.clear()
                         scope.launch {
                             try {
-                                if (!termux.linkedAsTermuxPrefix()) {
-                                    failed = "apt 把路径硬编码到 /data/data/com.termux/files/usr，请先在上面点「建立软链」（需 root）。"
+                                val havePath = termux.linkedAsTermuxPrefix() ||
+                                    (proot?.installed == true)
+                                if (!havePath) {
+                                    failed = "apt 需要伪造 Termux prefix 路径。请先装 proot（推荐，无 root），或者用 root 建软链。"
                                     running = false
                                     return@launch
                                 }
@@ -1091,7 +1219,7 @@ private fun ToolchainInstallRow(termux: com.biji.notes.sandbox.TermuxBootstrap) 
                                 )
                                 for (c in cmds) {
                                     log.add("$ $c" to false)
-                                    val (code, _, err) = termux.runOnce(c) { line, isErr ->
+                                    val (code, _, err) = termux.runOnce(c, proot = proot) { line, isErr ->
                                         log.add(line to isErr)
                                         while (log.size > 600) log.removeAt(0)
                                     }

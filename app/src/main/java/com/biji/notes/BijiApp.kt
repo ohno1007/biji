@@ -26,8 +26,11 @@ class BijiApp : Application() {
     val termuxBootstrap: com.biji.notes.sandbox.TermuxBootstrap by lazy {
         com.biji.notes.sandbox.TermuxBootstrap(this)
     }
+    val prootBootstrap: com.biji.notes.sandbox.ProotBootstrap by lazy {
+        com.biji.notes.sandbox.ProotBootstrap(this, termuxBootstrap)
+    }
     val localSandbox: LocalSandbox by lazy {
-        LocalSandbox(this, bootstrap, termuxBootstrap)
+        LocalSandbox(this, bootstrap, termuxBootstrap, prootBootstrap)
     }
     val toolExecutor: ToolExecutor by lazy { ToolExecutor(webSearchService, localSandbox) }
     val memoryService: MemoryService by lazy { MemoryService(chatRepository) }

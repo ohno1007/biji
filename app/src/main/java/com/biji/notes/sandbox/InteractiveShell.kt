@@ -16,12 +16,14 @@ import java.io.PrintWriter
 
 /** 长连接 shell — stdin/stdout/stderr 在多条命令之间保持打开，
  *  cwd / 环境 / 函数都跟着会话走。装了 Termux bootstrap 就用
- *  termux/usr/bin/bash 启，没装就用系统 sh。 */
+ *  termux/usr/bin/bash 启，没装就用系统 sh。装了 proot 就把 bash
+ *  包到 proot 里跑，apt / gcc 在硬编码 prefix 路径下也能正常工作。 */
 class InteractiveShell(
     private val workDir: File,
     private val extraPathDirs: List<String> = emptyList(),
     private val scope: CoroutineScope,
-    private val termux: TermuxBootstrap? = null
+    private val termux: TermuxBootstrap? = null,
+    private val proot: ProotBootstrap? = null
 ) {
 
     data class Chunk(val text: String, val isStderr: Boolean = false)
@@ -44,8 +46,13 @@ class InteractiveShell(
         if (alive) return
         workDir.mkdirs()
         val termuxOn = termux?.installed == true
+        val prootOn = termuxOn && proot?.installed == true
         val shellPath = termux?.takeIf { termuxOn }?.preferredShell()?.absolutePath ?: "sh"
-        val args = if (termuxOn) listOf(shellPath, "-l") else listOf(shellPath)
+        val args = when {
+            prootOn -> proot!!.wrapForProot("exec bash -l")
+            termuxOn -> listOf(shellPath, "-l")
+            else -> listOf(shellPath)
+        }
         val pb = ProcessBuilder(args)
             .directory(workDir)
             .redirectErrorStream(false)

@@ -30,7 +30,8 @@ import java.util.concurrent.TimeUnit
 class LocalSandbox(
     private val context: Context,
     private val bootstrap: BijiBootstrap? = null,
-    val termux: TermuxBootstrap? = null
+    val termux: TermuxBootstrap? = null,
+    val proot: ProotBootstrap? = null
 ) {
 
     /** Set of relative paths (prefixed with `<folder>/`) the assistant
@@ -411,12 +412,18 @@ class LocalSandbox(
             } else ""
             val shellPath = termux?.takeIf { termuxOn }?.preferredShell()?.absolutePath ?: "sh"
             val envPrelude = pathExport + ldExport + homeExport + termuxExtras
+            // 装了 proot 又装了 Termux：所有命令穿过 proot，把
+            // Termux 硬编码的 prefix 绑回 biji 真实目录。这样 apt /
+            // dpkg / gcc 都看到自己以为的路径，user-space 完全没问题。
+            val useProot = !asRoot && termuxOn && proot?.installed == true
             val pb = if (asRoot) {
                 ProcessBuilder(
                     "su",
                     "-c",
                     "$envPrelude cd ${shellQuote(workDirDisplay)} && $command"
                 )
+            } else if (useProot) {
+                ProcessBuilder(proot!!.wrapForProot("$envPrelude$command")).directory(workDir)
             } else {
                 ProcessBuilder(shellPath, "-c", "$envPrelude$command").directory(workDir)
             }
