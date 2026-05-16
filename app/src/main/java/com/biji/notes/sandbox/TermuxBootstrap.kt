@@ -134,8 +134,19 @@ class TermuxBootstrap(private val context: Context) {
             }
 
             // 把所有 bin/* 标可执行
-            binDir.listFiles()?.forEach { it.setExecutable(true, false) }
-            libDir.walkTopDown().forEach { if (it.isFile) it.setExecutable(true, false) }
+            // Os.chmod 直接走 chmod() 系统调用，比 File.setExecutable
+            // 可靠 —— 后者在某些 SELinux 策略下静默失败。0755 给
+            // bin/，0644 给 lib/，符号链接跳过。
+            usrDir.walkTopDown().forEach { f ->
+                if (!f.exists()) return@forEach
+                val mode = when {
+                    f.parentFile == binDir -> 0b111_101_101 // 0755
+                    f.parentFile == libDir -> 0b110_100_100 // 0644
+                    f.parentFile?.parentFile == libDir && f.isFile -> 0b111_101_101
+                    else -> if (f.isDirectory) 0b111_101_101 else 0b110_100_100
+                }
+                runCatching { android.system.Os.chmod(f.absolutePath, mode) }
+            }
 
             val totalBytes = rootDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
             _progress.value = Progress.Done(totalBytes)
@@ -161,15 +172,28 @@ class TermuxBootstrap(private val context: Context) {
     ): Triple<Int, String, String> = kotlinx.coroutines.coroutineScope {
         withContext(Dispatchers.IO) {
             if (!installed) return@withContext Triple(-1, "", "终端环境未安装")
-            val shell = preferredShell().absolutePath
-            val pb = ProcessBuilder(shell, "-c", command)
+            val shellFile = preferredShell()
+            // 再保险一次：哪怕安装时已经 chmod 过，也可能被某些
+            // 备份/恢复机制重置。exec 前先把 bash 的 +x 重新打上。
+            runCatching { android.system.Os.chmod(shellFile.absolutePath, 0b111_101_101) }
+            if (!shellFile.canExecute()) {
+                return@withContext Triple(-1, "", "shell 不可执行: ${shellFile.absolutePath}（可能是 Android W^X 限制）")
+            }
+            val pb = ProcessBuilder(shellFile.absolutePath, "-c", command)
                 .directory(homeDir)
                 .redirectErrorStream(false)
             val env = pb.environment()
             envFor().forEach { (k, v) -> env[k] = v }
             val exec = File(libDir, "libtermux-exec.so")
             if (exec.exists()) env["LD_PRELOAD"] = exec.absolutePath
-            val p = pb.start()
+            val p = try {
+                pb.start()
+            } catch (e: java.io.IOException) {
+                return@withContext Triple(
+                    -1, "",
+                    "无法启动 ${shellFile.name}: ${e.message ?: e.javaClass.simpleName}"
+                )
+            }
             val out = StringBuilder()
             val err = StringBuilder()
             val outJob = async(Dispatchers.IO) {

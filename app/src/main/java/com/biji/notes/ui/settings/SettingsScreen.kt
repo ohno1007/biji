@@ -989,26 +989,30 @@ private fun ToolchainInstallRow(termux: com.biji.notes.sandbox.TermuxBootstrap) 
                         failed = null
                         log.clear()
                         scope.launch {
-                            // 失败立即停下，把错误浮上来。
-                            val cmds = listOf(
-                                "apt update -y",
-                                "apt install -y build-essential clang make cmake git python"
-                            )
-                            for (c in cmds) {
-                                log.add("$ $c" to false)
-                                val (code, _, err) = termux.runOnce(c) { line, isErr ->
-                                    log.add(line to isErr)
-                                    while (log.size > 600) log.removeAt(0)
+                            try {
+                                val cmds = listOf(
+                                    "apt update -y",
+                                    "apt install -y build-essential clang make cmake git python"
+                                )
+                                for (c in cmds) {
+                                    log.add("$ $c" to false)
+                                    val (code, _, err) = termux.runOnce(c) { line, isErr ->
+                                        log.add(line to isErr)
+                                        while (log.size > 600) log.removeAt(0)
+                                    }
+                                    if (code != 0) {
+                                        failed = err.lineSequence().lastOrNull { it.isNotBlank() }
+                                            ?: "exit $code"
+                                        running = false
+                                        return@launch
+                                    }
                                 }
-                                if (code != 0) {
-                                    failed = err.lineSequence().lastOrNull { it.isNotBlank() }
-                                        ?: "exit $code"
-                                    running = false
-                                    return@launch
-                                }
+                                done = true
+                                running = false
+                            } catch (t: Throwable) {
+                                failed = t.message ?: t.javaClass.simpleName
+                                running = false
                             }
-                            done = true
-                            running = false
                         }
                     }
                     .padding(horizontal = 12.dp, vertical = 8.dp)

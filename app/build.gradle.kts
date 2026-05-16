@@ -13,7 +13,10 @@ android {
     defaultConfig {
         applicationId = "com.biji.notes"
         minSdk = 26
-        targetSdk = 34
+        // 用 28 是为了绕开 Android 10+ 对 app-private 目录的 W^X
+        // 强制 —— 高 targetSdk 下 ProcessBuilder 启动 /data/data/
+        // <pkg>/files/... 里的二进制会 EACCES。Termux 同样用 28。
+        targetSdk = 28
         versionCode = 1
         versionName = "1.0.0"
         vectorDrawables { useSupportLibrary = true }

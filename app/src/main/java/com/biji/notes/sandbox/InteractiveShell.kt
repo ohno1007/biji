@@ -74,7 +74,22 @@ class InteractiveShell(
         } else {
             env["HOME"] = workDir.absolutePath
         }
-        process = pb.start()
+        // Termux 二进制装在 app-private 里，targetSdk≥29 时直接
+        // ProcessBuilder.start() 会 EACCES。我们 targetSdk 28 绕开
+        // 了，但仍可能遇到 chmod 没生效之类的边缘情况 —— 把异常
+        // 转成红字提示，别再让会话整个挂掉。
+        if (termuxOn) {
+            runCatching { android.system.Os.chmod(shellPath, 0b111_101_101) }
+        }
+        process = try {
+            pb.start()
+        } catch (e: java.io.IOException) {
+            scope.launch {
+                _output.emit(Chunk("无法启动 shell: ${e.message ?: e.javaClass.simpleName}\n", true))
+                _output.emit(Chunk("路径: $shellPath\n", true))
+            }
+            return
+        }
         val p = process ?: return
         stdin = p.outputStream
         stdinWriter = PrintWriter(OutputStreamWriter(p.outputStream, Charsets.UTF_8), true)
