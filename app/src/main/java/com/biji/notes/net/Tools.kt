@@ -261,7 +261,7 @@ object Tools {
                 put("name", RUN_SHELL)
                 put(
                     "description",
-                    "在全局 Android 进程环境中通过 `sh -c` 执行 shell 命令。默认 cwd 为当前会话绑定的项目目录。如果用户开启了 Root 模式，命令会通过 su -c 执行，并自动注入 Termux 的 PATH/LD_LIBRARY_PATH/HOME，因此 Termux 里 pkg install 的 gcc/clang/cmake/make/git/python 等都能直接调用。命令本身不受沙箱限制（除非匹配危险命令黑名单：rm -rf /、mkfs、dd of=/dev/、shred、fork bomb、关机/重启）。30 秒超时；返回 stdout / stderr / exit 码。在调用之前如果不确定工具是否可用，可以先调用 check_environment 工具。"
+                    "通过 `sh -c` 执行 shell 命令。biji 用 Termux 同款的用户态做法：把一份自带的多工具二进制（toybox 之类）下载到 app-private 的 bootstrap/bin 目录，再把这个目录 prepend 到 PATH 上 —— 因此 ls / cat / grep / find / sed / awk / tar / wget 等基础命令在没装 Termux、没 root 时也能用。Root 模式还会再把 Termux 的 /data/data/com.termux/files/usr/bin 加到 PATH（如果用户在 Termux 里 pkg install 了 gcc / clang / cmake / make / git / python，这时就能直接调用）。命令本身不受沙箱限制（除危险命令黑名单：rm -rf /、mkfs、dd of=/dev/、shred、fork bomb、关机/重启）。30 秒超时；返回 stdout / stderr / exit 码。不确定工具是否可用就先 check_environment。"
                 )
                 put("parameters", buildJsonObject {
                     put("type", "object")

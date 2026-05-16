@@ -97,6 +97,7 @@ class MainActivity : ComponentActivity() {
                         notifier = app.chatNotifier,
                         voice = app.voiceRecognizer,
                         sandbox = app.localSandbox,
+                        bootstrap = app.bootstrap,
                         isForeground = app::isForeground
                     )
                 )

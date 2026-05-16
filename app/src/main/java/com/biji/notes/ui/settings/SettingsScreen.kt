@@ -309,14 +309,17 @@ fun SettingsScreen(
                                 onProbe = { vm.probeRoot() }
                             )
                             InsetDivider()
-                            DevEnvRow(runShell = { cmd ->
-                                val r = vm.sandbox.runShell(
-                                    folder = null,
-                                    command = cmd,
-                                    asRoot = settings.useRoot
-                                )
-                                r.exitCode to r.stdout
-                            })
+                            DevEnvRow(
+                                runShell = { cmd ->
+                                    val r = vm.sandbox.runShell(
+                                        folder = null,
+                                        command = cmd,
+                                        asRoot = settings.useRoot
+                                    )
+                                    r.exitCode to r.stdout
+                                },
+                                bootstrap = vm.bootstrap
+                            )
                         }
                     }
                 }
@@ -793,7 +796,10 @@ private fun RootAccessRow(
  * the row can detect "exit 0 + non-empty path" as "tool installed".
  */
 @Composable
-private fun DevEnvRow(runShell: (suspend (String) -> Pair<Int, String>)? = null) {
+private fun DevEnvRow(
+    runShell: (suspend (String) -> Pair<Int, String>)? = null,
+    bootstrap: com.biji.notes.sandbox.BijiBootstrap? = null
+) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val cs = MaterialTheme.colorScheme
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
@@ -810,6 +816,10 @@ private fun DevEnvRow(runShell: (suspend (String) -> Pair<Int, String>)? = null)
     }
     val installCmd =
         "pkg update -y && pkg install -y build-essential cmake clang make git python"
+    val bootstrapProgress by (bootstrap?.progress
+        ?: kotlinx.coroutines.flow.MutableStateFlow(com.biji.notes.sandbox.BijiBootstrap.Progress.Idle))
+        .collectAsState()
+    val bootstrapInstalled = bootstrap?.installed == true
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -874,6 +884,141 @@ private fun DevEnvRow(runShell: (suspend (String) -> Pair<Int, String>)? = null)
                             style = MaterialTheme.typography.bodySmall,
                             color = if (termuxInstalled) cs.primary else cs.onErrorContainer
                         )
+                    }
+                    // ---- biji 自带 user-space bootstrap ----
+                    // Termux's whole "we run in user-space" trick is just
+                    // dropping prebuilt binaries in app-private storage
+                    // and pointing PATH at them. We do the same: tap to
+                    // download a static toybox multicall binary, biji's
+                    // shell instantly gets ls / cat / grep / find / sed /
+                    // awk / tar / wget without ever talking to Termux.
+                    if (bootstrap != null) {
+                        Spacer(Modifier.size(10.dp))
+                        Column(
+                            Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(cs.surfaceContainerHigh)
+                                .padding(12.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    androidx.compose.material.icons.Icons.Outlined.Code,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = if (bootstrapInstalled) cs.primary else cs.onSurfaceVariant
+                                )
+                                Spacer(Modifier.size(6.dp))
+                                Text(
+                                    "biji 用户态 bootstrap (toybox)",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = cs.onSurface,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (bootstrapInstalled) {
+                                    Text(
+                                        "已就绪",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = cs.primary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.size(6.dp))
+                            Text(
+                                "把一份静态 toybox 下载到 ${bootstrap.binDir.absolutePath} —— biji 的 shell 工具会自动从这里查 ls / cat / grep / find / tar 等命令，不需要 root、不需要 Termux。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = cs.onSurfaceVariant
+                            )
+                            // Progress visualisation.
+                            when (val p = bootstrapProgress) {
+                                is com.biji.notes.sandbox.BijiBootstrap.Progress.Downloading -> {
+                                    Spacer(Modifier.size(8.dp))
+                                    androidx.compose.material3.LinearProgressIndicator(
+                                        progress = { p.fraction.coerceIn(0f, 1f) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = cs.primary
+                                    )
+                                    Text(
+                                        "下载中：${p.bytes / 1024} / ${if (p.total > 0) (p.total / 1024).toString() else "?"} KB",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = cs.onSurfaceVariant,
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    )
+                                }
+                                is com.biji.notes.sandbox.BijiBootstrap.Progress.Linking -> {
+                                    Spacer(Modifier.size(8.dp))
+                                    androidx.compose.material3.LinearProgressIndicator(
+                                        progress = { p.current.toFloat() / p.total.toFloat().coerceAtLeast(1f) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = cs.primary
+                                    )
+                                    Text(
+                                        "建立软链：${p.current} / ${p.total}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = cs.onSurfaceVariant,
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    )
+                                }
+                                is com.biji.notes.sandbox.BijiBootstrap.Progress.Failed -> {
+                                    Spacer(Modifier.size(8.dp))
+                                    Text(
+                                        "✗ ${p.message}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = cs.error
+                                    )
+                                }
+                                is com.biji.notes.sandbox.BijiBootstrap.Progress.Done -> {
+                                    Spacer(Modifier.size(6.dp))
+                                    Text(
+                                        "✓ 已安装 ${p.appletCount} 个 applet",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = cs.primary
+                                    )
+                                }
+                                else -> Unit
+                            }
+                            Spacer(Modifier.size(8.dp))
+                            val busy = bootstrapProgress is com.biji.notes.sandbox.BijiBootstrap.Progress.Downloading ||
+                                bootstrapProgress is com.biji.notes.sandbox.BijiBootstrap.Progress.Linking
+                            Row {
+                                Row(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(cs.primary.copy(alpha = 0.14f))
+                                        .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                                            scope.launch { bootstrap.install() }
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        if (bootstrapInstalled) "重新下载" else "下载并安装",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = cs.primary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                if (bootstrapInstalled) {
+                                    Spacer(Modifier.size(8.dp))
+                                    Row(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(cs.error.copy(alpha = 0.10f))
+                                            .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                                                scope.launch { bootstrap.uninstall() }
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    ) {
+                                        Text(
+                                            "卸载",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = cs.error,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                     Spacer(Modifier.size(10.dp))
                     Text(

@@ -27,7 +27,10 @@ import java.util.concurrent.TimeUnit
  * the obviously-destructive shapes (`rm -rf /`, fork bombs, `mkfs`,
  * `dd of=/dev/`, `shred`).
  */
-class LocalSandbox(private val context: Context) {
+class LocalSandbox(
+    private val context: Context,
+    private val bootstrap: BijiBootstrap? = null
+) {
 
     /** Set of relative paths (prefixed with `<folder>/`) the assistant
      *  has written / created during this app session. The project drawer
@@ -366,17 +369,27 @@ class LocalSandbox(private val context: Context) {
                 )
             }
             val start = System.currentTimeMillis()
+            // Build a PATH prelude that gets prepended for both root
+            // and non-root invocations:
+            //   1. our own bootstrap/bin (toybox-class binaries we
+            //      downloaded — Termux's own trick, no root needed)
+            //   2. Termux's PATH (only meaningful under root since the
+            //      directory is private to com.termux)
+            // Both get exported via `export PATH=…:$PATH` so any
+            // existing entries (system paths) stay reachable.
+            val bootstrapBin = bootstrap?.binDir?.absolutePath
+            val pathParts = buildList {
+                if (!bootstrapBin.isNullOrBlank()) add(bootstrapBin)
+                if (asRoot) add(TERMUX_BIN)
+            }
+            val pathExport = if (pathParts.isNotEmpty()) {
+                "export PATH=${pathParts.joinToString(":")}:${'$'}PATH; "
+            } else ""
             val pb = if (asRoot) {
-                // Wrap the user's command so the inner shell:
-                //  - lands in the chosen cwd (`su` resets it),
-                //  - has Termux's bin/lib prepended to PATH/LD_LIBRARY_PATH
-                //    (otherwise `gcc / cmake / git / python` etc. that
-                //    the user installed via `pkg install …` are
-                //    invisible — that's the bug the user hit),
-                //  - has HOME pointed at Termux's home so tooling (git
-                //    config, python pip, ssh) finds its dotfiles.
+                // su wraps the command so it can resolve the bionic
+                // dynamic linker and Termux's libs/home properly.
                 val envPrelude = buildString {
-                    append("export PATH=$TERMUX_BIN:${'$'}PATH; ")
+                    append(pathExport)
                     append("export LD_LIBRARY_PATH=$TERMUX_LIB:${'$'}{LD_LIBRARY_PATH:-}; ")
                     append("export HOME=$TERMUX_HOME; ")
                 }
@@ -385,6 +398,9 @@ class LocalSandbox(private val context: Context) {
                     "-c",
                     "$envPrelude cd ${shellQuote(workDirDisplay)} && $command"
                 )
+            } else if (pathExport.isNotEmpty()) {
+                // Wrap so the bootstrap PATH applies even without su.
+                ProcessBuilder("sh", "-c", "$pathExport$command").directory(workDir)
             } else {
                 ProcessBuilder("sh", "-c", command).directory(workDir)
             }

@@ -121,7 +121,14 @@ class VoiceRecognizer(private val ctx: Context) {
             val msg = when (error) {
                 SpeechRecognizer.ERROR_AUDIO -> "录音错误"
                 SpeechRecognizer.ERROR_CLIENT -> "客户端错误"
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "缺少录音权限"
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                    // 这条不是 biji 自己缺权限——biji 在 manifest 里已经声
+                    // 明 RECORD_AUDIO，用户也授予了。它实际上是系统语
+                    // 音识别服务本身没拿到麦克风权限，常见于：① 设备
+                    // 没安装 Google 语音服务；② 系统语音助手没设；
+                    // ③ AOSP / 去 Google 化 ROM。提示用户走真正能解决
+                    // 的路径，而不是再去开自己已经开过的权限。
+                    "系统语音识别服务没拿到麦克风权限。biji 这边权限是开的——问题在于设备的默认语音助手（系统设置 → 应用 → 默认应用 → 数字助理 / 语音助手）。可以换个识别服务或直接打字。"
                 SpeechRecognizer.ERROR_NETWORK -> "网络错误"
                 SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "网络超时"
                 SpeechRecognizer.ERROR_NO_MATCH -> "没听清，再试一次"

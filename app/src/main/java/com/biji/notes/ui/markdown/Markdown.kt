@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -23,7 +24,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckBox
 import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.ui.draw.rotate
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
@@ -707,6 +712,14 @@ private fun CodeBlock(lang: String, code: String, baseColor: Color, isDark: Bool
     val cs = MaterialTheme.colorScheme
     val clipboard = LocalClipboardManager.current
     var copied by remember(code) { mutableStateOf(false) }
+    // Long code blocks auto-collapse; the user can tap the chevron to
+    // expand. Short blocks stay open. Threshold of 12 lines mirrors
+    // what feels like a phone-screen sweet spot.
+    val isLong = remember(code) { code.count { it == '\n' } >= 12 }
+    var expanded by remember(code) { mutableStateOf(!isLong) }
+    var previewing by remember(code) { mutableStateOf(false) }
+    val langLower = lang.lowercase()
+    val canPreview = langLower in setOf("html", "htm", "xml", "svg")
     LaunchedEffect(copied) {
         if (copied) { delay(1500); copied = false }
     }
@@ -723,15 +736,57 @@ private fun CodeBlock(lang: String, code: String, baseColor: Color, isDark: Bool
             modifier = Modifier
                 .fillMaxWidth()
                 .background(baseColor.copy(alpha = 0.04f))
+                .bouncyClickable(pressedScale = 0.995f) { expanded = !expanded }
                 .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Chevron rotates between collapsed (→) and expanded (↓).
+            val chevronRotation by androidx.compose.animation.core.animateFloatAsState(
+                targetValue = if (expanded) 90f else 0f,
+                animationSpec = androidx.compose.animation.core.spring(
+                    dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy
+                ),
+                label = "codeChev"
+            )
+            Icon(
+                Icons.Rounded.ChevronRight,
+                contentDescription = if (expanded) "折叠" else "展开",
+                modifier = Modifier
+                    .size(14.dp)
+                    .rotate(chevronRotation),
+                tint = baseColor.copy(alpha = 0.55f)
+            )
+            Spacer(Modifier.width(6.dp))
             Text(
-                lang.ifBlank { "code" },
+                lang.ifBlank { "code" } + if (!expanded) "  ·  ${code.count { it == '\n' } + 1} 行" else "",
                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                 color = baseColor.copy(alpha = 0.55f),
                 modifier = Modifier.weight(1f)
             )
+            if (canPreview) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .bouncyClickable(pressedScale = 0.96f) { previewing = true }
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Rounded.PlayArrow,
+                        contentDescription = "预览",
+                        modifier = Modifier.size(12.dp),
+                        tint = cs.primary
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "预览",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = cs.primary,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+            }
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
@@ -757,20 +812,88 @@ private fun CodeBlock(lang: String, code: String, baseColor: Color, isDark: Bool
                 )
             }
         }
-        HorizontalDivider(thickness = 0.5.dp, color = borderColor)
-        val hScroll = rememberScrollState()
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .horizontalScroll(hScroll)
-                .padding(horizontal = 12.dp, vertical = 10.dp)
-        ) {
-            Text(
-                SyntaxHighlight.colorize(code, lang, isDark),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 13.sp,
-                color = baseColor
+        androidx.compose.animation.AnimatedVisibility(visible = expanded) {
+            Column {
+                HorizontalDivider(thickness = 0.5.dp, color = borderColor)
+                val hScroll = rememberScrollState()
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(hScroll)
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    Text(
+                        SyntaxHighlight.colorize(code, lang, isDark),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        color = baseColor
+                    )
+                }
+            }
+        }
+    }
+    if (previewing) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { previewing = false },
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnClickOutside = true
             )
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(0.95f)
+                    .fillMaxHeight(0.85f)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(cs.surface)
+            ) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "网页预览",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = cs.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(androidx.compose.foundation.shape.CircleShape)
+                                .bouncyClickable(pressedScale = 0.9f) { previewing = false },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Rounded.Close,
+                                contentDescription = "关闭",
+                                modifier = Modifier.size(18.dp),
+                                tint = cs.onSurfaceVariant
+                            )
+                        }
+                    }
+                    HorizontalDivider(thickness = 0.5.dp, color = cs.outlineVariant)
+                    androidx.compose.ui.viewinterop.AndroidView(
+                        factory = { ctx ->
+                            android.webkit.WebView(ctx).apply {
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                            }
+                        },
+                        update = { wv ->
+                            wv.loadDataWithBaseURL(
+                                null, code, "text/html", "UTF-8", null
+                            )
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
         }
     }
 }

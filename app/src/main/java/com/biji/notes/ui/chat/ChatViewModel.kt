@@ -89,6 +89,7 @@ class ChatViewModel(
     private val notifier: ChatNotifier,
     private val voice: VoiceRecognizer,
     val sandbox: com.biji.notes.sandbox.LocalSandbox,
+    val bootstrap: com.biji.notes.sandbox.BijiBootstrap,
     private val isForeground: () -> Boolean
 ) : ViewModel() {
 
@@ -959,12 +960,13 @@ class ChatViewModel(
             notifier: ChatNotifier,
             voice: VoiceRecognizer,
             sandbox: com.biji.notes.sandbox.LocalSandbox,
+            bootstrap: com.biji.notes.sandbox.BijiBootstrap,
             isForeground: () -> Boolean
         ) = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
                 ChatViewModel(
-                    chat, settings, client, memory, toolExec, notifier, voice, sandbox, isForeground
+                    chat, settings, client, memory, toolExec, notifier, voice, sandbox, bootstrap, isForeground
                 ) as T
         }
     }
