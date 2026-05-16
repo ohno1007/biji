@@ -72,12 +72,16 @@ class InteractiveShell(
             termux!!.envFor().forEach { (k, v) ->
                 if (k != "PATH") env[k] = v
             }
-            // 装上 termux-exec 实时改写硬编码 shebang / exec 路径 —
-            // apt / dpkg / perl 脚本要靠这个。
-            val exec = java.io.File(termux.libDir, "libtermux-exec.so")
-            if (exec.exists()) env["LD_PRELOAD"] = exec.absolutePath
             env["TERMUX_PREFIX"] = termux.usrDir.absolutePath
             env["SHELL"] = shellPath
+            if (prootOn) {
+                // proot 自身需要 PROOT_TMP_DIR；不要再 LD_PRELOAD
+                // libtermux-exec —— proot 已经在 syscall 层改写路径。
+                proot!!.envFor().forEach { (k, v) -> env[k] = v }
+            } else {
+                val exec = java.io.File(termux.libDir, "libtermux-exec.so")
+                if (exec.exists()) env["LD_PRELOAD"] = exec.absolutePath
+            }
         } else {
             env["HOME"] = workDir.absolutePath
         }

@@ -24,6 +24,13 @@ class ProotBootstrap(
 
     val rootDir: File get() = File(context.filesDir, "proot").also { it.mkdirs() }
     val binary: File get() = File(rootDir, "proot")
+    /** proot 自己需要一个能写入的临时目录做 glue rootfs；
+     *  Android 上 /tmp 不存在，没设 PROOT_TMP_DIR 它就直接 bail
+     *  并 fatal error。指到我们 sandbox 内的目录就行。 */
+    val tmpDir: File get() = File(rootDir, "tmp").also {
+        it.mkdirs()
+        runCatching { android.system.Os.chmod(it.absolutePath, 0b111_101_101) }
+    }
     val installed: Boolean get() = binary.exists() && binary.canExecute()
 
     sealed interface Progress {
@@ -44,11 +51,12 @@ class ProotBootstrap(
     suspend fun install(url: String? = null): Boolean = withContext(Dispatchers.IO) {
         try {
             rootDir.mkdirs()
-            // 1) 拿 proot 本体。
+            // 1) proot 本体 + proot-loader（小辅助二进制，proot 自己
+            //    fork 子进程时要 execve 它），都在 proot.deb 里。
             _progress.value = Progress.Downloading(0L, 0L)
             val prootUrl = url ?: run {
                 resolveDebUrl("proot")
-                    ?: return@withContext false // resolveDebUrl 自己已经写过 Failed
+                    ?: return@withContext false
             }
             val prootDeb = File(rootDir, "proot.deb")
             if (!downloadTo(prootUrl, prootDeb)) return@withContext false
@@ -58,15 +66,27 @@ class ProotBootstrap(
                 "data/data/com.termux/files/usr/bin/proot",
                 binary
             )
+            // proot-loader 路径会变（proot-loader / proot-loader-32 等），
+            // 用前缀挖整个 libexec/proot 目录到我们 rootDir。
+            extractDebPrefixToDir(
+                prootDeb,
+                "data/data/com.termux/files/usr/libexec/proot/",
+                rootDir
+            )
             prootDeb.delete()
             if (!prootOk) {
                 _progress.value = Progress.Failed("tar 里找不到 proot 主程序")
                 return@withContext false
             }
             runCatching { android.system.Os.chmod(binary.absolutePath, 0b111_101_101) }
+            // 给 loader 也 +x
+            rootDir.listFiles()?.forEach { f ->
+                if (f.isFile && f.name.startsWith("proot-loader")) {
+                    runCatching { android.system.Os.chmod(f.absolutePath, 0b111_101_101) }
+                }
+            }
 
             // 2) proot 依赖 libtalloc.so.2，Termux bootstrap 不自带。
-            //    把 libtalloc 的 usr/lib/* 全部摊到 termux/usr/lib。
             _progress.value = Progress.Downloading(0L, 0L)
             val tallocUrl = resolveDebUrl("libtalloc")
                 ?: return@withContext false
@@ -83,6 +103,9 @@ class ProotBootstrap(
                 _progress.value = Progress.Failed("libtalloc 里没解出文件")
                 return@withContext false
             }
+
+            // 提前把 tmpDir 建出来。proot 启动时找不到的话 fatal。
+            tmpDir.mkdirs()
 
             _progress.value = Progress.Done
             true
@@ -113,9 +136,22 @@ class ProotBootstrap(
             "-b", "/sys",
             "-b", "$usr:/data/data/com.termux/files/usr",
             "-b", "$home:/data/data/com.termux/files/home",
+            "-b", "${tmpDir.absolutePath}:/data/data/com.termux/files/usr/tmp",
             "-w", "/data/data/com.termux/files/home",
             bash, "-c", command
         )
+    }
+
+    /** 跑 proot 时 ProcessBuilder 的 env 必须带上的几个变量。
+     *  最关键的是 PROOT_TMP_DIR —— 没它 proot 在初始化时就 fatal。
+     *  PROOT_LOADER 让 proot 找到 proot-loader 辅助二进制。 */
+    fun envFor(): Map<String, String> {
+        val out = mutableMapOf("PROOT_TMP_DIR" to tmpDir.absolutePath)
+        val loader = File(rootDir, "proot-loader")
+        if (loader.exists()) out["PROOT_LOADER"] = loader.absolutePath
+        val loader32 = File(rootDir, "proot-loader-32")
+        if (loader32.exists()) out["PROOT_LOADER_32"] = loader32.absolutePath
+        return out
     }
 
     /** 查 Termux 主源 dists/stable Packages 索引找 Filename 字段。
@@ -260,7 +296,14 @@ class ProotBootstrap(
 
                 if (inPrefix && target != null) {
                     when {
-                        isDir -> target.mkdirs()
+                        isDir -> {
+                            target.mkdirs()
+                            // 目录必须 0755 才能进；mkdirs 默认 umask
+                            // 可能给成 0700，显式 chmod 兜底。
+                            runCatching {
+                                android.system.Os.chmod(target.absolutePath, 0b111_101_101)
+                            }
+                        }
                         isSym -> {
                             target.parentFile?.mkdirs()
                             target.delete()
@@ -270,11 +313,19 @@ class ProotBootstrap(
                             count++
                         }
                         else -> {
-                            target.parentFile?.mkdirs()
+                            target.parentFile?.also { p ->
+                                p.mkdirs()
+                                runCatching {
+                                    android.system.Os.chmod(p.absolutePath, 0b111_101_101)
+                                }
+                            }
                             target.delete()
                             target.outputStream().use { out -> copyExactly(xin, out, size) }
+                            // 大部分文件 0644；.so / 可执行用 0755。
+                            val perm = if (target.name.endsWith(".so") ||
+                                target.name.contains(".so.")) 0b111_101_101 else 0b110_100_100
                             runCatching {
-                                android.system.Os.chmod(target.absolutePath, 0b110_100_100)
+                                android.system.Os.chmod(target.absolutePath, perm)
                             }
                             count++
                         }

@@ -135,15 +135,16 @@ class TermuxBootstrap(private val context: Context) {
 
             // 把所有 bin/* 标可执行
             // Os.chmod 直接走 chmod() 系统调用，比 File.setExecutable
-            // 可靠 —— 后者在某些 SELinux 策略下静默失败。0755 给
-            // bin/，0644 给 lib/，符号链接跳过。
+            // 可靠。规则：目录一律 0755（必须有 x 位才能 cd 进），
+            // bin/ 下文件 0755，lib/ 下二级文件 0755（.so 共享库），
+            // 其它文件 0644。
             usrDir.walkTopDown().forEach { f ->
                 if (!f.exists()) return@forEach
                 val mode = when {
-                    f.parentFile == binDir -> 0b111_101_101 // 0755
-                    f.parentFile == libDir -> 0b110_100_100 // 0644
-                    f.parentFile?.parentFile == libDir && f.isFile -> 0b111_101_101
-                    else -> if (f.isDirectory) 0b111_101_101 else 0b110_100_100
+                    f.isDirectory -> 0b111_101_101                                // 0755
+                    f.parentFile == binDir -> 0b111_101_101                       // 0755
+                    f.parentFile?.parentFile == libDir -> 0b111_101_101           // 0755 (.so 等)
+                    else -> 0b110_100_100                                         // 0644
                 }
                 runCatching { android.system.Os.chmod(f.absolutePath, mode) }
             }
@@ -249,7 +250,9 @@ class TermuxBootstrap(private val context: Context) {
             pb.directory(homeDir).redirectErrorStream(false)
             val env = pb.environment()
             envFor().forEach { (k, v) -> env[k] = v }
-            if (!useProot) {
+            if (useProot) {
+                proot!!.envFor().forEach { (k, v) -> env[k] = v }
+            } else {
                 val exec = File(libDir, "libtermux-exec.so")
                 if (exec.exists()) env["LD_PRELOAD"] = exec.absolutePath
             }

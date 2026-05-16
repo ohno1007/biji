@@ -423,7 +423,9 @@ class LocalSandbox(
                     "$envPrelude cd ${shellQuote(workDirDisplay)} && $command"
                 )
             } else if (useProot) {
-                ProcessBuilder(proot!!.wrapForProot("$envPrelude$command")).directory(workDir)
+                ProcessBuilder(proot!!.wrapForProot("$envPrelude$command")).directory(workDir).also {
+                    proot.envFor().forEach { (k, v) -> it.environment()[k] = v }
+                }
             } else {
                 ProcessBuilder(shellPath, "-c", "$envPrelude$command").directory(workDir)
             }
