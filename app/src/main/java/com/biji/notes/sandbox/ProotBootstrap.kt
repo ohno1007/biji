@@ -116,9 +116,20 @@ class ProotBootstrap(
     }
 
     suspend fun uninstall() = withContext(Dispatchers.IO) {
+        openUpPerms(rootDir)
         rootDir.deleteRecursively()
         rootDir.mkdirs()
         _progress.value = Progress.Idle
+    }
+
+    private fun openUpPerms(root: File) {
+        if (!root.exists()) return
+        if (root.isDirectory) {
+            runCatching { android.system.Os.chmod(root.absolutePath, 0b111_101_101) }
+            root.listFiles()?.forEach { openUpPerms(it) }
+        } else {
+            runCatching { android.system.Os.chmod(root.absolutePath, 0b110_100_100) }
+        }
     }
 
     /** 把一条命令包到 proot 里跑：把 biji 的 termux/usr / termux/home

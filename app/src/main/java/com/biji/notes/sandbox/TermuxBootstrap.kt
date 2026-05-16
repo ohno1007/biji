@@ -60,6 +60,11 @@ class TermuxBootstrap(private val context: Context) {
     suspend fun install(url: String? = null): Boolean = withContext(Dispatchers.IO) {
         try {
             _progress.value = Progress.Downloading(0L, 0L)
+            // 之前装坏过会留下 0644 权限的目录（比如 lib/apt/，给错了
+            // 没 x 位），deleteRecursively 进不去就静默跳过，新文件
+            // 落到同名目录里直接 EACCES。先把树全开 0755 才能干净
+            // 删掉。
+            openUpPerms(rootDir)
             rootDir.deleteRecursively()
             usrDir.mkdirs()
             binDir.mkdirs()
@@ -100,8 +105,15 @@ class TermuxBootstrap(private val context: Context) {
                     val target = File(usrDir, e.name)
                     if (e.isDirectory) {
                         target.mkdirs()
+                        // 提前 chmod 0755 —— 默认 umask 可能给 0700。
+                        // 等装完最后一并 chmod 太晚，extractor 这一
+                        // 路上 open 会因为父目录没 x 位 EACCES。
+                        runCatching { android.system.Os.chmod(target.absolutePath, 0b111_101_101) }
                     } else {
-                        target.parentFile?.mkdirs()
+                        target.parentFile?.also { p ->
+                            p.mkdirs()
+                            runCatching { android.system.Os.chmod(p.absolutePath, 0b111_101_101) }
+                        }
                         target.outputStream().use { os ->
                             val buf = ByteArray(64 * 1024)
                             while (true) {
@@ -165,9 +177,23 @@ class TermuxBootstrap(private val context: Context) {
             ProcessBuilder("su", "-c", "rm -f /data/data/com.termux/files/usr /data/data/com.termux/files/home")
                 .redirectErrorStream(true).start().waitFor(4_000, java.util.concurrent.TimeUnit.MILLISECONDS)
         }
+        openUpPerms(rootDir)
         rootDir.deleteRecursively()
         rootDir.mkdirs()
         _progress.value = Progress.Idle
+    }
+
+    /** 递归把整棵树的权限放宽到能读写遍历，方便 deleteRecursively
+     *  之后真的能进每个子目录。先 chmod 当前节点，再 list 子项 —
+     *  否则 listFiles 在没 x 位的目录上直接返回 null，子文件抓不到。 */
+    private fun openUpPerms(root: File) {
+        if (!root.exists()) return
+        if (root.isDirectory) {
+            runCatching { android.system.Os.chmod(root.absolutePath, 0b111_101_101) }
+            root.listFiles()?.forEach { openUpPerms(it) }
+        } else {
+            runCatching { android.system.Os.chmod(root.absolutePath, 0b110_100_100) }
+        }
     }
 
     /** Termux 的 apt / dpkg / gcc 把 prefix 硬编码到
