@@ -42,11 +42,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.biji.notes.sandbox.BijiBootstrap
@@ -55,12 +60,15 @@ import com.biji.notes.sandbox.LocalSandbox
 import com.biji.notes.ui.glass.bouncyClickable
 import kotlinx.coroutines.launch
 
-/**
- * Persistent terminal screen. Holds a long-lived `sh` process whose
- * cwd + env survive across user inputs — the Termux experience minus
- * a true PTY (no live cursor, but ANSI byte streams pass through
- * intact). Output ticks in real-time as the shell produces it.
- */
+// Termux-style palette: black bg, green prompt, white default, red stderr.
+private val TermBg = Color(0xFF000000)
+private val TermFg = Color(0xFFE6E6E6)
+private val TermPrompt = Color(0xFF6FE26F)
+private val TermPath = Color(0xFF6CD9E5)
+private val TermErr = Color(0xFFFF6B6B)
+private val TermAccent = Color(0xFF9FBDFF)
+private val TermDim = Color(0xFF8A8A8A)
+
 @Composable
 fun TerminalScreen(
     sandbox: LocalSandbox,
@@ -68,15 +76,12 @@ fun TerminalScreen(
     folder: String,
     onBack: () -> Unit
 ) {
-    val cs = MaterialTheme.colorScheme
     val scope = rememberCoroutineScope()
     val workDir = remember(folder) { sandbox.projectRoot(folder) }
     val extraPath = remember(bootstrap.binDir.absolutePath) {
         listOf(bootstrap.binDir.absolutePath)
     }
-    val shell = remember(workDir) {
-        InteractiveShell(workDir, extraPath, scope)
-    }
+    val shell = remember(workDir) { InteractiveShell(workDir, extraPath, scope) }
     val lines = remember { mutableStateListOf<InteractiveShell.Chunk>() }
     var input by remember { mutableStateOf(TextFieldValue("")) }
     val listState = rememberLazyListState()
@@ -84,8 +89,6 @@ fun TerminalScreen(
     LaunchedEffect(shell) {
         shell.start()
         shell.output.collect { chunk ->
-            // Coalesce on newline boundaries so multi-line output
-            // shows up as separate row entries.
             val pieces = chunk.text.split('\n')
             pieces.forEachIndexed { i, piece ->
                 val withNl = if (i < pieces.size - 1) piece + "\n" else piece
@@ -93,7 +96,6 @@ fun TerminalScreen(
                     lines += InteractiveShell.Chunk(withNl, chunk.isStderr)
                 }
             }
-            // Cap history so an `infinite-loop | hexdump` doesn't OOM us.
             while (lines.size > 4000) lines.removeAt(0)
         }
     }
@@ -107,176 +109,264 @@ fun TerminalScreen(
     Box(
         Modifier
             .fillMaxSize()
-            .background(cs.background)
+            .background(TermBg)
             .imePadding()
     ) {
         Column(Modifier.fillMaxSize()) {
-            // Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .bouncyClickable(onClick = onBack),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Rounded.ArrowBack,
-                        contentDescription = "返回",
-                        modifier = Modifier.size(20.dp),
-                        tint = cs.onSurface
-                    )
+            TerminalHeader(
+                pathLabel = workDir.name.ifBlank { "/" },
+                onBack = onBack,
+                onInterrupt = { shell.interrupt() },
+                onRestart = {
+                    shell.shutdown()
+                    lines.clear()
+                    scope.launch { shell.start() }
                 }
-                Spacer(Modifier.width(4.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "终端",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = cs.onBackground,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        workDir.absolutePath,
-                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                        color = cs.onSurfaceVariant,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Box(
-                    Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .bouncyClickable {
-                            shell.interrupt()
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Rounded.Stop,
-                        contentDescription = "中断当前命令",
-                        modifier = Modifier.size(20.dp),
-                        tint = cs.onSurface
-                    )
-                }
-                Box(
-                    Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .bouncyClickable {
-                            shell.shutdown()
-                            lines.clear()
-                            scope.launch { shell.start() }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Outlined.RestartAlt,
-                        contentDescription = "重启 shell",
-                        modifier = Modifier.size(20.dp),
-                        tint = cs.onSurface
-                    )
-                }
-            }
+            )
 
-            // Output history
             LazyColumn(
                 state = listState,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(cs.surfaceContainerLowest)
-                    .padding(8.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.Top
             ) {
                 items(lines.toList()) { chunk ->
-                    val color = if (chunk.isStderr) cs.error else cs.onSurface
                     val hScroll = rememberScrollState()
                     Box(
                         Modifier
                             .fillMaxWidth()
                             .horizontalScroll(hScroll)
                     ) {
-                        Text(
-                            chunk.text,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = color
-                        )
+                        TerminalLine(chunk)
                     }
                 }
             }
 
-            // Input
-            Row(
+            TerminalFnKeyRow(
+                onKey = { keys -> shell.sendRaw(keys) }
+            )
+
+            TerminalInput(
+                value = input,
+                onValueChange = { input = it },
+                onSubmit = {
+                    val line = input.text
+                    if (line.isNotEmpty()) {
+                        shell.send(line)
+                        input = TextFieldValue("")
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun TerminalHeader(
+    pathLabel: String,
+    onBack: () -> Unit,
+    onInterrupt: () -> Unit,
+    onRestart: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TerminalIconBtn(Icons.AutoMirrored.Rounded.ArrowBack, "返回", onBack)
+        Spacer(Modifier.width(4.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "终端",
+                style = MaterialTheme.typography.titleMedium,
+                color = TermFg,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                "→ $pathLabel",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = TermPath,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+        }
+        TerminalIconBtn(Icons.Rounded.Stop, "中断", onInterrupt)
+        TerminalIconBtn(Icons.Outlined.RestartAlt, "重启", onRestart)
+    }
+}
+
+@Composable
+private fun TerminalIconBtn(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .bouncyClickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(20.dp),
+            tint = TermFg
+        )
+    }
+}
+
+@Composable
+private fun TerminalLine(chunk: InteractiveShell.Chunk) {
+    val text = chunk.text
+    val rendered = remember(text, chunk.isStderr) {
+        when {
+            chunk.isStderr -> AnnotatedString(text, SpanStyle(color = TermErr))
+            text.startsWith("$ ") -> buildAnnotatedString {
+                withStyle(SpanStyle(color = TermPrompt, fontWeight = FontWeight.Bold)) {
+                    append("$ ")
+                }
+                withStyle(SpanStyle(color = TermFg)) {
+                    append(text.substring(2))
+                }
+            }
+            text.startsWith("→ ") -> buildAnnotatedString {
+                withStyle(SpanStyle(color = TermPrompt, fontWeight = FontWeight.Bold)) {
+                    append("→ ")
+                }
+                withStyle(SpanStyle(color = TermPath)) {
+                    append(text.substring(2))
+                }
+            }
+            else -> AnnotatedString(text, SpanStyle(color = TermFg))
+        }
+    }
+    Text(
+        rendered,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 12.sp
+    )
+}
+
+@Composable
+private fun TerminalFnKeyRow(onKey: (String) -> Unit) {
+    // Termux-equivalent hardware key strip. ESC / arrows etc. use the
+    // standard ANSI / xterm byte sequences — sh without a PTY won't
+    // act on cursor keys but the bytes still arrive on stdin so any
+    // line editor running inside the shell sees them.
+    val keys = listOf(
+        "Esc" to "",
+        "Tab" to "\t",
+        "↑" to "[A",
+        "↓" to "[B",
+        "←" to "[D",
+        "→" to "[C",
+        "Home" to "[H",
+        "End" to "[F",
+        "PgUp" to "[5~",
+        "PgDn" to "[6~",
+        "^C" to "",
+        "^D" to ""
+    )
+    val hScroll = rememberScrollState()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF101010))
+            .horizontalScroll(hScroll)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        keys.forEach { (label, seq) ->
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(horizontal = 3.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFF1C1C1C))
+                    .bouncyClickable(pressedScale = 0.92f) { onKey(seq) }
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(cs.surfaceContainer)
-                        .padding(horizontal = 12.dp, vertical = 10.dp)
-                ) {
-                    BasicTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(
-                            fontFamily = FontFamily.Monospace,
-                            color = cs.onSurface
-                        ),
-                        cursorBrush = SolidColor(cs.primary),
-                        modifier = Modifier.fillMaxWidth(),
-                        decorationBox = { inner ->
-                            if (input.text.isEmpty()) {
-                                Text(
-                                    "在这里输入命令（例如 ls / pwd / uname -a）",
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        fontFamily = FontFamily.Monospace
-                                    ),
-                                    color = cs.onSurfaceVariant.copy(alpha = 0.5f)
-                                )
-                            }
-                            inner()
-                        }
-                    )
-                }
-                Spacer(Modifier.width(6.dp))
-                Box(
-                    Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(cs.primary)
-                        .bouncyClickable(enabled = input.text.isNotBlank()) {
-                            val line = input.text
-                            if (line.isNotBlank()) {
-                                shell.send(line)
-                                input = TextFieldValue("")
-                            }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Rounded.ArrowUpward,
-                        contentDescription = "发送",
-                        modifier = Modifier.size(20.dp),
-                        tint = cs.onPrimary
-                    )
-                }
+                Text(
+                    label,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    color = if (label.startsWith("^")) TermAccent else TermFg,
+                    fontWeight = FontWeight.Medium
+                )
             }
         }
     }
 }
 
+@Composable
+private fun TerminalInput(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    onSubmit: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF080808))
+            .navigationBarsPadding()
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "$",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 14.sp,
+            color = TermPrompt,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(end = 8.dp)
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 6.dp)
+        ) {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    color = TermFg
+                ),
+                cursorBrush = SolidColor(TermPrompt),
+                modifier = Modifier.fillMaxWidth(),
+                decorationBox = { inner ->
+                    if (value.text.isEmpty()) {
+                        Text(
+                            "ls / pwd / uname -a",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 14.sp,
+                            color = TermDim
+                        )
+                    }
+                    inner()
+                }
+            )
+        }
+        Box(
+            Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(TermPrompt.copy(alpha = 0.18f))
+                .bouncyClickable(enabled = value.text.isNotEmpty(), onClick = onSubmit),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Rounded.ArrowUpward,
+                contentDescription = "发送",
+                modifier = Modifier.size(18.dp),
+                tint = TermPrompt
+            )
+        }
+    }
+}

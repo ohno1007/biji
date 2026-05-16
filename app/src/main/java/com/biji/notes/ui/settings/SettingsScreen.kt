@@ -792,25 +792,20 @@ private fun RootAccessRow(
     }
 }
 
-/**
- * On-device speech model (Vosk) — download / status / uninstall.
- * When installed, biji's voice button runs ASR locally without ever
- * touching Google Speech Services or the network. The model lives
- * in app-private storage; default is the small Mandarin model (≈ 42
- * MB unzipped).
- */
 @Composable
 private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) {
     val cs = MaterialTheme.colorScheme
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val progress by offline.install.collectAsState()
     var installed by remember { mutableStateOf(offline.installed) }
-    // Re-check installed-ness when the install progress flow flips to
-    // Done — the boolean is derived from a file existing on disk so
-    // we'd otherwise need a recomposition trigger.
+    var picked by remember { mutableStateOf(offline.defaultModel) }
+    var menuOpen by remember { mutableStateOf(false) }
     androidx.compose.runtime.LaunchedEffect(progress) {
         installed = offline.installed
     }
+    val busy = progress is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Downloading ||
+        progress is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Extracting
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -821,43 +816,63 @@ private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) 
                 Icons.Rounded.Mic,
                 contentDescription = null,
                 modifier = Modifier.size(22.dp),
-                tint = cs.onSurface
+                tint = if (installed) cs.primary else cs.onSurface
             )
             Spacer(Modifier.size(16.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "离线语音识别 (Vosk)",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = cs.onSurface,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    when {
-                        installed -> "已就绪 · 录音直接在本地识别，不走任何云服务"
-                        progress is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Failed ->
-                            "下载失败"
-                        else -> "尚未下载 · 当前用系统语音识别（依赖厂商服务）"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (installed) cs.primary else cs.onSurfaceVariant
-                )
+            Text(
+                "离线语音识别",
+                style = MaterialTheme.typography.titleMedium,
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            Box {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(cs.surfaceContainerHigh)
+                        .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                            menuOpen = true
+                        }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "${picked.label} · ${picked.sizeLabel}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.onSurface
+                    )
+                    Spacer(Modifier.size(4.dp))
+                    Icon(
+                        Icons.Rounded.ChevronRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = cs.onSurfaceVariant
+                    )
+                }
+                androidx.compose.material3.DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false }
+                ) {
+                    offline.availableModels.forEach { m ->
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("${m.label} · ${m.sizeLabel}") },
+                            onClick = {
+                                picked = m
+                                menuOpen = false
+                            }
+                        )
+                    }
+                }
             }
         }
         when (val p = progress) {
             is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Downloading -> {
                 Spacer(Modifier.size(8.dp))
                 androidx.compose.material3.LinearProgressIndicator(
-                    progress = {
-                        if (p.total > 0) p.bytes.toFloat() / p.total else 0f
-                    },
+                    progress = { if (p.total > 0) p.bytes.toFloat() / p.total else 0f },
                     modifier = Modifier.fillMaxWidth(),
                     color = cs.primary
-                )
-                Text(
-                    "下载模型：${p.bytes / 1024 / 1024} / ${if (p.total > 0) (p.total / 1024 / 1024).toString() else "?"} MB",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp)
                 )
             }
             is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Extracting -> {
@@ -867,25 +882,11 @@ private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) 
                     modifier = Modifier.fillMaxWidth(),
                     color = cs.primary
                 )
-                Text(
-                    "解压：${p.current} / ${p.total}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
-            is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Done -> {
-                Spacer(Modifier.size(6.dp))
-                Text(
-                    "✓ 完成 (${p.sizeBytes / 1024 / 1024} MB on disk)",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.primary
-                )
             }
             is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Failed -> {
                 Spacer(Modifier.size(6.dp))
                 Text(
-                    "✗ ${p.message}",
+                    p.message,
                     style = MaterialTheme.typography.labelSmall,
                     color = cs.error
                 )
@@ -893,20 +894,18 @@ private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) 
             else -> Unit
         }
         Spacer(Modifier.size(10.dp))
-        val busy = progress is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Downloading ||
-            progress is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Extracting
         Row {
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
                     .background(cs.primary.copy(alpha = 0.14f))
                     .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
-                        scope.launch { offline.installModel() }
+                        scope.launch { offline.installModel(picked.url) }
                     }
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 Text(
-                    if (installed) "重新下载" else "下载模型 (≈42 MB)",
+                    if (installed) "重新下载" else "下载",
                     style = MaterialTheme.typography.labelLarge,
                     color = cs.primary,
                     fontWeight = FontWeight.SemiBold
@@ -935,38 +934,18 @@ private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) 
     }
 }
 
-/**
- * "一键初始化开发环境" — with the Root 模式 toggle on, the dialog
- * adds an "扫描工具链" button that runs `which <tool>` for the common
- * native build chain and reports which binaries are present on PATH.
- * With root off we still surface the Termux suggestion. The dialog
- * also exposes a button to launch Termux directly.
- *
- * [runShell] is the host's shell entry point — when null, the dialog
- * hides the probe button. The lambda returns (exitCode, stdout) so
- * the row can detect "exit 0 + non-empty path" as "tool installed".
- */
+/** 初始化开发环境：下载 toybox bootstrap + 扫描可用工具链。 */
 @Composable
 private fun DevEnvRow(
     runShell: (suspend (String) -> Pair<Int, String>)? = null,
     bootstrap: com.biji.notes.sandbox.BijiBootstrap? = null
 ) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
     val cs = MaterialTheme.colorScheme
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var open by remember { mutableStateOf(false) }
     var probing by remember { mutableStateOf(false) }
-    // (tool, present, path-or-stderr) — surfaces inline after a probe.
     var probeReport by remember { mutableStateOf<List<Triple<String, Boolean, String>>>(emptyList()) }
-    val tools = listOf("gcc", "clang", "cmake", "make", "git", "python", "python3", "node")
-    // Re-check Termux every time the dialog opens, since the user might
-    // come back from installing it while the dialog is closed.
-    val termuxInstalled = remember(open) {
-        runCatching { ctx.packageManager.getPackageInfo("com.termux", 0) }.isSuccess
-    }
-    val installCmd =
-        "pkg update -y && pkg install -y build-essential cmake clang make git python"
+    val tools = listOf("sh", "ls", "cat", "grep", "find", "tar", "gcc", "clang", "cmake", "make", "git", "python")
     val bootstrapProgress by (bootstrap?.progress
         ?: kotlinx.coroutines.flow.MutableStateFlow(com.biji.notes.sandbox.BijiBootstrap.Progress.Idle))
         .collectAsState()
@@ -994,9 +973,9 @@ private fun DevEnvRow(
                 fontWeight = FontWeight.Medium
             )
             Text(
-                "了解 Android 上 cmake / ndk / gcc 的安装方式",
+                if (bootstrapInstalled) "已就绪 · 终端可直接用" else "下载 toybox 让终端可用",
                 style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant
+                color = if (bootstrapInstalled) cs.primary else cs.onSurfaceVariant
             )
         }
     }
@@ -1012,39 +991,7 @@ private fun DevEnvRow(
             },
             text = {
                 Column {
-                    // Adaptive banner — different wording depending on whether
-                    // Termux is already on-device. Either way we surface the
-                    // install command + a one-tap launcher; without Termux
-                    // basic toybox commands still work, but the AI can't
-                    // touch native compilers.
-                    val statusText = if (termuxInstalled)
-                        "✓ 已检测到 Termux 已安装。点下方按钮可一键复制安装命令并尝试在 Termux 里执行。"
-                    else
-                        "⚠ 还没装 Termux。biji 自带的 sh 只能跑 toybox 自带命令（ls / cat / grep / find / awk / sed 等），AI 无法调用 gcc / cmake / clang。"
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(
-                                if (termuxInstalled) cs.primary.copy(alpha = 0.14f)
-                                else cs.errorContainer.copy(alpha = 0.6f)
-                            )
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
-                    ) {
-                        Text(
-                            statusText,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (termuxInstalled) cs.primary else cs.onErrorContainer
-                        )
-                    }
-                    // ---- biji 自带 user-space bootstrap ----
-                    // Termux's whole "we run in user-space" trick is just
-                    // dropping prebuilt binaries in app-private storage
-                    // and pointing PATH at them. We do the same: tap to
-                    // download a static toybox multicall binary, biji's
-                    // shell instantly gets ls / cat / grep / find / sed /
-                    // awk / tar / wget without ever talking to Termux.
                     if (bootstrap != null) {
-                        Spacer(Modifier.size(10.dp))
                         Column(
                             Modifier
                                 .clip(RoundedCornerShape(12.dp))
@@ -1053,14 +1000,14 @@ private fun DevEnvRow(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
-                                    androidx.compose.material.icons.Icons.Outlined.Code,
+                                    Icons.Outlined.Code,
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp),
                                     tint = if (bootstrapInstalled) cs.primary else cs.onSurfaceVariant
                                 )
                                 Spacer(Modifier.size(6.dp))
                                 Text(
-                                    "biji 用户态 bootstrap (toybox)",
+                                    "toybox bootstrap",
                                     style = MaterialTheme.typography.labelLarge,
                                     color = cs.onSurface,
                                     fontWeight = FontWeight.SemiBold,
@@ -1077,11 +1024,10 @@ private fun DevEnvRow(
                             }
                             Spacer(Modifier.size(6.dp))
                             Text(
-                                "把一份静态 toybox 下载到 ${bootstrap.binDir.absolutePath} —— biji 的 shell 工具会自动从这里查 ls / cat / grep / find / tar 等命令，不需要 root、不需要 Termux。",
+                                "下载一份 toybox 到 ${bootstrap.binDir.absolutePath}，终端会自动把它加进 PATH。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = cs.onSurfaceVariant
                             )
-                            // Progress visualisation.
                             when (val p = bootstrapProgress) {
                                 is com.biji.notes.sandbox.BijiBootstrap.Progress.Downloading -> {
                                     Spacer(Modifier.size(8.dp))
@@ -1091,7 +1037,7 @@ private fun DevEnvRow(
                                         color = cs.primary
                                     )
                                     Text(
-                                        "下载中：${p.bytes / 1024} / ${if (p.total > 0) (p.total / 1024).toString() else "?"} KB",
+                                        "${p.bytes / 1024} / ${if (p.total > 0) (p.total / 1024).toString() else "?"} KB",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = cs.onSurfaceVariant,
                                         modifier = Modifier.padding(top = 4.dp)
@@ -1105,7 +1051,7 @@ private fun DevEnvRow(
                                         color = cs.primary
                                     )
                                     Text(
-                                        "建立软链：${p.current} / ${p.total}",
+                                        "${p.current} / ${p.total}",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = cs.onSurfaceVariant,
                                         modifier = Modifier.padding(top = 4.dp)
@@ -1114,17 +1060,9 @@ private fun DevEnvRow(
                                 is com.biji.notes.sandbox.BijiBootstrap.Progress.Failed -> {
                                     Spacer(Modifier.size(8.dp))
                                     Text(
-                                        "✗ ${p.message}",
+                                        p.message,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = cs.error
-                                    )
-                                }
-                                is com.biji.notes.sandbox.BijiBootstrap.Progress.Done -> {
-                                    Spacer(Modifier.size(6.dp))
-                                    Text(
-                                        "✓ 已安装 ${p.appletCount} 个 applet",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = cs.primary
                                     )
                                 }
                                 else -> Unit
@@ -1171,28 +1109,6 @@ private fun DevEnvRow(
                             }
                         }
                     }
-                    Spacer(Modifier.size(10.dp))
-                    Text(
-                        "推荐流程：",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = cs.primary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        if (termuxInstalled)
-                            "1. 打开 Root 模式并授权 su（biji 通过 su -c 进入 Termux 的 PATH）。\n" +
-                                "2. 安装命令（已复制到剪贴板）：\n" +
-                                "   $installCmd\n" +
-                                "3. 安装完成后，AI 直接走 run_shell_command 即可调用 gcc / cmake / clang / git。"
-                        else
-                            "1. 安装 Termux（F-Droid 版本最稳）。\n" +
-                                "2. 在 Termux 里执行：\n" +
-                                "   $installCmd\n" +
-                                "3. 回到 biji，打开 Root 模式让命令穿过沙箱使用 Termux 的 PATH。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = cs.onSurfaceVariant,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                    )
                     if (runShell != null) {
                         Spacer(Modifier.size(10.dp))
                         Row(
@@ -1205,7 +1121,7 @@ private fun DevEnvRow(
                                     scope.launch {
                                         val results = tools.map { tool ->
                                             val (exit, out) = runCatching {
-                                                runShell("which $tool 2>/dev/null || command -v $tool 2>/dev/null")
+                                                runShell("command -v $tool 2>/dev/null")
                                             }.getOrDefault(1 to "")
                                             val path = out.trim().lineSequence().firstOrNull().orEmpty()
                                             Triple(tool, exit == 0 && path.isNotBlank(), path)
@@ -1232,7 +1148,7 @@ private fun DevEnvRow(
                                 )
                             } else {
                                 Text(
-                                    "扫描工具链（需 Root 模式 / Termux PATH）",
+                                    "扫描工具链",
                                     style = MaterialTheme.typography.labelLarge,
                                     color = cs.primary,
                                     fontWeight = FontWeight.SemiBold
@@ -1278,57 +1194,9 @@ private fun DevEnvRow(
                 }
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    if (termuxInstalled) {
-                        // Copy the install command into the clipboard so the
-                        // user can paste it as soon as Termux opens. Try a
-                        // RUN_COMMAND broadcast first — it actually executes
-                        // the command in Termux but requires the user to
-                        // have enabled the matching whitelist setting.
-                        clipboard.setText(
-                            androidx.compose.ui.text.AnnotatedString(installCmd)
-                        )
-                        runCatching {
-                            val runIntent = android.content.Intent()
-                                .setClassName(
-                                    "com.termux",
-                                    "com.termux.app.RunCommandService"
-                                )
-                                .setAction("com.termux.RUN_COMMAND")
-                                .putExtra(
-                                    "com.termux.RUN_COMMAND_PATH",
-                                    "/data/data/com.termux/files/usr/bin/bash"
-                                )
-                                .putExtra(
-                                    "com.termux.RUN_COMMAND_ARGUMENTS",
-                                    arrayOf("-c", installCmd)
-                                )
-                                .putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
-                            ctx.startService(runIntent)
-                        }
-                        val launch = ctx.packageManager
-                            .getLaunchIntentForPackage("com.termux")
-                        if (launch != null) ctx.startActivity(launch)
-                    } else {
-                        // Not installed — open the F-Droid listing so the
-                        // user can sideload Termux.
-                        val intent = android.content.Intent(
-                            android.content.Intent.ACTION_VIEW,
-                            android.net.Uri.parse("https://f-droid.org/packages/com.termux/")
-                        )
-                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        runCatching { ctx.startActivity(intent) }
-                    }
-                    open = false
-                }) {
-                    Text(
-                        if (termuxInstalled) "在 Termux 里跑安装命令"
-                        else "去安装 Termux"
-                    )
+                androidx.compose.material3.TextButton(onClick = { open = false }) {
+                    Text("好")
                 }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { open = false }) { Text("关闭") }
             }
         )
     }

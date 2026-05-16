@@ -10,22 +10,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
+import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
 
-/**
- * A long-lived `sh` process that biji's Terminal screen drives like a
- * real PTY. Stdin / stdout / stderr are kept open across commands so
- * shell state (cwd, env vars, exported functions) survives between
- * inputs — same model as Termux's terminal, just without the visual
- * fanciness of a real PTY (no ANSI cursor, but ANSI colours still
- * survive into the rendered text).
- *
- * Output lines flow through [output] as they arrive (stdout-first,
- * stderr-tagged) so the UI can render them live. Sending an empty
- * line is allowed — the shell will echo a prompt.
- */
+/** 长连接 `sh` — stdin/stdout/stderr 在多条命令之间保持打开，
+ *  cwd / 环境 / 函数都跟着会话走。 */
 class InteractiveShell(
     private val workDir: File,
     private val extraPathDirs: List<String> = emptyList(),
@@ -41,6 +31,7 @@ class InteractiveShell(
     val output: SharedFlow<Chunk> = _output.asSharedFlow()
 
     private var process: Process? = null
+    private var stdin: OutputStream? = null
     private var stdinWriter: PrintWriter? = null
     private var stdoutJob: Job? = null
     private var stderrJob: Job? = null
@@ -50,31 +41,22 @@ class InteractiveShell(
     fun start() {
         if (alive) return
         workDir.mkdirs()
-        val env = buildPathEnv()
         val pb = ProcessBuilder("sh")
             .directory(workDir)
             .redirectErrorStream(false)
-        pb.environment().putAll(env)
-        // `PS1` so the prompt is non-empty and recognisable as a
-        // ready signal. Force interactive shell flags.
+        val env = pb.environment()
+        val current = env["PATH"] ?: System.getenv("PATH") ?: "/system/bin:/system/xbin"
+        env["PATH"] = (extraPathDirs + current).joinToString(":")
+        env["HOME"] = workDir.absolutePath
+        env["TERM"] = "xterm-256color"
+        env["LANG"] = "C.UTF-8"
         process = pb.start()
         val p = process ?: return
+        stdin = p.outputStream
         stdinWriter = PrintWriter(OutputStreamWriter(p.outputStream, Charsets.UTF_8), true)
         stdoutJob = scope.launch(Dispatchers.IO) { pump(p.inputStream.bufferedReader(), false) }
         stderrJob = scope.launch(Dispatchers.IO) { pump(p.errorStream.bufferedReader(), true) }
-        // Surface a banner so the user sees the shell is alive.
-        scope.launch { _output.emit(Chunk("biji-shell · ${workDir.absolutePath}\n", false)) }
-    }
-
-    private fun buildPathEnv(): Map<String, String> {
-        val current = System.getenv("PATH") ?: "/system/bin:/system/xbin"
-        val merged = (extraPathDirs + current).joinToString(":")
-        return mapOf(
-            "PATH" to merged,
-            "HOME" to workDir.absolutePath,
-            "TERM" to "xterm-256color",
-            "LANG" to "C.UTF-8"
-        )
+        scope.launch { _output.emit(Chunk("→ ${workDir.absolutePath}\n", false)) }
     }
 
     private suspend fun pump(reader: BufferedReader, stderr: Boolean) {
@@ -83,32 +65,45 @@ class InteractiveShell(
             while (scope.isActive) {
                 val n = reader.read(buf)
                 if (n <= 0) break
-                emit(String(buf, 0, n), stderr)
+                _output.emit(Chunk(String(buf, 0, n), stderr))
             }
         } catch (_: Exception) {
-            // closed
         }
     }
 
-    private suspend fun emit(text: String, stderr: Boolean) {
-        _output.emit(Chunk(text, stderr))
-    }
-
-    /** Push a line of input. The user's command shows up echoed in
-     *  the output stream so the terminal looks like a real session. */
+    /** 整行命令，自带回显 + 换行。 */
     fun send(line: String) {
         scope.launch { _output.emit(Chunk("$ $line\n", false)) }
         stdinWriter?.println(line)
         stdinWriter?.flush()
     }
 
-    /** Best-effort interrupt: tears down stdin so the current foreground
-     *  job in `sh` sees EOF, which usually wakes it from a `read` and
-     *  lets the next command run. We can't deliver a real SIGINT
-     *  without a PTY. */
+    /** 原始字节直接写入 stdin —— 给 Esc / ^C / ^D / 箭头键用。
+     *  支持几个简写：空字符串 = 不发，"^X" = Ctrl-X，"[A" 等
+     *  = CSI 转义（前面自动补 ESC）。 */
+    fun sendRaw(seq: String) {
+        if (seq.isEmpty()) return
+        val bytes: ByteArray = when {
+            seq.length == 2 && seq[0] == '^' -> {
+                // ^A..^Z → 1..26
+                val c = seq[1].uppercaseChar()
+                byteArrayOf((c.code - 'A'.code + 1).toByte())
+            }
+            seq.startsWith("[") -> byteArrayOf(0x1B, *seq.toByteArray(Charsets.UTF_8))
+            seq == "ESC" -> byteArrayOf(0x1B)
+            else -> seq.toByteArray(Charsets.UTF_8)
+        }
+        runCatching {
+            stdin?.write(bytes)
+            stdin?.flush()
+        }
+    }
+
+    /** 关 stdin 让前台命令看到 EOF —— 没 PTY 没法真的发 SIGINT。 */
     fun interrupt() {
         runCatching { stdinWriter?.close() }
         stdinWriter = null
+        stdin = null
     }
 
     fun shutdown() {

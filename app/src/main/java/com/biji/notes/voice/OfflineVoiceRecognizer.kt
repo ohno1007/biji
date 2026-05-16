@@ -18,26 +18,21 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.zip.ZipInputStream
 
-/**
- * Fully on-device speech recognition powered by Vosk (a Kaldi-based
- * streaming ASR with small per-language models, typically 40–80 MB
- * for Mandarin). Once the model is unpacked into app-private
- * storage, recognition runs locally — no Google Speech Services, no
- * network, no third-party app required.
- *
- * The model isn't bundled in the APK (would double the install
- * size). Instead [installModel] downloads + extracts a zip from a
- * configurable URL the first time the user asks for offline ASR.
- *
- * Streams partial transcripts as the user speaks (so the voice sheet
- * can echo what's being heard live), and emits a final result when
- * the recognizer detects end-of-utterance.
- */
+/** Vosk on-device ASR. Models live in app-private storage and are
+ *  downloaded on demand from alphacephei.com. */
 class OfflineVoiceRecognizer(private val ctx: Context) {
 
     init {
         LibVosk.setLogLevel(LogLevel.WARNINGS)
     }
+
+    /** A selectable Vosk model. */
+    data class ModelSpec(
+        val id: String,
+        val label: String,
+        val sizeLabel: String,
+        val url: String
+    )
 
     sealed interface InstallProgress {
         data object Idle : InstallProgress
@@ -56,24 +51,35 @@ class OfflineVoiceRecognizer(private val ctx: Context) {
     private var speechService: SpeechService? = null
     private var loadedModel: Model? = null
 
-    /** Where the unpacked model lives. The presence of `conf/` is our
-     *  installed-ness check — every Vosk model ships a conf dir. */
     val modelDir: File get() = File(ctx.filesDir, "vosk-model").also { it.mkdirs() }
-    val installed: Boolean
-        get() = File(modelDir, "conf").exists()
+    val installed: Boolean get() = File(modelDir, "conf").exists()
 
-    /** Default model: vosk-small-cn — Chinese, ~42 MB unzipped, the
-     *  sweet spot of size vs. accuracy. The exact URL is configurable
-     *  via [installModel]'s [url] argument. */
-    val defaultModelUrl: String =
-        "https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip"
+    /** Available Vosk Chinese models from alphacephei.com/vosk/models.
+     *  cn-0.22 is the large one (much higher accuracy, slower download). */
+    val availableModels: List<ModelSpec> = listOf(
+        ModelSpec(
+            id = "cn-small",
+            label = "中文 · 小模型",
+            sizeLabel = "42 MB",
+            url = "https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip"
+        ),
+        ModelSpec(
+            id = "cn-large",
+            label = "中文 · 大模型（更准）",
+            sizeLabel = "1.3 GB",
+            url = "https://alphacephei.com/vosk/models/vosk-model-cn-0.22.zip"
+        ),
+        ModelSpec(
+            id = "en-small",
+            label = "English · small",
+            sizeLabel = "40 MB",
+            url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+        )
+    )
 
-    /**
-     * Download + extract the Vosk model zip. Returns true on success.
-     * Cancelling the coroutine aborts mid-stream — the partial files
-     * stay on disk and the next install overwrites them.
-     */
-    suspend fun installModel(url: String = defaultModelUrl): Boolean =
+    val defaultModel: ModelSpec get() = availableModels[1] // 中文大模型, 更准
+
+    suspend fun installModel(url: String = defaultModel.url): Boolean =
         withContext(Dispatchers.IO) {
             try {
                 _install.value = InstallProgress.Downloading(0L, 0L)
@@ -93,7 +99,7 @@ class OfflineVoiceRecognizer(private val ctx: Context) {
                 val total = conn.contentLengthLong.coerceAtLeast(0L)
                 zipFile.outputStream().use { out ->
                     conn.inputStream.use { input ->
-                        val buf = ByteArray(32 * 1024)
+                        val buf = ByteArray(64 * 1024)
                         var read = 0L
                         while (true) {
                             val n = input.read(buf)
@@ -104,9 +110,8 @@ class OfflineVoiceRecognizer(private val ctx: Context) {
                         }
                     }
                 }
-
-                // Vosk zips ship as `vosk-model-X/...`. We strip that
-                // top folder so [modelDir]/conf etc. land at the root.
+                // Vosk zips wrap everything under `vosk-model-X/...`;
+                // strip that prefix so model files land at modelDir root.
                 val entries = mutableListOf<java.util.zip.ZipEntry>()
                 ZipInputStream(zipFile.inputStream()).use { zin ->
                     while (true) {
@@ -122,17 +127,14 @@ class OfflineVoiceRecognizer(private val ctx: Context) {
                         idx++
                         _install.value = InstallProgress.Extracting(idx, entries.size)
                         val stripped = e.name.substringAfter('/', e.name)
-                        if (stripped.isBlank()) {
-                            zin.closeEntry()
-                            continue
-                        }
+                        if (stripped.isBlank()) { zin.closeEntry(); continue }
                         val target = File(modelDir, stripped)
                         if (e.isDirectory) {
                             target.mkdirs()
                         } else {
                             target.parentFile?.mkdirs()
                             target.outputStream().use { os ->
-                                val buf = ByteArray(16 * 1024)
+                                val buf = ByteArray(64 * 1024)
                                 while (true) {
                                     val n = zin.read(buf)
                                     if (n <= 0) break
@@ -153,7 +155,6 @@ class OfflineVoiceRecognizer(private val ctx: Context) {
             }
         }
 
-    /** Remove the installed model and free disk. */
     suspend fun uninstallModel() = withContext(Dispatchers.IO) {
         runCatching { stop() }
         runCatching { loadedModel?.close() }
@@ -169,9 +170,6 @@ class OfflineVoiceRecognizer(private val ctx: Context) {
             return@withContext
         }
         runCatching {
-            // Load model lazily on first start, keep it around for
-            // subsequent sessions — loading a 40 MB Kaldi model costs
-            // a second or two so we don't want to redo it per utterance.
             val model = loadedModel ?: Model(modelDir.absolutePath).also { loadedModel = it }
             val recognizer = Recognizer(model, 16000f)
             val service = SpeechService(recognizer, 16000f)
@@ -179,7 +177,7 @@ class OfflineVoiceRecognizer(private val ctx: Context) {
             speechService = service
             _state.value = VoiceState.Listening("")
         }.onFailure {
-            _state.value = VoiceState.Error("启动识别失败：${it.message ?: it.javaClass.simpleName}")
+            _state.value = VoiceState.Error(it.message ?: it.javaClass.simpleName)
         }
     }
 
@@ -194,9 +192,7 @@ class OfflineVoiceRecognizer(private val ctx: Context) {
         _state.value = VoiceState.Idle
     }
 
-    fun reset() {
-        _state.value = VoiceState.Idle
-    }
+    fun reset() { _state.value = VoiceState.Idle }
 
     fun destroy() {
         runCatching { speechService?.shutdown() }
@@ -207,38 +203,29 @@ class OfflineVoiceRecognizer(private val ctx: Context) {
 
     private val listener = object : RecognitionListener {
         override fun onPartialResult(hypothesis: String?) {
-            val text = extractField(hypothesis, "partial")
+            val text = field(hypothesis, "partial")
             if (text.isNotBlank()) _state.value = VoiceState.Listening(text)
         }
-
         override fun onResult(hypothesis: String?) {
-            val text = extractField(hypothesis, "text")
+            val text = field(hypothesis, "text")
             if (text.isNotBlank()) _state.value = VoiceState.Result(text)
         }
-
         override fun onFinalResult(hypothesis: String?) {
-            val text = extractField(hypothesis, "text")
+            val text = field(hypothesis, "text")
             if (text.isNotBlank()) _state.value = VoiceState.Result(text)
         }
-
         override fun onError(exception: Exception?) {
-            _state.value = VoiceState.Error(
-                exception?.message ?: "识别失败"
-            )
+            _state.value = VoiceState.Error(exception?.message ?: "识别失败")
         }
-
         override fun onTimeout() {
-            _state.value = VoiceState.Error("超时，没听到声音")
+            _state.value = VoiceState.Error("没听到声音")
         }
     }
 
-    private fun extractField(json: String?, key: String): String {
+    private fun field(json: String?, key: String): String {
         if (json.isNullOrBlank()) return ""
         return runCatching { JSONObject(json).optString(key, "") }
             .getOrDefault("")
-            // Vosk's Chinese model returns words separated by spaces;
-            // strip them so the result lines up with what the user
-            // expects to see in chat.
             .replace(" ", "")
     }
 }
