@@ -23,6 +23,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -58,8 +59,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Check
@@ -274,27 +277,28 @@ fun ChatScreen(
     ) { granted -> if (granted) vm.startVoice() }
 
     // File-picker launcher for the composer's "+" button. SAF returns
-    // a content:// Uri; we feed it (plus the display name we pull from
-    // ContentResolver) to ChatViewModel.attachFile which copies it into
-    // the active conversation's project folder.
+    // a content:// Uri; we feed it to ChatViewModel.stageAttachment
+    // which copies it into the conversation's project folder and
+    // returns a chip-ready descriptor. The chip stays in the composer
+    // until the user actually sends a message.
     val ctxRef = LocalContext.current
+    var pendingAttachments by remember {
+        mutableStateOf<List<ChatViewModel.StagedAttachment>>(emptyList())
+    }
     val attachPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                ctxRef.contentResolver.takePersistableUriPermission(
-                    uri,
-                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            }
             val name = runCatching {
                 ctxRef.contentResolver.query(uri, null, null, null, null)?.use { c ->
                     val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
                     if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
                 }
             }.getOrNull()
-            vm.attachFile(uri, name)
+            scope.launch {
+                val staged = vm.stageAttachment(uri, name)
+                if (staged != null) pendingAttachments = pendingAttachments + staged
+            }
         }
     }
 
@@ -462,15 +466,31 @@ fun ChatScreen(
                 model = settings.model,
                 thinking = convoThinking || settings.model == MODEL_REASONER,
                 sending = streaming,
+                attachments = pendingAttachments,
+                onRemoveAttachment = { idx ->
+                    pendingAttachments = pendingAttachments
+                        .toMutableList()
+                        .also { it.removeAt(idx) }
+                },
                 onSend = {
-                    if (input.isNotBlank() && !streaming) {
-                        vm.send(input); input = ""
+                    val hasText = input.isNotBlank()
+                    val hasFiles = pendingAttachments.isNotEmpty()
+                    if ((hasText || hasFiles) && !streaming) {
+                        vm.send(input, pendingAttachments)
+                        input = ""
+                        pendingAttachments = emptyList()
                     }
                 },
                 onStop = vm::cancelStream,
                 onOpenModelSheet = { modelPickerOpen = true },
                 onVoice = {
-                    val granted = ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                    // Always re-check at call time via ContextCompat —
+                    // the cached LocalContext could otherwise lag the
+                    // permission-grant a user just made in system
+                    // settings, which is why "我明明给了权限" still
+                    // hit the request flow.
+                    val granted = androidx.core.content.ContextCompat
+                        .checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
                         android.content.pm.PackageManager.PERMISSION_GRANTED
                     if (granted) vm.startVoice() else micPerm.launch(Manifest.permission.RECORD_AUDIO)
                 },
@@ -1269,6 +1289,8 @@ private fun Composer(
     model: String,
     thinking: Boolean,
     sending: Boolean,
+    attachments: List<ChatViewModel.StagedAttachment>,
+    onRemoveAttachment: (Int) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
     onOpenModelSheet: () -> Unit,
@@ -1286,6 +1308,26 @@ private fun Composer(
             .background(cs.surface)
             .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
+        // Pending-attachment chip row — file icon + name + size + close.
+        // Mirrors the screenshot the user shared so prompt + file can
+        // ride the same composer.
+        if (attachments.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                attachments.forEachIndexed { i, a ->
+                    AttachmentChip(
+                        name = a.displayName,
+                        size = a.size,
+                        onRemove = { onRemoveAttachment(i) }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+            }
+        }
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
@@ -1365,6 +1407,76 @@ private fun CircleAction(
             modifier = Modifier.size(20.dp),
             tint = cs.onSurfaceVariant
         )
+    }
+}
+
+/** Pill-shaped pending-attachment chip shown above the composer text
+ *  field: file glyph in a primary-tinted square, name + size stacked
+ *  on the right, dismiss-X on the far right. Tap-and-drag is not
+ *  supported — too cute for the value it'd add. */
+@Composable
+private fun AttachmentChip(
+    name: String,
+    size: Long,
+    onRemove: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val sizeLabel = when {
+        size >= 1_048_576 -> "%.1f MB".format(size / 1_048_576.0)
+        size >= 1_024 -> "%.1f KB".format(size / 1_024.0)
+        else -> "${size}B"
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(cs.surfaceContainerHigh)
+            .padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(cs.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Outlined.Description,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = cs.onPrimaryContainer
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Column(modifier = Modifier.widthIn(max = 180.dp)) {
+            Text(
+                name,
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                sizeLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .bouncyClickable(pressedScale = 0.9f, onClick = onRemove),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Rounded.Close,
+                contentDescription = "移除附件",
+                modifier = Modifier.size(14.dp),
+                tint = cs.onSurfaceVariant
+            )
+        }
     }
 }
 

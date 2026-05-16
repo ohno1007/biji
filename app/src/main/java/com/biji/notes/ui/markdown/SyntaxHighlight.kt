@@ -141,12 +141,14 @@ object SyntaxHighlight {
     private fun rulesFor(lang: String, p: Palette): List<Rule> = when (lang) {
         "kotlin", "kt", "java" ->
             kotlinJsRules(KotlinKeywords, p, includeFunctionCalls = true)
-        "javascript", "js", "jsx", "typescript", "ts", "tsx" ->
+        "javascript", "js", "jsx", "mjs", "cjs", "typescript", "ts", "tsx" ->
             kotlinJsRules(JsKeywords, p, includeFunctionCalls = true)
         "python", "py" -> pythonRules(p)
         "json" -> jsonRules(p)
         "bash", "sh", "shell", "zsh" -> bashRules(p)
         "sql" -> sqlRules(p)
+        "html", "htm", "xml", "svg", "vue" -> htmlRules(p)
+        "css", "scss", "sass", "less" -> cssRules(p)
         "cpp", "c++", "cxx", "cc", "c", "h", "hpp", "hh", "objective-c", "objc", "objc++", "objcpp" ->
             cppRules(p)
         "" -> emptyList()
@@ -210,6 +212,39 @@ object SyntaxHighlight {
         Rule(Regex("'(?:''|[^'])*'"), p.string, Priority.CLAIM),
         Rule(Regex("\\b\\d+(?:\\.\\d+)?\\b"), p.number, Priority.FILL),
         Rule(Regex("(?i)\\b(?:${SqlKeywords.joinToString("|")})\\b"), p.keyword, Priority.FILL)
+    )
+
+    /** HTML / XML — pull out tags, attribute names, attribute values
+     *  and entities. Embedded `<style>` / `<script>` are left alone
+     *  (not worth a real DOM-aware pass). */
+    private fun htmlRules(p: Palette): List<Rule> = listOf(
+        Rule(Regex("<!--[\\s\\S]*?-->"), p.comment, Priority.CLAIM),
+        Rule(Regex("\"(?:\\\\.|[^\"\\\\])*\""), p.string, Priority.CLAIM),
+        Rule(Regex("'(?:\\\\.|[^'\\\\])*'"), p.string, Priority.CLAIM),
+        // <!DOCTYPE ...>, <?xml ...?>, processing instructions.
+        Rule(Regex("<!(?:DOCTYPE|doctype)[^>]*>"), p.preprocessor, Priority.CLAIM),
+        Rule(Regex("<\\?[\\s\\S]*?\\?>"), p.preprocessor, Priority.CLAIM),
+        // Tag opener / closer chevrons.
+        Rule(Regex("</?[A-Za-z][A-Za-z0-9-]*"), p.keyword, Priority.FILL),
+        Rule(Regex("/?>"), p.keyword, Priority.FILL),
+        Rule(Regex("\\b[A-Za-z_:][A-Za-z0-9_.:-]*(?==)"), p.func, Priority.FILL),
+        Rule(Regex("&[#A-Za-z0-9]+;"), p.number, Priority.FILL)
+    )
+
+    /** CSS / SCSS / LESS — selector, property name, value, units. */
+    private fun cssRules(p: Palette): List<Rule> = listOf(
+        Rule(Regex("/\\*[\\s\\S]*?\\*/"), p.comment, Priority.CLAIM),
+        Rule(Regex("//[^\\n]*"), p.comment, Priority.CLAIM), // SCSS/LESS
+        Rule(Regex("\"(?:\\\\.|[^\"\\\\])*\""), p.string, Priority.CLAIM),
+        Rule(Regex("'(?:\\\\.|[^'\\\\])*'"), p.string, Priority.CLAIM),
+        // @-rules: @media, @import, @keyframes, etc.
+        Rule(Regex("@[A-Za-z-]+"), p.preprocessor, Priority.FILL),
+        // Property names before a colon.
+        Rule(Regex("[A-Za-z-]+(?=\\s*:)"), p.func, Priority.FILL),
+        // Hex colour literals + numeric values with optional unit.
+        Rule(Regex("#[0-9A-Fa-f]{3,8}\\b"), p.number, Priority.FILL),
+        Rule(Regex("\\b-?\\d+(?:\\.\\d+)?(?:px|em|rem|%|vw|vh|s|ms|deg|fr|pt)?\\b"), p.number, Priority.FILL),
+        Rule(Regex("\\b(?:important|inherit|initial|unset|auto|none|true|false)\\b"), p.keyword, Priority.FILL)
     )
 
     private fun cppRules(p: Palette): List<Rule> {

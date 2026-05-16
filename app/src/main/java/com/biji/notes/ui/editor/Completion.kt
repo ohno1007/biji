@@ -89,6 +89,26 @@ private val KeywordsByLang: Map<String, Set<String>> = mapOf(
         "table", "drop", "alter", "join", "left", "right", "inner", "outer",
         "on", "group", "by", "order", "limit", "offset", "having", "distinct",
         "as", "union", "all"
+    ),
+    "html" to setOf(
+        "html", "head", "body", "div", "span", "section", "article", "header",
+        "footer", "nav", "main", "aside", "title", "meta", "link", "script",
+        "style", "h1", "h2", "h3", "h4", "h5", "h6", "p", "a", "ul", "ol", "li",
+        "img", "button", "form", "input", "textarea", "label", "table", "tr",
+        "td", "th", "tbody", "thead", "tfoot", "iframe", "canvas", "video", "audio",
+        "class", "id", "href", "src", "alt", "type", "value", "name", "placeholder",
+        "onclick", "onload", "onchange", "viewport", "charset", "rel", "stylesheet"
+    ),
+    "css" to setOf(
+        "color", "background", "background-color", "background-image", "border",
+        "margin", "padding", "width", "height", "min-width", "max-width", "min-height",
+        "max-height", "display", "flex", "grid", "position", "top", "left", "right",
+        "bottom", "font", "font-size", "font-family", "font-weight", "line-height",
+        "text-align", "text-decoration", "letter-spacing", "opacity", "transform",
+        "transition", "animation", "overflow", "z-index", "cursor", "box-shadow",
+        "border-radius", "absolute", "relative", "fixed", "sticky", "block", "inline",
+        "inline-block", "none", "auto", "center", "left", "right", "bold", "italic",
+        "important", "inherit", "initial", "unset"
     )
 )
 
@@ -168,6 +188,25 @@ private val SnippetsByLang: Map<String, Map<String, String>> = mapOf(
         "for" to "for $0 in ; do\n    \ndone",
         "while" to "while [ $0 ]; do\n    \ndone",
         "fun" to "$0() {\n    \n}"
+    ),
+    "html" to mapOf(
+        "html5" to "<!DOCTYPE html>\n<html lang=\"zh\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>$0</title>\n</head>\n<body>\n  \n</body>\n</html>",
+        "div" to "<div class=\"$0\">\n  \n</div>",
+        "a" to "<a href=\"$0\"></a>",
+        "img" to "<img src=\"$0\" alt=\"\">",
+        "script" to "<script>\n  $0\n</script>",
+        "style" to "<style>\n  $0\n</style>",
+        "link" to "<link rel=\"stylesheet\" href=\"$0\">",
+        "btn" to "<button onclick=\"$0\"></button>",
+        "ul" to "<ul>\n  <li>$0</li>\n</ul>",
+        "form" to "<form action=\"$0\" method=\"post\">\n  \n</form>"
+    ),
+    "css" to mapOf(
+        "flex" to "display: flex;\nalign-items: center;\njustify-content: $0;",
+        "grid" to "display: grid;\ngrid-template-columns: $0;\ngap: 12px;",
+        "abs" to "position: absolute;\ntop: $0;\nleft: 0;",
+        "media" to "@media (max-width: $0) {\n  \n}",
+        "kf" to "@keyframes $0 {\n  from {  }\n  to {  }\n}"
     )
 )
 

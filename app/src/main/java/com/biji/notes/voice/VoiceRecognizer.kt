@@ -34,11 +34,21 @@ class VoiceRecognizer(private val ctx: Context) {
 
     private var recognizer: SpeechRecognizer? = null
 
-    fun available(): Boolean = SpeechRecognizer.isRecognitionAvailable(ctx)
+    fun available(): Boolean {
+        // On API 31+ on-device recognition can be present even when the
+        // regular service isn't, so check both.
+        if (SpeechRecognizer.isRecognitionAvailable(ctx)) return true
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx) }
+                .getOrDefault(false)
+                .let { if (it) return true }
+        }
+        return false
+    }
 
     fun start(languageTag: String = Locale.getDefault().toLanguageTag()) {
         if (recognizer == null) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(ctx).apply {
+            recognizer = createBestRecognizer().apply {
                 setRecognitionListener(listener)
             }
         }
@@ -69,6 +79,20 @@ class VoiceRecognizer(private val ctx: Context) {
     fun destroy() {
         runCatching { recognizer?.destroy() }
         recognizer = null
+    }
+
+    /** Prefer the on-device recogniser when the OEM ships one — it's
+     *  free, doesn't need network, and side-steps the "you need to
+     *  enable Google Assistant" trap that catches users on AOSP /
+     *  de-Googled builds. Falls back to the regular service. */
+    private fun createBestRecognizer(): SpeechRecognizer {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val onDevice = runCatching {
+                SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx)
+            }.getOrNull()
+            if (onDevice != null) return onDevice
+        }
+        return SpeechRecognizer.createSpeechRecognizer(ctx)
     }
 
     private val listener = object : RecognitionListener {

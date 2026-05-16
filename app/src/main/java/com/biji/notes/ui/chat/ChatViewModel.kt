@@ -107,13 +107,17 @@ class ChatViewModel(
         .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else chat.observeMessages(id) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** Folder name bound to the active conversation. Empty string means
-     *  "no project chosen" — sandbox tools fall back to the default
-     *  root. Re-emits whenever the user switches conversations or
-     *  renames the project. */
+    /** Folder name bound to the active conversation. Each conversation
+     *  gets its own auto-derived folder ("conv-<id>") unless the user
+     *  has renamed it via the top-bar long-press dialog — new chats
+     *  start with a fresh, empty workspace. The legacy global "default"
+     *  folder is no longer reused. */
     val activeProjectFolder: StateFlow<String> = _activeConvoId
         .flatMapLatest { id ->
-            if (id == null) flowOf("") else settingsRepo.convoFolder(id)
+            if (id == null) flowOf("")
+            else settingsRepo.convoFolder(id).map { stored ->
+                if (stored.isBlank()) "conv-$id" else stored
+            }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
 
@@ -143,6 +147,38 @@ class ChatViewModel(
     // Most recent usage breakdown, refreshed on every API `usage` event.
     private val _latestUsage = MutableStateFlow(UsageDetails())
     val latestUsage: StateFlow<UsageDetails> = _latestUsage.asStateFlow()
+
+    init {
+        // Repopulate the stats popup from the per-convo cache the moment
+        // the user switches conversations — otherwise reopening the app
+        // shows prompt/completion/cache all at 0 until the next stream
+        // finishes (the bug the user's screenshot caught).
+        viewModelScope.launch {
+            _activeConvoId
+                .flatMapLatest { id ->
+                    if (id == null) flowOf(longArrayOf(0L, 0L, 0L, 0L, 0L))
+                    else settingsRepo.convoUsage(id)
+                }
+                .collect { arr ->
+                    _latestUsage.value = UsageDetails(
+                        prompt = arr[0],
+                        completion = arr[1],
+                        total = arr[2],
+                        cacheHit = arr[3],
+                        cacheMiss = arr[4]
+                    )
+                }
+        }
+    }
+
+    /** Save the in-memory [_latestUsage] under [convoId] so a future
+     *  app start can repopulate the popup. */
+    private fun persistUsage(convoId: Long) {
+        val u = _latestUsage.value
+        viewModelScope.launch {
+            settingsRepo.setConvoUsage(convoId, u.prompt, u.completion, u.total, u.cacheHit, u.cacheMiss)
+        }
+    }
 
     // Per-conversation, app-session-scoped cumulative `total_tokens`
     // summed across every API call that ran in this session. Useful
@@ -250,6 +286,7 @@ class ChatViewModel(
     fun startVoice() {
         if (!voice.available()) {
             voice.reset()
+            _streamError.value = "本设备未安装支持的语音识别服务。请到系统设置 → 应用 → 默认应用 → 语音助手 启用 Google 或厂商语音识别，或者直接打字。"
             return
         }
         _voiceVisible.value = true
@@ -268,9 +305,9 @@ class ChatViewModel(
 
     // ---- Sending ----------------------------------------------------------
 
-    fun send(userText: String) {
+    fun send(userText: String, attachments: List<StagedAttachment> = emptyList()) {
         val text = userText.trim()
-        if (text.isEmpty()) return
+        if (text.isEmpty() && attachments.isEmpty()) return
 
         streamJob = viewModelScope.launch {
             // The OUTERMOST safety net. Any uncaught throwable inside
@@ -286,7 +323,26 @@ class ChatViewModel(
                     _activeConvoId.value = id
                     id
                 }
-                chat.addMessage(convoId, Role.USER, text)
+                // Fold any staged attachments into the visible user
+                // message so the model sees both the file metadata and
+                // the user's prompt in the same turn.
+                val composed = buildString {
+                    if (attachments.isNotEmpty()) {
+                        appendLine("【附件】")
+                        for (a in attachments) {
+                            val size = when {
+                                a.size >= 1_048_576 -> "%.1f MB".format(a.size / 1_048_576.0)
+                                a.size >= 1_024 -> "%.1f KB".format(a.size / 1_024.0)
+                                else -> "${a.size} B"
+                            }
+                            appendLine("- ${a.displayName} (${a.relPath}, $size)")
+                        }
+                        appendLine()
+                    }
+                    append(text)
+                }.trimEnd()
+                val turnText = composed.ifEmpty { "（仅附件）" }
+                chat.addMessage(convoId, Role.USER, turnText)
                 memory.invalidate()
 
                 _isStreaming.value = true
@@ -296,7 +352,7 @@ class ChatViewModel(
 
                 try {
                     maybeCompactContext(convoId)
-                    runChatTurn(convoId, userTurnText = text)
+                    runChatTurn(convoId, userTurnText = turnText)
                 } finally {
                     _isStreaming.value = false
                     _toolStatus.value = null
@@ -369,6 +425,7 @@ class ChatViewModel(
                             cacheHit = ev.cacheHit,
                             cacheMiss = ev.cacheMiss
                         )
+                        persistUsage(convoId)
                         bumpSessionSpend(convoId, ev.total)
                     }
                     ChatEvent.Done -> Unit
@@ -497,6 +554,7 @@ class ChatViewModel(
                         cacheHit = ev.cacheHit,
                         cacheMiss = ev.cacheMiss
                     )
+                    persistUsage(convoId)
                     bumpSessionSpend(convoId, ev.total)
                 }
                 is ChatEvent.Error -> { sawError = ev.message }
@@ -768,40 +826,41 @@ class ChatViewModel(
      * in-project relative path (e.g. "report.zip") so callers can
      * surface a toast / chip if they want to.
      */
-    fun attachFile(uri: android.net.Uri, displayName: String?) {
+    /** A staged attachment held in composer state — copied to the
+     *  conversation folder up-front so the composer chip can show
+     *  size, then folded into the next USER message when the user
+     *  hits send. */
+    data class StagedAttachment(val relPath: String, val size: Long, val displayName: String)
+
+    /** Copy [uri] into the active conversation's folder and return a
+     *  [StagedAttachment] for the composer to remember. Doesn't post
+     *  anything yet — the chip lives in the composer until the user
+     *  sends the message it's attached to. */
+    suspend fun stageAttachment(uri: android.net.Uri, displayName: String?): StagedAttachment? {
         val convoId = _activeConvoId.value ?: run {
-            // No active chat yet — create one so the file has a home.
-            viewModelScope.launch {
-                val id = chat.createConversation(model = settings.value.model)
-                _activeConvoId.value = id
-                attachFileInto(id, uri, displayName)
-            }
-            return
+            val id = chat.createConversation(model = settings.value.model)
+            _activeConvoId.value = id
+            id
         }
-        attachFileInto(convoId, uri, displayName)
+        // Make sure the conversation has a folder by the time we ask
+        // the sandbox to write — `activeProjectFolder` flow may not
+        // have caught up immediately after a brand-new convo.
+        val folder = activeProjectFolder.value.ifEmpty { "conv-$convoId" }
+        return runCatching {
+            val (relPath, bytes) = sandbox.importUri(folder, uri, displayName)
+            StagedAttachment(relPath, bytes, displayName ?: relPath)
+        }.getOrElse { err ->
+            _streamError.value = "附件上传失败: ${err.message ?: err.javaClass.simpleName}"
+            null
+        }
     }
 
-    private fun attachFileInto(convoId: Long, uri: android.net.Uri, displayName: String?) {
+    /** Convenience for tests / non-composer call paths that just want
+     *  the legacy "drop a file → AI sees a USER notice" behaviour. */
+    fun attachFile(uri: android.net.Uri, displayName: String?) {
         viewModelScope.launch {
-            runCatching {
-                val (relPath, bytes) = sandbox.importUri(
-                    folder = activeProjectFolder.value,
-                    uri = uri,
-                    displayName = displayName
-                )
-                val size = when {
-                    bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
-                    bytes >= 1_024 -> "%.1f KB".format(bytes / 1_024.0)
-                    else -> "$bytes B"
-                }
-                chat.addMessage(
-                    convoId,
-                    Role.USER,
-                    "（已上传附件到项目目录）\n路径: $relPath\n大小: $size\n请基于这个文件继续处理（必要时用 run_shell_command 解压或读取）。"
-                )
-            }.onFailure { err ->
-                _streamError.value = "附件上传失败: ${err.message ?: err.javaClass.simpleName}"
-            }
+            val staged = stageAttachment(uri, displayName) ?: return@launch
+            send("", listOf(staged))
         }
     }
 

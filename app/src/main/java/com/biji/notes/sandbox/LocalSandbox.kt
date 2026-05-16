@@ -152,6 +152,93 @@ class LocalSandbox(private val context: Context) {
      * the in-project relative path plus the final byte count so the
      * chat can post a "attached foo.zip (12 KB)" notice the AI sees.
      */
+    suspend fun deleteEntry(folder: String?, path: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val target = resolveInProject(folder, path)
+            if (!target.exists()) false
+            else target.deleteRecursively()
+        }
+
+    suspend fun copyEntry(folder: String?, src: String, dst: String) =
+        withContext(Dispatchers.IO) {
+            val from = resolveInProject(folder, src)
+            val to = resolveInProject(folder, dst)
+            if (!from.exists()) error("Source not found: $src")
+            to.parentFile?.mkdirs()
+            if (from.isDirectory) from.copyRecursively(to, overwrite = true)
+            else from.copyTo(to, overwrite = true)
+        }
+
+    suspend fun moveEntry(folder: String?, src: String, dst: String) =
+        withContext(Dispatchers.IO) {
+            val from = resolveInProject(folder, src)
+            val to = resolveInProject(folder, dst)
+            if (!from.exists()) error("Source not found: $src")
+            to.parentFile?.mkdirs()
+            if (!from.renameTo(to)) {
+                // Cross-fs fallback.
+                if (from.isDirectory) {
+                    from.copyRecursively(to, overwrite = true)
+                    from.deleteRecursively()
+                } else {
+                    from.copyTo(to, overwrite = true)
+                    from.delete()
+                }
+            }
+        }
+
+    data class ExtractedEntry(val path: String, val sizeBytes: Long, val isDirectory: Boolean)
+
+    /**
+     * Pure-Kotlin zip extractor — no shell, no Termux. Honours the
+     * sandbox: every entry's resolved path is checked to stay under
+     * the project root (defeats zip-slip). Returns the list of
+     * extracted entries so the AI can confirm what landed where.
+     */
+    suspend fun extractZip(
+        folder: String?,
+        archivePath: String,
+        destDir: String
+    ): List<ExtractedEntry> = withContext(Dispatchers.IO) {
+        val archive = resolveInProject(folder, archivePath)
+        val outBase = resolveInProject(folder, destDir)
+        if (!archive.exists()) error("Archive not found: $archivePath")
+        outBase.mkdirs()
+        val out = mutableListOf<ExtractedEntry>()
+        java.util.zip.ZipInputStream(archive.inputStream()).use { zin ->
+            while (true) {
+                val e = zin.nextEntry ?: break
+                // Re-resolve through resolveInProject to enforce the
+                // sandbox boundary on each entry path.
+                val target = resolveInProject(folder, "$destDir/${e.name}")
+                if (e.isDirectory) {
+                    target.mkdirs()
+                    out += ExtractedEntry(
+                        target.relativeTo(projectRoot(folder)).path, 0L, true
+                    )
+                } else {
+                    target.parentFile?.mkdirs()
+                    var size = 0L
+                    target.outputStream().use { os ->
+                        val buf = ByteArray(8192)
+                        while (true) {
+                            val n = zin.read(buf)
+                            if (n <= 0) break
+                            os.write(buf, 0, n)
+                            size += n
+                        }
+                    }
+                    out += ExtractedEntry(
+                        target.relativeTo(projectRoot(folder)).path, size, false
+                    )
+                    markAiEdited(folder, target.relativeTo(projectRoot(folder)).path)
+                }
+                zin.closeEntry()
+            }
+        }
+        out
+    }
+
     suspend fun importUri(
         folder: String?,
         uri: android.net.Uri,

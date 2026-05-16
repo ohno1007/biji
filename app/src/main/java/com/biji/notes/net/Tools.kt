@@ -28,6 +28,10 @@ object Tools {
     const val LIST_DIRECTORY = "list_directory"
     const val READ_FILE = "read_file"
     const val WRITE_FILE = "write_file"
+    const val DELETE_PATH = "delete_path"
+    const val MOVE_PATH = "move_path"
+    const val COPY_PATH = "copy_path"
+    const val EXTRACT_ZIP = "extract_zip"
     const val RUN_SHELL = "run_shell_command"
     const val CHECK_ENV = "check_environment"
 
@@ -153,6 +157,92 @@ object Tools {
         buildJsonObject {
             put("type", "function")
             put("function", buildJsonObject {
+                put("name", DELETE_PATH)
+                put(
+                    "description",
+                    "删除本地项目沙箱中的文件或目录（目录会递归删除）。返回是否删除成功。"
+                )
+                put("parameters", buildJsonObject {
+                    put("type", "object")
+                    put("properties", buildJsonObject {
+                        put("path", buildJsonObject {
+                            put("type", "string")
+                            put("description", "要删除的相对路径")
+                        })
+                    })
+                    put("required", buildJsonArray { add("path") })
+                })
+            })
+        },
+        buildJsonObject {
+            put("type", "function")
+            put("function", buildJsonObject {
+                put("name", MOVE_PATH)
+                put(
+                    "description",
+                    "在沙箱内移动或重命名文件 / 目录。src 与 dst 都是相对路径。会自动创建目标父目录。"
+                )
+                put("parameters", buildJsonObject {
+                    put("type", "object")
+                    put("properties", buildJsonObject {
+                        put("src", buildJsonObject {
+                            put("type", "string"); put("description", "源相对路径")
+                        })
+                        put("dst", buildJsonObject {
+                            put("type", "string"); put("description", "目标相对路径")
+                        })
+                    })
+                    put("required", buildJsonArray { add("src"); add("dst") })
+                })
+            })
+        },
+        buildJsonObject {
+            put("type", "function")
+            put("function", buildJsonObject {
+                put("name", COPY_PATH)
+                put(
+                    "description",
+                    "在沙箱内复制文件或目录。会自动创建目标父目录。目录会递归复制。"
+                )
+                put("parameters", buildJsonObject {
+                    put("type", "object")
+                    put("properties", buildJsonObject {
+                        put("src", buildJsonObject {
+                            put("type", "string"); put("description", "源相对路径")
+                        })
+                        put("dst", buildJsonObject {
+                            put("type", "string"); put("description", "目标相对路径")
+                        })
+                    })
+                    put("required", buildJsonArray { add("src"); add("dst") })
+                })
+            })
+        },
+        buildJsonObject {
+            put("type", "function")
+            put("function", buildJsonObject {
+                put("name", EXTRACT_ZIP)
+                put(
+                    "description",
+                    "在沙箱内解压一个 zip 归档。不依赖 shell / Termux —— 用 Java 自带 ZipInputStream，强制走沙箱边界检查（zip-slip 防护）。返回解压出的全部条目。"
+                )
+                put("parameters", buildJsonObject {
+                    put("type", "object")
+                    put("properties", buildJsonObject {
+                        put("archive", buildJsonObject {
+                            put("type", "string"); put("description", "归档相对路径，例如 foo.zip")
+                        })
+                        put("dest", buildJsonObject {
+                            put("type", "string"); put("description", "目标目录相对路径")
+                        })
+                    })
+                    put("required", buildJsonArray { add("archive"); add("dest") })
+                })
+            })
+        },
+        buildJsonObject {
+            put("type", "function")
+            put("function", buildJsonObject {
                 put("name", CHECK_ENV)
                 put(
                     "description",
@@ -231,6 +321,10 @@ class ToolExecutor(
             Tools.LIST_DIRECTORY -> runListDirectory(args, projectFolder)
             Tools.READ_FILE -> runReadFile(args, projectFolder)
             Tools.WRITE_FILE -> runWriteFile(args, projectFolder)
+            Tools.DELETE_PATH -> runDeletePath(args, projectFolder)
+            Tools.MOVE_PATH -> runMovePath(args, projectFolder)
+            Tools.COPY_PATH -> runCopyPath(args, projectFolder)
+            Tools.EXTRACT_ZIP -> runExtractZip(args, projectFolder)
             Tools.RUN_SHELL -> runShellCommand(args, projectFolder, useRoot)
             Tools.CHECK_ENV -> runCheckEnvironment(useRoot)
             else -> "Unknown tool: ${call.name}" to buildJsonObject {
@@ -391,6 +485,94 @@ class ToolExecutor(
             onFailure = { err ->
                 val msg = err.message ?: err.javaClass.simpleName
                 "write_file 失败: $msg" to errorJson(Tools.WRITE_FILE, msg, "path" to path)
+            }
+        )
+    }
+
+    private suspend fun runDeletePath(args: JsonObject, folder: String?): Pair<String, JsonObject> {
+        val path = args["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        return runCatching { sandbox.deleteEntry(folder, path) }.fold(
+            onSuccess = { ok ->
+                val ui = buildJsonObject {
+                    put("kind", Tools.DELETE_PATH)
+                    put("path", path)
+                    put("deleted", ok)
+                }
+                (if (ok) "已删除: $path" else "未找到: $path") to ui
+            },
+            onFailure = { err ->
+                val msg = err.message ?: err.javaClass.simpleName
+                "delete_path 失败: $msg" to errorJson(Tools.DELETE_PATH, msg, "path" to path)
+            }
+        )
+    }
+
+    private suspend fun runMovePath(args: JsonObject, folder: String?): Pair<String, JsonObject> {
+        val src = args["src"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val dst = args["dst"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        return runCatching { sandbox.moveEntry(folder, src, dst) }.fold(
+            onSuccess = {
+                val ui = buildJsonObject {
+                    put("kind", Tools.MOVE_PATH); put("src", src); put("dst", dst)
+                }
+                "已移动: $src -> $dst" to ui
+            },
+            onFailure = { err ->
+                val msg = err.message ?: err.javaClass.simpleName
+                "move_path 失败: $msg" to errorJson(Tools.MOVE_PATH, msg, "src" to src, "dst" to dst)
+            }
+        )
+    }
+
+    private suspend fun runCopyPath(args: JsonObject, folder: String?): Pair<String, JsonObject> {
+        val src = args["src"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val dst = args["dst"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        return runCatching { sandbox.copyEntry(folder, src, dst) }.fold(
+            onSuccess = {
+                val ui = buildJsonObject {
+                    put("kind", Tools.COPY_PATH); put("src", src); put("dst", dst)
+                }
+                "已复制: $src -> $dst" to ui
+            },
+            onFailure = { err ->
+                val msg = err.message ?: err.javaClass.simpleName
+                "copy_path 失败: $msg" to errorJson(Tools.COPY_PATH, msg, "src" to src, "dst" to dst)
+            }
+        )
+    }
+
+    private suspend fun runExtractZip(args: JsonObject, folder: String?): Pair<String, JsonObject> {
+        val archive = args["archive"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val dest = args["dest"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        return runCatching { sandbox.extractZip(folder, archive, dest) }.fold(
+            onSuccess = { entries ->
+                val ui = buildJsonObject {
+                    put("kind", Tools.EXTRACT_ZIP)
+                    put("archive", archive)
+                    put("dest", dest)
+                    put("count", entries.size)
+                    put("entries", buildJsonArray {
+                        for (e in entries.take(200)) {
+                            add(buildJsonObject {
+                                put("path", e.path)
+                                put("isDirectory", e.isDirectory)
+                                put("sizeBytes", e.sizeBytes)
+                            })
+                        }
+                    })
+                }
+                val forModel = buildString {
+                    appendLine("解压完成: $archive -> $dest (${entries.size} 项)")
+                    entries.take(50).forEach { appendLine("  ${if (it.isDirectory) "[dir]" else "${it.sizeBytes}B"}  ${it.path}") }
+                    if (entries.size > 50) appendLine("  …还有 ${entries.size - 50} 项")
+                }
+                forModel to ui
+            },
+            onFailure = { err ->
+                val msg = err.message ?: err.javaClass.simpleName
+                "extract_zip 失败: $msg" to errorJson(
+                    Tools.EXTRACT_ZIP, msg, "archive" to archive, "dest" to dest
+                )
             }
         )
     }

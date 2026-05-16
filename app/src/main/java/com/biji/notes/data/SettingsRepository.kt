@@ -129,4 +129,37 @@ class SettingsRepository(private val ctx: Context) {
             else it[convoFolderKey(convoId)] = cleaned
         }
     }
+
+    // -----------------------------------------------------------------
+    // Per-conversation cached usage breakdown.
+    //
+    // The popup shows prompt/completion/total + cacheHit/miss. Without
+    // persistence these all reset to zero when the user closes the app
+    // and reopens the same conversation, which is what the cache-popup
+    // screenshot was showing. Store the latest snapshot as a CSV-ish
+    // string (5 longs) keyed by convoId so the popup can repopulate
+    // even before the next stream finishes.
+    // -----------------------------------------------------------------
+
+    private fun convoUsageKey(convoId: Long) =
+        stringPreferencesKey("convo_usage_$convoId")
+
+    /** Stream the most recent usage snapshot for [convoId]. Returns
+     *  five-zero defaults until the first save. */
+    fun convoUsage(convoId: Long): Flow<LongArray> =
+        ctx.settingsStore.data.map { p ->
+            val raw = p[convoUsageKey(convoId)].orEmpty()
+            val parts = raw.split(',').mapNotNull { it.toLongOrNull() }
+            if (parts.size >= 5) longArrayOf(parts[0], parts[1], parts[2], parts[3], parts[4])
+            else longArrayOf(0L, 0L, 0L, 0L, 0L)
+        }
+
+    /** Persist a (prompt, completion, total, cacheHit, cacheMiss) tuple. */
+    suspend fun setConvoUsage(
+        convoId: Long,
+        prompt: Long, completion: Long, total: Long, cacheHit: Long, cacheMiss: Long
+    ) {
+        val s = "$prompt,$completion,$total,$cacheHit,$cacheMiss"
+        ctx.settingsStore.edit { it[convoUsageKey(convoId)] = s }
+    }
 }
