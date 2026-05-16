@@ -944,10 +944,100 @@ private fun TerminalEnvRow(termux: com.biji.notes.sandbox.TermuxBootstrap?) {
                 }
             }
         }
-        // 装好终端环境后才显示编译器一键装。
+        // 装好终端环境后才显示链接 + 编译器装。
         if (installed) {
             Spacer(Modifier.size(14.dp))
+            TermuxLinkRow(termux = termux)
+            Spacer(Modifier.size(14.dp))
             ToolchainInstallRow(termux = termux)
+        }
+    }
+}
+
+/** 用 root 把 /data/data/com.termux/files/usr 软链到我们的 usr —
+ *  Termux 的 apt / dpkg / gcc 把 prefix 硬编码进二进制，必须让那个
+ *  路径解析回我们的目录。装上 root 模式后这个按钮才有用。 */
+@Composable
+private fun TermuxLinkRow(termux: com.biji.notes.sandbox.TermuxBootstrap) {
+    val cs = MaterialTheme.colorScheme
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var linked by remember { mutableStateOf(termux.linkedAsTermuxPrefix()) }
+    var working by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Termux prefix 软链",
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurface,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            if (linked) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(cs.primary)
+                )
+            }
+        }
+        Text(
+            if (linked) "已链接 · apt / dpkg / gcc 可直接用"
+            else "apt / dpkg / gcc 把路径硬编码到 /data/data/com.termux/files/usr，需要 root 建一个软链指回这里。",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (linked) cs.primary else cs.onSurfaceVariant
+        )
+        Spacer(Modifier.size(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(cs.primary.copy(alpha = 0.14f))
+                    .bouncyClickable(enabled = !working, pressedScale = 0.96f) {
+                        working = true
+                        msg = null
+                        scope.launch {
+                            val (ok, info) = termux.linkAsTermuxPrefix()
+                            linked = termux.linkedAsTermuxPrefix()
+                            msg = if (ok) null else info.lineSequence().lastOrNull { it.isNotBlank() }
+                            working = false
+                        }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                if (working) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        color = cs.primary,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        "建链中…",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                } else {
+                    Text(
+                        if (linked) "重建软链" else "建立软链 (需 root)",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            if (msg != null) {
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    "✗ ${msg!!.take(160)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.error,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
@@ -990,6 +1080,11 @@ private fun ToolchainInstallRow(termux: com.biji.notes.sandbox.TermuxBootstrap) 
                         log.clear()
                         scope.launch {
                             try {
+                                if (!termux.linkedAsTermuxPrefix()) {
+                                    failed = "apt 把路径硬编码到 /data/data/com.termux/files/usr，请先在上面点「建立软链」（需 root）。"
+                                    running = false
+                                    return@launch
+                                }
                                 val cmds = listOf(
                                     "apt update -y",
                                     "apt install -y build-essential clang make cmake git python"

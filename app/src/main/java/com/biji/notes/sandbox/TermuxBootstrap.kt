@@ -163,6 +163,40 @@ class TermuxBootstrap(private val context: Context) {
         _progress.value = Progress.Idle
     }
 
+    /** Termux 的 apt / dpkg / gcc 把 prefix 硬编码到
+     *  /data/data/com.termux/files/usr —— 任何打开配置 / 共享
+     *  库 / 头文件的 open() 都直奔那个固定路径，LD_PRELOAD 拦不
+     *  到。唯一不用 proot 的解决方法就是用 root 把
+     *  /data/data/com.termux 的 usr / home 软链回我们的目录。 */
+    suspend fun linkAsTermuxPrefix(): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (!installed) return@withContext false to "终端环境未安装"
+        val cmd = buildString {
+            append("set -e; ")
+            append("mkdir -p /data/data/com.termux/files; ")
+            append("ln -sfn ${usrDir.absolutePath} /data/data/com.termux/files/usr; ")
+            append("ln -sfn ${homeDir.absolutePath} /data/data/com.termux/files/home; ")
+            append("ls -la /data/data/com.termux/files/usr/bin/bash; ")
+        }
+        val p = runCatching {
+            ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
+        }.getOrNull() ?: return@withContext false to "无法启动 su"
+        val finished = p.waitFor(10_000, java.util.concurrent.TimeUnit.MILLISECONDS)
+        if (!finished) { p.destroyForcibly(); return@withContext false to "su 超时" }
+        val out = p.inputStream.bufferedReader().use { it.readText() }
+        val ok = p.exitValue() == 0 && File("/data/data/com.termux/files/usr/bin/bash").exists()
+        ok to out
+    }
+
+    /** True if /data/data/com.termux/files/usr 解析到了我们的
+     *  usrDir —— apt / dpkg / gcc 看到的硬编码路径就匹配上了。 */
+    fun linkedAsTermuxPrefix(): Boolean {
+        if (!installed) return false
+        val canonical = runCatching {
+            File("/data/data/com.termux/files/usr").canonicalPath
+        }.getOrNull() ?: return false
+        return canonical == usrDir.canonicalPath
+    }
+
     /** 跑一条 shell 命令，环境按 [envFor] 注入，让 apt / dpkg 跑起来。
      *  返回 (exitCode, stdout, stderr)。给「一键装编译器」UI 用。 */
     suspend fun runOnce(
