@@ -176,27 +176,35 @@ class TermuxBootstrap(private val context: Context) {
      *  /data/data/com.termux 的 usr / home 软链回我们的目录。 */
     suspend fun linkAsTermuxPrefix(): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         if (!installed) return@withContext false to "终端环境未安装"
+        // set -e 保证任何子命令失败都让脚本非零退出；exit-code 单独
+        // 判断比解 stdout 可靠 —— Android 上 /data/data 和 /data/user/0
+        // 是软链关系，readlink 输出怎么形式不一定。
         val cmd = buildString {
             append("set -e; ")
             append("mkdir -p /data/data/com.termux/files; ")
             append("ln -sfn ${usrDir.absolutePath} /data/data/com.termux/files/usr; ")
             append("ln -sfn ${homeDir.absolutePath} /data/data/com.termux/files/home; ")
-            // 用 readlink 反查软链目标，输出已知字符串证明指对了。
-            append("readlink /data/data/com.termux/files/usr && echo BIJI_LINK_OK; ")
+            append("[ -e /data/data/com.termux/files/usr/bin ]; ")
+            append("echo BIJI_LINK_OK; ")
         }
-        val p = runCatching {
+        val p = try {
             ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
-        }.getOrNull() ?: return@withContext false to "无法启动 su"
-        val finished = p.waitFor(10_000, java.util.concurrent.TimeUnit.MILLISECONDS)
-        if (!finished) { p.destroyForcibly(); return@withContext false to "su 超时" }
+        } catch (e: Exception) {
+            return@withContext false to "无法启动 su: ${e.message ?: e.javaClass.simpleName}"
+        }
+        val finished = p.waitFor(15_000, java.util.concurrent.TimeUnit.MILLISECONDS)
+        if (!finished) { p.destroyForcibly(); return@withContext false to "su 超时（10s 没响应）" }
         val out = p.inputStream.bufferedReader().use { it.readText() }
-        val ok = p.exitValue() == 0 &&
-            out.contains("BIJI_LINK_OK") &&
-            out.contains(usrDir.absolutePath)
+        val ok = p.exitValue() == 0
+        val info = when {
+            out.isNotBlank() -> out
+            ok -> "exit=0"
+            else -> "exit=${p.exitValue()}（可能被超级用户管理器拒绝）"
+        }
         if (ok) {
             runCatching { linkMarker.writeText(usrDir.absolutePath) }
         }
-        ok to out
+        ok to info
     }
 
     suspend fun unlinkTermuxPrefix(): Boolean = withContext(Dispatchers.IO) {

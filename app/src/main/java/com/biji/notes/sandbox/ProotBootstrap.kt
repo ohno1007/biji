@@ -110,37 +110,64 @@ class ProotBootstrap(
         )
     }
 
-    /** 查 Termux 主源 dists/stable 的 Packages.xz，解出 dpkg 格式
-     *  的索引，找匹配 Package 名的段，返回它的 Filename 拼成完整
-     *  URL。这样不用硬编码版本号——版本变了自动跟上。 */
+    /** 查 Termux 主源 dists/stable Packages 索引找 Filename 字段。
+     *  按 .xz → .gz → 无压缩 顺序试，每一步都把失败原因记到
+     *  Progress.Failed 上让用户看见。 */
     private suspend fun resolveDebUrl(packageName: String): String? =
         withContext(Dispatchers.IO) {
             val arch = abiToTermuxArch()
-            val indexUrl =
-                "$termuxApt/dists/stable/main/binary-$arch/Packages.xz"
-            val raw = runCatching {
-                val conn = (URL(indexUrl).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 15_000
-                    readTimeout = 60_000
-                    instanceFollowRedirects = true
+            val base = "$termuxApt/dists/stable/main/binary-$arch/Packages"
+            val triedErrors = mutableListOf<String>()
+            val variants = listOf<Pair<String, (java.io.InputStream) -> String>>(
+                ".xz" to { i -> XZInputStream(i).use { String(it.readBytes(), Charsets.UTF_8) } },
+                ".gz" to { i -> java.util.zip.GZIPInputStream(i).use { String(it.readBytes(), Charsets.UTF_8) } },
+                "" to { i -> String(i.readBytes(), Charsets.UTF_8) }
+            )
+            attempts@ for ((suffix, decoder) in variants) {
+                val url = base + suffix
+                var raw: String? = null
+                try {
+                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 15_000
+                        readTimeout = 60_000
+                        instanceFollowRedirects = true
+                    }
+                    conn.connect()
+                    if (conn.responseCode !in 200..299) {
+                        triedErrors += "$url → HTTP ${conn.responseCode}"
+                        continue@attempts
+                    }
+                    raw = conn.inputStream.use { decoder(it) }
+                } catch (t: Throwable) {
+                    triedErrors += "$url → ${t.message ?: t.javaClass.simpleName}"
+                    continue@attempts
                 }
-                conn.connect()
-                if (conn.responseCode !in 200..299) return@runCatching null
-                val baos = java.io.ByteArrayOutputStream()
-                XZInputStream(conn.inputStream).use { it.copyTo(baos) }
-                String(baos.toByteArray(), Charsets.UTF_8)
-            }.getOrNull() ?: return@withContext null
-            // Packages 文件每段空行分割；找 Package: <name> 那段。
-            val target = "Package: $packageName"
-            val sections = raw.split(Regex("\\r?\\n\\r?\\n"))
-            val sect = sections.firstOrNull { it.lineSequence().any { l -> l.trim() == target } }
-                ?: return@withContext null
-            val filename = sect.lineSequence()
-                .firstOrNull { it.startsWith("Filename:") }
-                ?.substringAfter(":")
-                ?.trim()
-                ?: return@withContext null
-            "$termuxApt/$filename"
+                if (raw == null) continue@attempts
+                val sections = raw.split(Regex("\\r?\\n\\r?\\n"))
+                val sect = sections.firstOrNull { s ->
+                    s.lineSequence().any { l ->
+                        l.startsWith("Package:") &&
+                            l.substringAfter("Package:").trim() == packageName
+                    }
+                }
+                if (sect == null) {
+                    triedErrors += "$url → 索引里没有 $packageName"
+                    continue@attempts
+                }
+                val filename = sect.lineSequence()
+                    .firstOrNull { it.startsWith("Filename:") }
+                    ?.substringAfter(":")
+                    ?.trim()
+                if (filename == null) {
+                    triedErrors += "$url → 段里没有 Filename"
+                    continue@attempts
+                }
+                return@withContext "$termuxApt/$filename"
+            }
+            _progress.value = Progress.Failed(
+                triedErrors.lastOrNull() ?: "找不到 $packageName"
+            )
+            null
         }
 
     private fun abiToTermuxArch(): String {

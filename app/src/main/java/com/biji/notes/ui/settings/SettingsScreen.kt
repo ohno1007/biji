@@ -1119,9 +1119,16 @@ private fun TermuxLinkRow(termux: com.biji.notes.sandbox.TermuxBootstrap) {
                         working = true
                         msg = null
                         scope.launch {
-                            val (ok, info) = termux.linkAsTermuxPrefix()
+                            val (ok, info) = runCatching { termux.linkAsTermuxPrefix() }
+                                .getOrElse { false to "异常: ${it.message ?: it.javaClass.simpleName}" }
                             linked = termux.linkedAsTermuxPrefix()
-                            msg = if (ok) null else info.lineSequence().lastOrNull { it.isNotBlank() }
+                            msg = when {
+                                ok && !linked -> "su 成功但标记文件没写下来"
+                                ok -> null
+                                info.isNotBlank() -> info.lineSequence()
+                                    .lastOrNull { it.isNotBlank() } ?: info
+                                else -> "未知错误（su 没输出，可能被拒绝）"
+                            }
                             working = false
                         }
                     }
