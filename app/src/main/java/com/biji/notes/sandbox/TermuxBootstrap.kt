@@ -160,6 +160,12 @@ class TermuxBootstrap(private val context: Context) {
                 }
                 runCatching { android.system.Os.chmod(f.absolutePath, mode) }
             }
+            // home / 整个 rootDir 也得 0755 —— proot bind 时 guest
+            // 的 /data/data/com.termux/files 要能 cd 进去。
+            listOf(rootDir, homeDir, usrDir, tmpDir, etcDir, libDir, binDir).forEach {
+                if (it.exists())
+                    runCatching { android.system.Os.chmod(it.absolutePath, 0b111_101_101) }
+            }
 
             val totalBytes = rootDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
             _progress.value = Progress.Done(totalBytes)

@@ -132,22 +132,30 @@ class ProotBootstrap(
         }
     }
 
-    /** 把一条命令包到 proot 里跑：把 biji 的 termux/usr / termux/home
-     *  绑到 Termux 的硬编码路径，cwd 落在 home，命令通过 bash -c。 */
+    /** 把一条命令包到 proot 里跑。关键是 bind 一整棵
+     *  <biji>/termux/ → /data/data/com.termux/files，这样 .../files/
+     *  这个父目录在 guest 中可寻址，子目录 usr / home / tmp 自然
+     *  都能 resolve（之前只 bind 子目录会让 proot chdir 失败）。
+     *  另外几个 Android 系统目录必须 bind，否则 bionic linker 跑
+     *  不起来。 */
     fun wrapForProot(command: String): List<String> {
-        val usr = termux.usrDir.absolutePath
-        val home = termux.homeDir.absolutePath
+        val termuxRoot = termux.rootDir.absolutePath
         val bash = "/data/data/com.termux/files/usr/bin/bash"
         return listOf(
             binary.absolutePath,
             "--link2symlink",
-            "-0",                       // 在 proot 里以 uid 0 出现，让 apt / dpkg 高兴
+            "-0",                                     // 假装 uid 0
+            "-r", "/",                                // 用 host / 当 guest rootfs
             "-b", "/proc",
-            "-b", "/dev",
             "-b", "/sys",
-            "-b", "$usr:/data/data/com.termux/files/usr",
-            "-b", "$home:/data/data/com.termux/files/home",
-            "-b", "${tmpDir.absolutePath}:/data/data/com.termux/files/usr/tmp",
+            "-b", "/dev",
+            "-b", "/dev/urandom:/dev/random",
+            "-b", "/system",
+            "-b", "/vendor",
+            "-b", "/apex",
+            "-b", "/linkerconfig",
+            "-b", "/data/dalvik-cache",
+            "-b", "$termuxRoot:/data/data/com.termux/files",
             "-w", "/data/data/com.termux/files/home",
             bash, "-c", command
         )
