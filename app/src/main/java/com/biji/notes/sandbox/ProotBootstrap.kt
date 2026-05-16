@@ -31,6 +31,11 @@ class ProotBootstrap(
         it.mkdirs()
         runCatching { android.system.Os.chmod(it.absolutePath, 0b111_101_101) }
     }
+    /** 真正的 guest rootfs。里面用符号链接把
+     *  /data/data/com.termux/files 指到我们 <biji>/termux/ —— Termux
+     *  二进制硬编码的路径就能直接 resolve，不依赖 proot 给不存在的
+     *  host 路径建 glue（很多 proot fork 不支持那个）。 */
+    val rootfsDir: File get() = File(rootDir, "rootfs").also { it.mkdirs() }
     val installed: Boolean get() = binary.exists() && binary.canExecute()
 
     sealed interface Progress {
@@ -132,20 +137,54 @@ class ProotBootstrap(
         }
     }
 
-    /** 把一条命令包到 proot 里跑。关键是 bind 一整棵
-     *  <biji>/termux/ → /data/data/com.termux/files，这样 .../files/
-     *  这个父目录在 guest 中可寻址，子目录 usr / home / tmp 自然
-     *  都能 resolve（之前只 bind 子目录会让 proot chdir 失败）。
-     *  另外几个 Android 系统目录必须 bind，否则 bionic linker 跑
-     *  不起来。 */
+    /** 给 proot 准备一个 guest rootfs：在我们 sandbox 内创建一棵假
+     *  目录树，里面有 data/data/com.termux/files → <biji>/termux 的
+     *  软链。这样 proot resolve /data/data/com.termux/files/... 时
+     *  能直接穿过软链到 termux 真实内容。不再依赖给不存在的 host
+     *  路径建 glue。 */
+    private fun ensureRootfsLayout() {
+        if (!termux.installed) return
+        rootfsDir.mkdirs()
+        // 系统 bind 用的空 stub，必须先在 rootfs 里有这些目录 proot
+        // 才能把 host 的同名目录覆盖上去。
+        listOf(
+            "proc", "sys", "dev",
+            "system", "vendor", "apex", "linkerconfig",
+            "data/dalvik-cache", "data/data/com.termux"
+        ).forEach {
+            val stub = File(rootfsDir, it)
+            stub.mkdirs()
+        }
+        // 关键软链：data/data/com.termux/files → <biji>/termux/
+        val link = File(rootfsDir, "data/data/com.termux/files")
+        if (link.exists()) link.delete()
+        runCatching {
+            android.system.Os.symlink(
+                termux.rootDir.absolutePath,
+                link.absolutePath
+            )
+        }
+        // rootfs 全树 0755 才能让 proot 进
+        rootfsDir.walkTopDown().forEach { f ->
+            if (f.isDirectory) {
+                runCatching { android.system.Os.chmod(f.absolutePath, 0b111_101_101) }
+            }
+        }
+    }
+
+    /** 把一条命令包到 proot 里跑。用我们自己的 rootfs 子树（含
+     *  data/data/com.termux/files 软链）确保 Termux 二进制硬编码
+     *  的路径能 resolve，外加几个 Android 系统目录 bind，让 bionic
+     *  动态链接器找得到 .so。 */
     fun wrapForProot(command: String): List<String> {
-        val termuxRoot = termux.rootDir.absolutePath
+        ensureRootfsLayout()
         val bash = "/data/data/com.termux/files/usr/bin/bash"
         return listOf(
             binary.absolutePath,
             "--link2symlink",
+            "--kill-on-exit",
             "-0",                                     // 假装 uid 0
-            "-r", "/",                                // 用 host / 当 guest rootfs
+            "-r", rootfsDir.absolutePath,
             "-b", "/proc",
             "-b", "/sys",
             "-b", "/dev",
@@ -153,9 +192,7 @@ class ProotBootstrap(
             "-b", "/system",
             "-b", "/vendor",
             "-b", "/apex",
-            "-b", "/linkerconfig",
             "-b", "/data/dalvik-cache",
-            "-b", "$termuxRoot:/data/data/com.termux/files",
             "-w", "/data/data/com.termux/files/home",
             bash, "-c", command
         )
