@@ -2,6 +2,7 @@ package com.biji.notes.sandbox
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -151,6 +152,45 @@ class TermuxBootstrap(private val context: Context) {
         _progress.value = Progress.Idle
     }
 
+    /** 跑一条 shell 命令，环境按 [envFor] 注入，让 apt / dpkg 跑起来。
+     *  返回 (exitCode, stdout, stderr)。给「一键装编译器」UI 用。 */
+    suspend fun runOnce(
+        command: String,
+        timeoutMs: Long = 600_000L,
+        onLine: (String, Boolean) -> Unit = { _, _ -> }
+    ): Triple<Int, String, String> = kotlinx.coroutines.coroutineScope {
+        withContext(Dispatchers.IO) {
+            if (!installed) return@withContext Triple(-1, "", "终端环境未安装")
+            val shell = preferredShell().absolutePath
+            val pb = ProcessBuilder(shell, "-c", command)
+                .directory(homeDir)
+                .redirectErrorStream(false)
+            val env = pb.environment()
+            envFor().forEach { (k, v) -> env[k] = v }
+            val exec = File(libDir, "libtermux-exec.so")
+            if (exec.exists()) env["LD_PRELOAD"] = exec.absolutePath
+            val p = pb.start()
+            val out = StringBuilder()
+            val err = StringBuilder()
+            val outJob = async(Dispatchers.IO) {
+                p.inputStream.bufferedReader().forEachLine {
+                    synchronized(out) { out.appendLine(it) }
+                    onLine(it, false)
+                }
+            }
+            val errJob = async(Dispatchers.IO) {
+                p.errorStream.bufferedReader().forEachLine {
+                    synchronized(err) { err.appendLine(it) }
+                    onLine(it, true)
+                }
+            }
+            val finished = p.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            if (!finished) p.destroyForcibly()
+            outJob.await(); errJob.await()
+            Triple(if (finished) p.exitValue() else -1, out.toString(), err.toString())
+        }
+    }
+
     private suspend fun download(url: String, dst: File): Boolean = withContext(Dispatchers.IO) {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
@@ -179,23 +219,23 @@ class TermuxBootstrap(private val context: Context) {
         true
     }
 
-    /** 给 ProcessBuilder 用的 PATH / LD_LIBRARY_PATH / HOME / PREFIX
-     *  等环境变量。装了之后随便包到任意 sh 进程上都能用 Termux 的
-     *  bash + busybox + coreutils。 */
+    /** 给 ProcessBuilder 用的完整环境变量。 */
     fun envFor(): Map<String, String> {
         val basePath = "/system/bin:/system/xbin"
         val termuxPath = "${binDir.absolutePath}:$basePath"
+        val prefix = usrDir.absolutePath
         return mapOf(
-            "PREFIX" to usrDir.absolutePath,
+            "PREFIX" to prefix,
+            "TERMUX_PREFIX" to prefix,
             "HOME" to homeDir.absolutePath,
             "PATH" to termuxPath,
             "LD_LIBRARY_PATH" to libDir.absolutePath,
             "TMPDIR" to tmpDir.absolutePath,
             "TERM" to "xterm-256color",
             "LANG" to "C.UTF-8",
-            // bash 启动时会找 /etc/bash.bashrc，把 ETC_BASHRC 指过去
-            // 也没用 —— 大多数 termux 工具不读环境覆盖。这条主要是
-            // 防 bash 警告 \"_bash: /etc/bash.bashrc: No such...\"。
+            "ANDROID_DATA" to "/data",
+            "ANDROID_ROOT" to "/system",
+            "TERMUX_VERSION" to "biji",
             "BASH_ENV" to File(usrDir, "etc/bash.bashrc").absolutePath
         )
     }

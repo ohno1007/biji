@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -65,6 +66,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -82,6 +84,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.biji.notes.data.MODEL_CHAT
 import com.biji.notes.data.MODEL_REASONER
 import com.biji.notes.ui.chat.BalanceState
@@ -938,6 +941,137 @@ private fun TerminalEnvRow(termux: com.biji.notes.sandbox.TermuxBootstrap?) {
                         color = cs.error,
                         fontWeight = FontWeight.SemiBold
                     )
+                }
+            }
+        }
+        // 装好终端环境后才显示编译器一键装。
+        if (installed) {
+            Spacer(Modifier.size(14.dp))
+            ToolchainInstallRow(termux = termux)
+        }
+    }
+}
+
+/** 在装好的终端环境上跑 `apt update && apt install -y …` 一键装齐
+ *  C/C++ 编译器、git、python、cmake。日志实时打到下面一个滚动框。 */
+@Composable
+private fun ToolchainInstallRow(termux: com.biji.notes.sandbox.TermuxBootstrap) {
+    val cs = MaterialTheme.colorScheme
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var running by remember { mutableStateOf(false) }
+    var done by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf<String?>(null) }
+    val log = remember { mutableStateListOf<Pair<String, Boolean>>() }
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "编译器 / 开发工具",
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurface,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Text(
+            "调 apt 装 build-essential / clang / make / cmake / git / python（首次约 200 MB）。",
+            style = MaterialTheme.typography.bodySmall,
+            color = cs.onSurfaceVariant
+        )
+        Spacer(Modifier.size(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(cs.primary.copy(alpha = 0.14f))
+                    .bouncyClickable(enabled = !running, pressedScale = 0.96f) {
+                        running = true
+                        done = false
+                        failed = null
+                        log.clear()
+                        scope.launch {
+                            // 失败立即停下，把错误浮上来。
+                            val cmds = listOf(
+                                "apt update -y",
+                                "apt install -y build-essential clang make cmake git python"
+                            )
+                            for (c in cmds) {
+                                log.add("$ $c" to false)
+                                val (code, _, err) = termux.runOnce(c) { line, isErr ->
+                                    log.add(line to isErr)
+                                    while (log.size > 600) log.removeAt(0)
+                                }
+                                if (code != 0) {
+                                    failed = err.lineSequence().lastOrNull { it.isNotBlank() }
+                                        ?: "exit $code"
+                                    running = false
+                                    return@launch
+                                }
+                            }
+                            done = true
+                            running = false
+                        }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                if (running) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        color = cs.primary,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        "安装中…",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                } else {
+                    Text(
+                        "一键安装",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            Spacer(Modifier.size(8.dp))
+            when {
+                done -> Text("✓ 完成", style = MaterialTheme.typography.labelSmall, color = cs.primary)
+                failed != null -> Text(
+                    "✗ ${failed!!.take(120)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.error,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                else -> Unit
+            }
+        }
+        if (log.isNotEmpty()) {
+            Spacer(Modifier.size(8.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 80.dp, max = 220.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF0E0E0E))
+                    .padding(8.dp)
+            ) {
+                val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                androidx.compose.runtime.LaunchedEffect(log.size) {
+                    if (log.isNotEmpty()) listState.animateScrollToItem(log.size - 1)
+                }
+                androidx.compose.foundation.lazy.LazyColumn(state = listState) {
+                    items(count = log.size) { i ->
+                        val entry = log[i]
+                        Text(
+                            entry.first,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = if (entry.second) Color(0xFFFF6B6B) else Color(0xFFE6E6E6)
+                        )
+                    }
                 }
             }
         }

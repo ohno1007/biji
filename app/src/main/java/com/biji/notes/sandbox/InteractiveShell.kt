@@ -59,10 +59,18 @@ class InteractiveShell(
         env["PATH"] = pathParts.joinToString(":")
         env["TERM"] = "xterm-256color"
         env["LANG"] = "C.UTF-8"
+        env["ANDROID_DATA"] = "/data"
+        env["ANDROID_ROOT"] = "/system"
         if (termuxOn) {
             termux!!.envFor().forEach { (k, v) ->
                 if (k != "PATH") env[k] = v
             }
+            // 装上 termux-exec 实时改写硬编码 shebang / exec 路径 —
+            // apt / dpkg / perl 脚本要靠这个。
+            val exec = java.io.File(termux.libDir, "libtermux-exec.so")
+            if (exec.exists()) env["LD_PRELOAD"] = exec.absolutePath
+            env["TERMUX_PREFIX"] = termux.usrDir.absolutePath
+            env["SHELL"] = shellPath
         } else {
             env["HOME"] = workDir.absolutePath
         }

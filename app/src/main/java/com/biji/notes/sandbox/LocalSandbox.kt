@@ -371,7 +371,6 @@ class LocalSandbox(
             }
             val start = System.currentTimeMillis()
             // 优先级：Termux bootstrap > 我们的 toybox bootstrap > 系统 sh。
-            // PATH 把这些都串起来，让 AI 一条命令能跨多个 prefix 找。
             val termuxOn = termux?.installed == true
             val toyboxBin = bootstrap?.binDir?.absolutePath
             val pathParts = buildList {
@@ -392,10 +391,26 @@ class LocalSandbox(
                 termuxOn -> "export HOME=${termux!!.homeDir.absolutePath}; "
                 else -> ""
             }
-            val prefixExport = if (termuxOn) "export PREFIX=${termux!!.usrDir.absolutePath}; " else ""
-            val tmpExport = if (termuxOn) "export TMPDIR=${termux!!.tmpDir.absolutePath}; " else ""
+            // termux-exec.so 是 Termux 的关键：拦截 execve()，
+            // 把 #!/data/data/com.termux/files/usr/bin/xxx 这种硬编
+            // 码 shebang 实时改写到 $TERMUX_PREFIX 真实路径下，
+            // 同时还鉴别脚本里调用的 /bin/sh 之类。装上之后
+            // apt / dpkg / gcc / 一堆 perl 脚本才能跑起来。
+            val termuxExtras = if (termuxOn) {
+                val prefix = termux!!.usrDir.absolutePath
+                val exec = "$prefix/lib/libtermux-exec.so"
+                buildString {
+                    append("export PREFIX=$prefix; ")
+                    append("export TERMUX_PREFIX=$prefix; ")
+                    append("export TMPDIR=${termux.tmpDir.absolutePath}; ")
+                    append("export ANDROID_DATA=/data; export ANDROID_ROOT=/system; ")
+                    append("export SHELL=${termux.preferredShell().absolutePath}; ")
+                    append("export TERMUX_VERSION=biji; ")
+                    append("if [ -f $exec ]; then export LD_PRELOAD=$exec; fi; ")
+                }
+            } else ""
             val shellPath = termux?.takeIf { termuxOn }?.preferredShell()?.absolutePath ?: "sh"
-            val envPrelude = pathExport + ldExport + homeExport + prefixExport + tmpExport
+            val envPrelude = pathExport + ldExport + homeExport + termuxExtras
             val pb = if (asRoot) {
                 ProcessBuilder(
                     "su",
