@@ -1,0 +1,52 @@
+package com.biji.notes
+
+import android.app.Application
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
+import com.biji.notes.data.ChatDatabase
+import com.biji.notes.data.ChatRepository
+import com.biji.notes.data.SettingsRepository
+import com.biji.notes.memory.MemoryService
+import com.biji.notes.net.DeepSeekClient
+import com.biji.notes.net.ToolExecutor
+import com.biji.notes.net.WebSearchService
+import com.biji.notes.notif.ChatNotifier
+import com.biji.notes.sandbox.BijiBootstrap
+import com.biji.notes.sandbox.LocalSandbox
+
+class BijiApp : Application() {
+
+    val database: ChatDatabase by lazy { ChatDatabase.create(this) }
+    val chatRepository: ChatRepository by lazy { ChatRepository(database.chatDao()) }
+    val settingsRepository: SettingsRepository by lazy { SettingsRepository(this) }
+    val deepSeekClient: DeepSeekClient by lazy { DeepSeekClient() }
+    val webSearchService: WebSearchService by lazy { WebSearchService() }
+    val bootstrap: BijiBootstrap by lazy { BijiBootstrap(this) }
+    val pkg: com.biji.notes.sandbox.BijiPkg by lazy {
+        com.biji.notes.sandbox.BijiPkg(this, bootstrap)
+    }
+    val localSandbox: LocalSandbox by lazy { LocalSandbox(this, bootstrap) }
+    val toolExecutor: ToolExecutor by lazy { ToolExecutor(webSearchService, localSandbox, pkg) }
+    val memoryService: MemoryService by lazy { MemoryService(chatRepository) }
+    val chatNotifier: ChatNotifier by lazy { ChatNotifier(this) }
+    val voiceRecognizer: com.biji.notes.voice.VoiceRecognizer by lazy {
+        com.biji.notes.voice.VoiceRecognizer(this)
+    }
+
+    @Volatile private var foreground: Boolean = false
+    fun isForeground(): Boolean = foreground
+
+    override fun onCreate() {
+        super.onCreate()
+        // Capture any uncaught exception (compose, coroutines, JNI) to a
+        // file the user can view from Settings. We don't suppress the
+        // crash itself — the OS still kills the process normally — but
+        // the trace survives across the relaunch.
+        CrashHandler.install(this)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) { foreground = true }
+            override fun onStop(owner: LifecycleOwner) { foreground = false }
+        })
+    }
+}

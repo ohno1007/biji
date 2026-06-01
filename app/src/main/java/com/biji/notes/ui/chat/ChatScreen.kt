@@ -1,0 +1,2558 @@
+package com.biji.notes.ui.chat
+
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.systemGestureExclusion
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetState
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.biji.notes.data.MODEL_CHAT
+import com.biji.notes.data.MODEL_REASONER
+import com.biji.notes.data.Message
+import com.biji.notes.data.MessageKind
+import com.biji.notes.data.Role
+import com.biji.notes.net.Tools
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import com.biji.notes.ui.glass.bouncyClickable
+import com.biji.notes.ui.markdown.MarkdownText
+import com.biji.notes.voice.VoiceState
+import kotlinx.coroutines.launch
+
+/** Shared-element key for the bottom dock (nav pill ↔ chat composer). */
+const val DOCK_SHARED_KEY = "biji-bottom-dock"
+
+/** A single visible row in the chat log. */
+sealed interface ChatItem {
+    val key: Any
+    data class Plain(val message: Message) : ChatItem {
+        override val key: Any get() = "p-${message.id}"
+    }
+    /** One or more consecutive "Searched for X" chips rendered together
+     *  with tight (4dp) internal spacing instead of the default 18dp
+     *  used between regular chat rows. */
+    data class SearchGroup(val messages: List<Message>) : ChatItem {
+        override val key: Any get() = "sg-${messages.first().id}-${messages.last().id}"
+    }
+    /** Sandbox tool result (read_file / write_file / list_directory /
+     *  run_shell_command). Rendered as a code-style card with a
+     *  second-level expand for long output. */
+    data class SandboxTool(val message: Message) : ChatItem {
+        override val key: Any get() = "st-${message.id}"
+    }
+    /** One or more consecutive reasoning-only assistant carriers
+     *  (i.e. tool-call carriers whose only visible output is reasoning).
+     *  Merged into a single collapsible "思考过程" toggle so the chat
+     *  doesn't show four identical-looking thinking blocks in a row. */
+    data class MergedReasoning(val messages: List<Message>) : ChatItem {
+        override val key: Any get() = "mr-${messages.first().id}-${messages.last().id}"
+    }
+}
+
+/**
+ * Walk through the message list in chronological order, batching:
+ *  - consecutive web_search tool-results into one [ChatItem.SearchGroup]
+ *  - consecutive reasoning-only assistant carriers into one
+ *    [ChatItem.MergedReasoning]
+ *
+ * read_url and other non-search tool results are dropped — the article
+ * body is already folded into the next assistant answer.
+ */
+internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
+    val out = mutableListOf<ChatItem>()
+    val searchBuf = mutableListOf<Message>()
+    val reasoningBuf = mutableListOf<Message>()
+    fun flushSearch() {
+        if (searchBuf.isNotEmpty()) {
+            out += ChatItem.SearchGroup(searchBuf.toList())
+            searchBuf.clear()
+        }
+    }
+    fun flushReasoning() {
+        if (reasoningBuf.isNotEmpty()) {
+            out += ChatItem.MergedReasoning(reasoningBuf.toList())
+            reasoningBuf.clear()
+        }
+    }
+    for (m in messages) {
+        if (m.archived) continue
+        val toolKind = if (m.kind == MessageKind.TOOL_RESULT) runCatching {
+            Lite.parseToJsonElement(m.toolData.orEmpty())
+                .jsonObject["kind"]?.jsonPrimitive?.contentOrNull
+        }.getOrNull() else null
+        val isSearch = toolKind == Tools.WEB_SEARCH
+        val isSandbox = toolKind == Tools.LIST_DIRECTORY ||
+            toolKind == Tools.READ_FILE ||
+            toolKind == Tools.WRITE_FILE ||
+            toolKind == Tools.RUN_SHELL
+        val isHiddenTool = m.kind == MessageKind.TOOL_RESULT && !isSearch && !isSandbox
+        val isReasoningOnlyCarrier = m.role == Role.ASSISTANT &&
+            !m.reasoning.isNullOrBlank() && m.content.isBlank()
+        val isSilentCarrier = m.role == Role.ASSISTANT && m.toolData != null &&
+            m.content.isBlank() && m.reasoning.isNullOrBlank()
+        when {
+            isSearch -> {
+                flushReasoning()
+                searchBuf += m
+            }
+            isSandbox -> {
+                flushSearch()
+                flushReasoning()
+                out += ChatItem.SandboxTool(m)
+            }
+            // Hidden tools and silent carriers don't break either buffer:
+            // they're invisible, so consecutive reasoning across them
+            // should still merge into one block.
+            isHiddenTool || isSilentCarrier -> Unit
+            isReasoningOnlyCarrier -> {
+                flushSearch()
+                reasoningBuf += m
+            }
+            else -> {
+                flushSearch()
+                flushReasoning()
+                out += ChatItem.Plain(m)
+            }
+        }
+    }
+    flushSearch()
+    flushReasoning()
+    return out
+}
+
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+fun ChatScreen(
+    vm: ChatViewModel,
+    onBack: () -> Unit,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope? = null,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope? = null
+) {
+    val messages by vm.activeMessages.collectAsState()
+    val settings by vm.settings.collectAsState()
+    val streaming by vm.isStreaming.collectAsState()
+    val error by vm.streamError.collectAsState()
+    val convoId by vm.activeConvoId.collectAsState()
+    val conversations by vm.conversations.collectAsState()
+    val title = conversations.firstOrNull { it.id == convoId }?.title ?: "DeepSeek"
+    val toolStatus by vm.toolStatus.collectAsState()
+    val compactStatus by vm.compactStatus.collectAsState()
+    val ctxUsage by vm.contextUsage.collectAsState()
+    val modelsState by vm.models.collectAsState()
+    val voiceState by vm.voiceState.collectAsState()
+    val voiceVisible by vm.voiceVisible.collectAsState()
+    val workflow by vm.workflow.collectAsState()
+    val ctx = LocalContext.current
+    val convoThinking = conversations.firstOrNull { it.id == convoId }?.thinking == true
+
+    var input by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var modelSheetOpen by remember { mutableStateOf(false) }
+    var contextStatsOpen by remember { mutableStateOf(false) }
+    var cacheDetailsOpen by remember { mutableStateOf(false) }
+    var modelPickerOpen by remember { mutableStateOf(false) }
+    var projectDrawerOpen by remember { mutableStateOf(false) }
+    var folderRenameOpen by remember { mutableStateOf(false) }
+    val activeProjectFolder by vm.activeProjectFolder.collectAsState()
+    val latestUsage by vm.latestUsage.collectAsState()
+    val sessionSpentMap by vm.sessionTokenSpent.collectAsState()
+    val sessionSpent = sessionSpentMap[convoId ?: -1L] ?: 0L
+
+    // Pull a fresh models list as soon as we land on a chat screen.
+    LaunchedEffect(settings.apiKey, settings.baseUrl) { vm.ensureModelsLoaded() }
+
+    // Microphone permission launcher.
+    val micPerm = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) vm.startVoice() }
+
+    // File-picker launcher for the composer's "+" button. SAF returns
+    // a content:// Uri; we feed it to ChatViewModel.stageAttachment
+    // which copies it into the conversation's project folder and
+    // returns a chip-ready descriptor. The chip stays in the composer
+    // until the user actually sends a message.
+    val ctxRef = LocalContext.current
+    var pendingAttachments by remember {
+        mutableStateOf<List<ChatViewModel.StagedAttachment>>(emptyList())
+    }
+    val attachPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val name = runCatching {
+                ctxRef.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+                }
+            }.getOrNull()
+            scope.launch {
+                val staged = vm.stageAttachment(uri, name)
+                if (staged != null) pendingAttachments = pendingAttachments + staged
+            }
+        }
+    }
+
+    LaunchedEffect(messages.size, streaming, workflow.size) {
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+    }
+
+    val isNearBottom by remember {
+        derivedStateOf {
+            val li = listState.layoutInfo
+            val last = li.visibleItemsInfo.lastOrNull()?.index ?: return@derivedStateOf true
+            last >= (li.totalItemsCount - 1)
+        }
+    }
+
+    // Snapshot the last non-empty workflow so AnimatedVisibility's exit
+    // animation still has steps to render. Without this, the panel
+    // would be invoked with an empty list during the fade-out frame
+    // and crash on `steps.last()`.
+    var lastWorkflow by remember { mutableStateOf<List<WorkflowStep>>(emptyList()) }
+    LaunchedEffect(workflow) {
+        if (workflow.isNotEmpty()) lastWorkflow = workflow
+    }
+    // The Column below holds (optional) WorkflowPanel + Composer. Its
+    // measured height becomes the LazyColumn's bottom reserve so chat
+    // content never scrolls underneath either piece.
+    val density = LocalDensity.current
+    var workflowPanelHeight by remember { mutableStateOf(0.dp) }
+    val dockReserve = workflowPanelHeight + 8.dp
+
+    Box(Modifier.fillMaxSize().imePadding()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 18.dp, end = 18.dp,
+                top = TopFadeHeight + 12.dp,
+                bottom = dockReserve
+            ),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            if (messages.isEmpty()) {
+                item { EmptyChatHint() }
+            } else {
+                val rendered = runCatching { groupChatItems(messages) }
+                    .getOrElse { emptyList() }
+                items(rendered, key = { it.key }) { item ->
+                    when (item) {
+                        is ChatItem.Plain ->
+                            MessageItem(m = item.message, onOpenUrl = vm::openWebUrl)
+                        is ChatItem.SearchGroup -> {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                item.messages.forEach { m ->
+                                    SearchedForChip(message = m, onOpenUrl = vm::openWebUrl)
+                                }
+                            }
+                        }
+                        is ChatItem.SandboxTool -> {
+                            SandboxToolCard(item.message)
+                        }
+                        is ChatItem.MergedReasoning -> {
+                            ReasoningBlock(
+                                reasoning = item.messages
+                                    .mapNotNull { it.reasoning?.takeIf { r -> r.isNotBlank() } }
+                                    .joinToString("\n\n")
+                            )
+                        }
+                    }
+                }
+                // Trailing copy button — only when not actively streaming
+                // and the last visible assistant turn has real text.
+                val lastAssistantContent = messages.lastOrNull {
+                    it.role == Role.ASSISTANT && it.content.isNotBlank()
+                }?.content?.let { stripToolCallMarkup(it) }
+                if (!streaming && !lastAssistantContent.isNullOrBlank()) {
+                    item { TrailingCopyButton(text = lastAssistantContent) }
+                }
+                if (toolStatus != null) {
+                    item { StatusPill(text = toolStatus!!) }
+                }
+                if (compactStatus != null) {
+                    item { StatusPill(text = compactStatus!!) }
+                }
+                if (error != null) {
+                    item { ErrorRow(message = error!!, onDismiss = vm::dismissError) }
+                }
+            }
+        }
+
+        TopFade(modifier = Modifier.align(Alignment.TopCenter))
+
+        TopBar(
+            title = title,
+            usage = ctxUsage,
+            onBack = onBack,
+            onTapRing = { contextStatsOpen = true },
+            onTapDrawer = { projectDrawerOpen = true },
+            onLongPressDrawer = { folderRenameOpen = true },
+            onOpenTerminal = { vm.openTerminal() },
+            ringVisible = !contextStatsOpen,
+            sharedTransitionScope = sharedTransitionScope,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+        )
+
+        BottomFade(modifier = Modifier.align(Alignment.BottomCenter))
+
+        AnimatedVisibility(
+            visible = !isNearBottom && messages.isNotEmpty(),
+            enter = fadeIn() + scaleIn(initialScale = 0.6f),
+            exit = fadeOut() + scaleOut(targetScale = 0.6f),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = ComposerArea - 16.dp)
+        ) {
+            ScrollToBottomButton {
+                scope.launch { listState.animateScrollToItem(messages.size - 1) }
+            }
+        }
+
+        // Workflow + Composer stacked in a single bottom-anchored Column
+        // so the panel always sits flush on top of the composer (rather
+        // than at a fixed `bottom = ComposerArea` offset, which left a
+        // visible gap between the two).
+        val composerModifier = Modifier
+            .navigationBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+        val sharedModifier =
+            if (sharedTransitionScope != null && animatedVisibilityScope != null) {
+                with(sharedTransitionScope) {
+                    Modifier.sharedBounds(
+                        rememberSharedContentState(key = DOCK_SHARED_KEY),
+                        animatedVisibilityScope = animatedVisibilityScope,
+                        enter = fadeIn(tween(220)),
+                        exit = fadeOut(tween(140)),
+                        resizeMode = androidx.compose.animation.SharedTransitionScope
+                            .ResizeMode.RemeasureToBounds
+                    )
+                }
+            } else Modifier
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .onSizeChanged { sz ->
+                    // Track the *combined* workflow + composer footprint so
+                    // the chat scroll content leaves enough room above it.
+                    workflowPanelHeight = with(density) { sz.height.toDp() }
+                }
+        ) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = workflow.isNotEmpty(),
+                enter = fadeIn(tween(180)) +
+                    slideInVertically(initialOffsetY = { it / 2 }),
+                exit = fadeOut(tween(140)) +
+                    androidx.compose.animation.slideOutVertically(targetOffsetY = { it / 2 })
+            ) {
+                val toShow = if (workflow.isNotEmpty()) workflow else lastWorkflow
+                WorkflowPanel(steps = toShow)
+            }
+            Composer(
+                value = input,
+                onValueChange = { input = it },
+                model = settings.model,
+                thinking = convoThinking || settings.model == MODEL_REASONER,
+                sending = streaming,
+                attachments = pendingAttachments,
+                onRemoveAttachment = { idx ->
+                    pendingAttachments = pendingAttachments
+                        .toMutableList()
+                        .also { it.removeAt(idx) }
+                },
+                onSend = {
+                    val hasText = input.isNotBlank()
+                    val hasFiles = pendingAttachments.isNotEmpty()
+                    if ((hasText || hasFiles) && !streaming) {
+                        vm.send(input, pendingAttachments)
+                        input = ""
+                        pendingAttachments = emptyList()
+                    }
+                },
+                onStop = vm::cancelStream,
+                onOpenModelSheet = { modelPickerOpen = true },
+                onVoice = {
+                    // Always re-check at call time via ContextCompat —
+                    // the cached LocalContext could otherwise lag the
+                    // permission-grant a user just made in system
+                    // settings, which is why "我明明给了权限" still
+                    // hit the request flow.
+                    val granted = androidx.core.content.ContextCompat
+                        .checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (granted) vm.startVoice() else micPerm.launch(Manifest.permission.RECORD_AUDIO)
+                },
+                onAttach = { attachPicker.launch(arrayOf("*/*")) },
+                modelPickerVisible = modelPickerOpen,
+                sharedTransitionScope = sharedTransitionScope,
+                modifier = composerModifier.then(sharedModifier)
+            )
+        }
+
+        // Model picker sheet (shared composable in ModelPickerSheet.kt).
+        if (modelSheetOpen) {
+            ModelPickerSheet(
+                models = modelsState.list.map { it.id },
+                loading = modelsState.loading,
+                error = modelsState.error,
+                currentModel = settings.model,
+                convoThinking = convoThinking,
+                showThinkingToggle = true,
+                onPick = { vm.setModel(it); modelSheetOpen = false },
+                onToggleThinking = vm::setConversationThinking,
+                onRefresh = vm::refreshModels,
+                onDismiss = { modelSheetOpen = false }
+            )
+        }
+
+        // Voice input sheet.
+        if (voiceVisible) {
+            VoiceSheet(
+                state = voiceState,
+                onConfirm = { transcript ->
+                    input = if (input.isBlank()) transcript else "$input $transcript"
+                    vm.dismissVoice()
+                },
+                onCancel = vm::cancelVoice,
+                onDismiss = vm::dismissVoice,
+                onRetry = vm::startVoice
+            )
+        }
+
+        // Right-edge invisible swipe handle. Skip the topbar (so the
+        // context ring + folder icon still get their taps) and the
+        // composer area (so the model chip + send button still work).
+        // 24-dp wide strip in the middle vertical span only.
+        if (!projectDrawerOpen) {
+            Box(
+                Modifier
+                    .align(Alignment.CenterEnd)
+                    .statusBarsPadding()
+                    .padding(top = 60.dp, bottom = ComposerArea + 16.dp)
+                    .fillMaxHeight()
+                    .width(24.dp)
+                    .systemGestureExclusion()
+                    .pointerInput(Unit) {
+                        val threshold = with(density) { 6.dp.toPx() }
+                        detectHorizontalDragGestures { _, dx ->
+                            if (dx < -threshold) projectDrawerOpen = true
+                        }
+                    }
+            )
+        }
+
+        // Context-stats popup. Its bounds morph out of the ContextRing
+        // (shared content state CONTEXT_STATS_KEY). Tapping the
+        // "已用 token" row triggers a second-level popup that shares
+        // its bounds with that row via CACHE_DETAILS_KEY.
+        AnimatedVisibility(
+            visible = contextStatsOpen && !cacheDetailsOpen,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            ContextStatsScrim(onDismiss = { contextStatsOpen = false }) {
+                ContextStatsPopup(
+                    usage = ctxUsage,
+                    model = settings.model,
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = this@AnimatedVisibility,
+                    onUsedRowClick = { cacheDetailsOpen = true },
+                    onDismiss = { contextStatsOpen = false }
+                )
+            }
+        }
+        AnimatedVisibility(
+            visible = cacheDetailsOpen,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            ContextStatsScrim(onDismiss = { cacheDetailsOpen = false }) {
+                CacheDetailsPopup(
+                    usage = ctxUsage,
+                    details = latestUsage,
+                    sessionSpent = sessionSpent,
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = this@AnimatedVisibility,
+                    onBack = { cacheDetailsOpen = false }
+                )
+            }
+        }
+
+        // Model-picker popup. Its bounds morph out of the composer's
+        // model chip (shared content state MODEL_PICKER_KEY).
+        AnimatedVisibility(
+            visible = modelPickerOpen,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            ContextStatsScrim(onDismiss = { modelPickerOpen = false }) {
+                ModelPickerPopup(
+                    models = modelsState.list.map { it.id },
+                    loading = modelsState.loading,
+                    error = modelsState.error,
+                    currentModel = settings.model,
+                    convoThinking = convoThinking,
+                    onPick = { vm.setModel(it); modelPickerOpen = false },
+                    onToggleThinking = vm::setConversationThinking,
+                    onRefresh = vm::refreshModels,
+                    onDismiss = { modelPickerOpen = false },
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = this@AnimatedVisibility
+                )
+            }
+        }
+
+        // Project drawer — rendered LAST so it sits on top of every
+        // other overlay when open. Right-edge swipe (in developer mode)
+        // sets projectDrawerOpen.
+        com.biji.notes.ui.editor.ProjectDrawer(
+            sandbox = vm.sandbox,
+            folder = activeProjectFolder,
+            open = projectDrawerOpen,
+            onOpenFile = { rel ->
+                projectDrawerOpen = false
+                vm.openEditor(rel)
+            },
+            onDismiss = { projectDrawerOpen = false }
+        )
+
+        if (folderRenameOpen) {
+            FolderRenameDialog(
+                currentFolder = activeProjectFolder,
+                onConfirm = { name ->
+                    vm.setActiveProjectFolder(name)
+                    folderRenameOpen = false
+                },
+                onDismiss = { folderRenameOpen = false }
+            )
+        }
+    }
+}
+
+@Composable
+private fun FolderRenameDialog(
+    currentFolder: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var text by remember(currentFolder) { mutableStateOf(currentFolder) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "项目目录",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    "为这个会话选一个工作目录名称。AI 的 read_file / write_file / list_directory 工具会限定在这个目录里，shell 命令以它为默认 cwd 但不受限制。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = text,
+                    onValueChange = { v ->
+                        text = v.filter { it.isLetterOrDigit() || it == '_' || it == '-' || it == '.' }
+                    },
+                    placeholder = { Text("default") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = { onConfirm(text.trim()) }) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+/** Dimmed scrim under our custom popups — tap to dismiss. The scrim
+ *  colour darkens in dark mode and tints toward black in light mode so
+ *  the popup card always reads above the chat content. */
+@Composable
+private fun ContextStatsScrim(
+    onDismiss: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val scrimColor = if (isDark) Color.Black.copy(alpha = 0.50f)
+        else Color.Black.copy(alpha = 0.32f)
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(scrimColor)
+            .pointerInput(Unit) {
+                detectTapGestures { onDismiss() }
+            }
+    ) {
+        content()
+    }
+}
+
+// =====================================================================
+// Layout constants
+// =====================================================================
+
+private val TopFadeHeight = 96.dp
+private val BottomFadeHeight = 180.dp
+private val ComposerArea = 172.dp
+
+// =====================================================================
+// Fade / Top bar
+// =====================================================================
+
+@Composable
+private fun TopFade(modifier: Modifier = Modifier) {
+    val bg = MaterialTheme.colorScheme.background
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(TopFadeHeight + WindowInsetsTopHeight())
+            .background(
+                Brush.verticalGradient(
+                    0.0f to bg,
+                    0.55f to bg.copy(alpha = 0.92f),
+                    1.0f to bg.copy(alpha = 0f)
+                )
+            )
+    )
+}
+
+@Composable
+private fun BottomFade(modifier: Modifier = Modifier) {
+    val bg = MaterialTheme.colorScheme.background
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(BottomFadeHeight)
+            .background(
+                Brush.verticalGradient(
+                    0.0f to bg.copy(alpha = 0f),
+                    0.45f to bg.copy(alpha = 0.92f),
+                    1.0f to bg
+                )
+            )
+    )
+}
+
+/**
+ * Public re-export so other screens (Settings, ConversationList) can use
+ * the exact same top-edge fade as the chat screen.
+ */
+@Composable
+fun ChatTopFade(modifier: Modifier = Modifier, totalHeight: androidx.compose.ui.unit.Dp = TopFadeHeight) {
+    val bg = MaterialTheme.colorScheme.background
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(totalHeight)
+            .background(
+                Brush.verticalGradient(
+                    0.0f to bg,
+                    0.55f to bg.copy(alpha = 0.92f),
+                    1.0f to bg.copy(alpha = 0f)
+                )
+            )
+    )
+}
+
+@Composable
+private fun WindowInsetsTopHeight(): androidx.compose.ui.unit.Dp {
+    val density = LocalDensity.current
+    return with(density) { WindowInsets.statusBars.getTop(density).toDp() }
+}
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun TopBar(
+    title: String,
+    usage: ContextUsage,
+    onBack: () -> Unit,
+    onTapRing: () -> Unit,
+    onTapDrawer: () -> Unit,
+    onLongPressDrawer: () -> Unit,
+    onOpenTerminal: () -> Unit,
+    ringVisible: Boolean,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    modifier: Modifier = Modifier
+) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconBtn(
+            icon = Icons.AutoMirrored.Rounded.ArrowBack,
+            contentDescription = "返回",
+            onClick = onBack
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            title,
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+            color = cs.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        // Terminal — opens a persistent sh process scoped to the
+        // active conversation's project folder.
+        IconBtn(
+            icon = Icons.Outlined.Terminal,
+            contentDescription = "终端",
+            onClick = onOpenTerminal
+        )
+        Spacer(Modifier.width(2.dp))
+        // Project-drawer entry point (also accessible by swipe from
+        // the right edge). Long-press opens a rename dialog so each
+        // conversation can pick its own folder name.
+        IconBtnCombined(
+            icon = Icons.Outlined.FolderOpen,
+            contentDescription = "项目文件",
+            onClick = onTapDrawer,
+            onLongClick = onLongPressDrawer
+        )
+        Spacer(Modifier.width(2.dp))
+        // Keep the ring's slot 40dp wide even when hidden, so the title's
+        // weighted layout doesn't reflow when the popup opens. The
+        // fully-qualified AnimatedVisibility call avoids the ambient
+        // RowScope.AnimatedVisibility extension from kicking in.
+        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = ringVisible,
+                enter = fadeIn(tween(120)),
+                exit = fadeOut(tween(120))
+            ) {
+                ContextRing(
+                    usage = usage,
+                    onClick = onTapRing,
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = this@AnimatedVisibility
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun IconBtn(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String?,
+    onClick: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .bouncyClickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(20.dp),
+            tint = cs.onSurface
+        )
+    }
+}
+
+/** Same shape as [IconBtn] but supports a long-press secondary action.
+ *  Uses Compose's [androidx.compose.foundation.combinedClickable] since
+ *  the bouncy modifier doesn't expose a long-press hook. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun IconBtnCombined(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String?,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    haptics.performHapticFeedback(
+                        androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress
+                    )
+                    onLongClick()
+                }
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(20.dp),
+            tint = cs.onSurface
+        )
+    }
+}
+
+/**
+ * MD3 expressive determinate ring: thick rounded active arc + thick rounded
+ * track arc separated by the standard 4dp track-gap on each side. The track
+ * is *always* drawn (so the ring is visible even at 0%), the active arc
+ * grows clockwise from 12 o'clock. Tap = stats sheet (not wired yet).
+ *
+ * Spec source: m3.material.io / CircularProgressIndicator – gap 4dp,
+ * stroke ~4dp, rounded stroke cap.
+ */
+private const val CONTEXT_STATS_KEY = "biji-context-stats"
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun ContextRing(
+    usage: ContextUsage,
+    onClick: () -> Unit,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope?
+) {
+    val cs = MaterialTheme.colorScheme
+    val fraction by animateFloatAsState(
+        targetValue = usage.fraction,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "ringFrac"
+    )
+    val warn = fraction > 0.78f
+    val activeColor = if (warn) cs.error else cs.primary
+    val trackColor = cs.outline.copy(alpha = 0.55f)
+
+    val sharedMod = if (sharedTransitionScope != null && animatedVisibilityScope != null) {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key = CONTEXT_STATS_KEY),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(140)),
+                resizeMode = androidx.compose.animation.SharedTransitionScope
+                    .ResizeMode.RemeasureToBounds
+            )
+        }
+    } else Modifier
+
+    Box(
+        modifier = sharedMod
+            .size(40.dp)
+            .clip(CircleShape)
+            .bouncyClickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(32.dp)) {
+            val stroke = 3.5.dp.toPx()
+            val gapDp = 4.dp.toPx()
+            // Convert linear track gap to degrees on the indicator circle.
+            val radius = (size.minDimension - stroke) / 2f
+            val gapDeg = (gapDp / radius) * (180f / Math.PI.toFloat())
+
+            val usedSweep = (fraction * 360f).coerceIn(0f, 360f)
+            // Active arc – grows clockwise from 12 o'clock.
+            if (usedSweep > 0.5f) {
+                drawArc(
+                    color = activeColor,
+                    startAngle = -90f,
+                    sweepAngle = usedSweep,
+                    useCenter = false,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
+            }
+            // Track arc – fills the rest, separated by gap on both sides.
+            val trackStart = -90f + usedSweep + gapDeg
+            val trackSweep = 360f - usedSweep - gapDeg * 2f
+            if (trackSweep > 0.5f) {
+                drawArc(
+                    color = trackColor,
+                    startAngle = trackStart,
+                    sweepAngle = trackSweep,
+                    useCenter = false,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
+            }
+        }
+        Text(
+            formatPercent(fraction, withSign = false),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = androidx.compose.ui.unit.TextUnit(10f, androidx.compose.ui.unit.TextUnitType.Sp)
+            ),
+            color = if (warn) cs.error else cs.onSurfaceVariant,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+// =====================================================================
+// Messages
+// =====================================================================
+
+@Composable
+private fun MessageItem(m: Message, onOpenUrl: (String) -> Unit) {
+    if (m.archived) return
+    if (m.kind == MessageKind.CONTEXT_SUMMARY) {
+        ArchivedSummary(m)
+        return
+    }
+    if (m.role == Role.ASSISTANT && m.kind == MessageKind.TEXT &&
+        m.content.isBlank() && m.reasoning.isNullOrBlank() && m.toolData == null) {
+        return
+    }
+    // Tool-call carrier with neither reasoning nor content — invisible.
+    // (The associated tool_result message renders separately as a chip.)
+    // Carriers that DO have reasoning are kept so the chat reads
+    // chronologically: think → tool → text → think → tool → text …
+    // instead of every "thinking" being collapsed into one block at the
+    // end and the tool chips clumping above it.
+    if (m.role == Role.ASSISTANT && m.toolData != null &&
+        m.content.isBlank() && m.reasoning.isNullOrBlank()) {
+        return
+    }
+    if (m.kind == MessageKind.TOOL_RESULT) {
+        AnimatedVisibility(
+            visible = true,
+            enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) +
+                slideInVertically(initialOffsetY = { it / 6 }, animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                ))
+        ) {
+            ToolMessageCard(message = m, onOpenUrl = onOpenUrl)
+        }
+        return
+    }
+
+    val isUser = m.role == Role.USER
+    AnimatedVisibility(
+        visible = true,
+        enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) +
+            slideInVertically(
+                initialOffsetY = { it / 6 },
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
+    ) {
+        if (isUser) UserBubble(m.content) else AssistantBlock(m, onOpenUrl = onOpenUrl)
+    }
+}
+
+@Composable
+private fun ArchivedSummary(m: Message) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(cs.surfaceContainerLow)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Outlined.AutoAwesome,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = cs.primary
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "早期对话已自动向量化压缩",
+            style = MaterialTheme.typography.labelLarge,
+            color = cs.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun UserBubble(content: String) {
+    val cs = MaterialTheme.colorScheme
+    // Distinct user-bubble colour – noticeably deeper than the
+    // surfaceContainerHigh used by other surface chips.
+    val bg = if (isLight()) Color(0xFFE0DACE) else Color(0xFF2D2D33)
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+        Box(
+            modifier = Modifier
+                .widthIn(max = 300.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(bg)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            Text(
+                content,
+                style = MaterialTheme.typography.bodyLarge,
+                color = cs.onSurface
+            )
+        }
+    }
+}
+
+@Composable
+private fun isLight(): Boolean = MaterialTheme.colorScheme.background.luminance() > 0.5f
+private fun Color.luminance(): Float = 0.2126f * red + 0.7152f * green + 0.0722f * blue
+
+@Composable
+private fun AssistantBlock(m: Message, onOpenUrl: (String) -> Unit = {}) {
+    Column(Modifier.fillMaxWidth()) {
+        if (!m.reasoning.isNullOrBlank()) {
+            ReasoningBlock(m.reasoning)
+            Spacer(Modifier.height(10.dp))
+        }
+        if (m.content.isBlank() && m.reasoning.isNullOrBlank()) {
+            TypingDots()
+        } else if (m.content.isNotBlank()) {
+            // Display-clean content: scrub the model's occasional
+            // leakage of raw `<||DSML|| tool_calls>` / `<|tool_call|>`
+            // XML-ish markup that some proxies emit when their tool
+            // routing fails.
+            val cleaned = stripToolCallMarkup(m.content)
+            if (cleaned.isNotBlank()) {
+                MarkdownText(markdown = cleaned, onOpenUrl = onOpenUrl)
+            }
+        }
+    }
+}
+
+/**
+ * Strip text-form tool-call markup that some proxy models leak into the
+ * assistant's text stream when their tool routing falls apart. We don't
+ * try to *execute* these — just hide them from the rendered output so
+ * the user sees the clean prose, not a wall of pseudo-XML.
+ */
+internal fun stripToolCallMarkup(raw: String): String {
+    var s = raw
+    // Closed `<||TAG|| ...>...</||TAG|| ...>` blocks.
+    s = Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*?</\\|\\|[A-Za-z]+\\|\\|[^>]*>")
+        .replace(s, "")
+    // `<|tool_call|>...</|tool_call|>` (gpt / qwen style).
+    s = Regex("<\\|tool_calls?\\|>[\\s\\S]*?</\\|tool_calls?\\|>").replace(s, "")
+    // Mid-stream half-open `<||TAG|| ...` runs we never matched — drop
+    // everything from the open marker to the end of the string so the
+    // partial markup doesn't bleed into the rendered text while the
+    // model is still typing.
+    s = Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*$").replace(s, "")
+    s = Regex("<\\|tool_calls?\\|>[\\s\\S]*$").replace(s, "")
+    return s.trim()
+}
+
+/**
+ * Trailing copy button rendered once at the end of the chat list when
+ * the latest assistant turn is fully streamed. Tap copies the most
+ * recent assistant answer's clean text.
+ */
+@Composable
+private fun TrailingCopyButton(text: String) {
+    val cs = MaterialTheme.colorScheme
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(text) { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(copied) {
+        if (copied) {
+            kotlinx.coroutines.delay(1500)
+            copied = false
+        }
+    }
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .bouncyClickable(pressedScale = 0.94f) {
+                    clipboard.setText(AnnotatedString(text))
+                    copied = true
+                }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                contentDescription = if (copied) "已复制" else "复制完整回答",
+                modifier = Modifier.size(14.dp),
+                tint = if (copied) cs.primary else cs.onSurfaceVariant
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (copied) "已复制" else "复制完整回答",
+                style = MaterialTheme.typography.labelLarge,
+                color = if (copied) cs.primary else cs.onSurfaceVariant,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReasoningBlock(reasoning: String) {
+    val cs = MaterialTheme.colorScheme
+    var expanded by remember { mutableStateOf(false) }
+    val rotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "chev"
+    )
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .bouncyClickable(pressedScale = 0.97f) { expanded = !expanded }
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Outlined.AutoAwesome,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = cs.primary
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "思考过程",
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurface,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                Icons.Rounded.ExpandMore,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp).rotate(rotation),
+                tint = cs.onSurfaceVariant
+            )
+        }
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            Row(modifier = Modifier.padding(top = 6.dp, start = 4.dp)) {
+                Box(
+                    Modifier
+                        .width(2.dp)
+                        .heightIn(min = 24.dp)
+                        .background(cs.outlineVariant)
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    reasoning,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.padding(end = 8.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TypingDots() {
+    val cs = MaterialTheme.colorScheme
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        repeat(3) { i ->
+            Box(
+                Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(cs.onSurfaceVariant.copy(alpha = 0.45f))
+            )
+            if (i < 2) Spacer(Modifier.width(5.dp))
+        }
+    }
+}
+
+// =====================================================================
+// Composer
+// =====================================================================
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun Composer(
+    value: String,
+    onValueChange: (String) -> Unit,
+    model: String,
+    thinking: Boolean,
+    sending: Boolean,
+    attachments: List<ChatViewModel.StagedAttachment>,
+    onRemoveAttachment: (Int) -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+    onOpenModelSheet: () -> Unit,
+    onVoice: () -> Unit,
+    onAttach: () -> Unit,
+    modelPickerVisible: Boolean = false,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope? = null,
+    modifier: Modifier = Modifier
+) {
+    val cs = MaterialTheme.colorScheme
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(28.dp))
+            .background(cs.surface)
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+    ) {
+        // Pending-attachment chip row — file icon + name + size + close.
+        // Mirrors the screenshot the user shared so prompt + file can
+        // ride the same composer.
+        if (attachments.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                attachments.forEachIndexed { i, a ->
+                    AttachmentChip(
+                        name = a.displayName,
+                        size = a.size,
+                        onRemove = { onRemoveAttachment(i) }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+            }
+        }
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
+            cursorBrush = SolidColor(cs.primary),
+            // Cap visible lines so long input grows vertically up to 6 rows
+            // and then scrolls internally — the composer's bounding box width
+            // never balloons with the text length.
+            maxLines = 6,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            decorationBox = { inner ->
+                if (value.isEmpty()) {
+                    Text(
+                        "和 DeepSeek 说点什么…",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = cs.onSurfaceVariant.copy(alpha = 0.55f)
+                    )
+                }
+                inner()
+            }
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircleAction(
+                icon = Icons.Outlined.Add,
+                contentDescription = "添加附件",
+                onClick = onAttach
+            )
+            Spacer(Modifier.width(6.dp))
+            ComposerModelChip(
+                model = model,
+                thinking = thinking,
+                onClick = onOpenModelSheet,
+                visible = !modelPickerVisible,
+                sharedTransitionScope = sharedTransitionScope,
+            )
+            Spacer(Modifier.weight(1f))
+            CircleAction(
+                icon = Icons.Rounded.Mic,
+                contentDescription = "语音输入",
+                onClick = onVoice
+            )
+            Spacer(Modifier.width(6.dp))
+            SendDot(
+                sending = sending,
+                enabled = sending || value.isNotBlank(),
+                onSend = onSend,
+                onStop = onStop
+            )
+        }
+    }
+}
+
+@Composable
+private fun CircleAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String?,
+    onClick: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .bouncyClickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(20.dp),
+            tint = cs.onSurfaceVariant
+        )
+    }
+}
+
+/** Pill-shaped pending-attachment chip shown above the composer text
+ *  field: file glyph in a primary-tinted square, name + size stacked
+ *  on the right, dismiss-X on the far right. Tap-and-drag is not
+ *  supported — too cute for the value it'd add. */
+@Composable
+private fun AttachmentChip(
+    name: String,
+    size: Long,
+    onRemove: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val sizeLabel = when {
+        size >= 1_048_576 -> "%.1f MB".format(size / 1_048_576.0)
+        size >= 1_024 -> "%.1f KB".format(size / 1_024.0)
+        else -> "${size}B"
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(cs.surfaceContainerHigh)
+            .padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(cs.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Outlined.Description,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = cs.onPrimaryContainer
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Column(modifier = Modifier.widthIn(max = 180.dp)) {
+            Text(
+                name,
+                style = MaterialTheme.typography.labelLarge,
+                color = cs.onSurface,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                sizeLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .bouncyClickable(pressedScale = 0.9f, onClick = onRemove),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Rounded.Close,
+                contentDescription = "移除附件",
+                modifier = Modifier.size(14.dp),
+                tint = cs.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun ComposerModelChip(
+    model: String,
+    thinking: Boolean,
+    onClick: () -> Unit,
+    visible: Boolean = true,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope? = null
+) {
+    // Wrap in AnimatedVisibility so the chip's sharedBounds element has a
+    // proper scope to morph from when the model picker opens.
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(140)),
+        exit = fadeOut(tween(120))
+    ) {
+        InnerComposerModelChip(
+            model = model,
+            thinking = thinking,
+            onClick = onClick,
+            sharedTransitionScope = sharedTransitionScope,
+            animatedVisibilityScope = this@AnimatedVisibility
+        )
+    }
+}
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun InnerComposerModelChip(
+    model: String,
+    thinking: Boolean,
+    onClick: () -> Unit,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope
+) {
+    val cs = MaterialTheme.colorScheme
+    val bg = if (thinking) cs.primaryContainer else cs.surfaceContainerHigh
+    val fg = if (thinking) cs.onPrimaryContainer else cs.onSurface
+    val sharedMod = if (sharedTransitionScope != null) {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key = MODEL_PICKER_KEY),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(140)),
+                resizeMode = androidx.compose.animation.SharedTransitionScope
+                    .ResizeMode.RemeasureToBounds
+            )
+        }
+    } else Modifier
+    Row(
+        modifier = sharedMod
+            .clip(RoundedCornerShape(50))
+            .background(bg)
+            .bouncyClickable(pressedScale = 0.94f, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp)
+            .animateContentSize(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AnimatedVisibility(
+            visible = thinking,
+            enter = fadeIn() + expandHorizontally(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                ),
+                expandFrom = Alignment.Start
+            ),
+            exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.Start)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(13.dp),
+                    tint = fg
+                )
+                Spacer(Modifier.width(4.dp))
+            }
+        }
+        AnimatedContent(
+            targetState = model.removePrefix("deepseek-"),
+            transitionSpec = {
+                (fadeIn(tween(160)) + slideInVertically(
+                    initialOffsetY = { it / 2 },
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )).togetherWith(fadeOut(tween(120)))
+            },
+            label = "modelName"
+        ) { name ->
+            Text(
+                name,
+                style = MaterialTheme.typography.labelLarge,
+                color = fg,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.width(2.dp))
+        Icon(
+            Icons.Rounded.ExpandMore,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = fg
+        )
+    }
+}
+
+@Composable
+private fun SendDot(
+    sending: Boolean,
+    enabled: Boolean,
+    onSend: () -> Unit,
+    onStop: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val bg = when {
+        sending -> cs.error
+        enabled -> cs.tertiary
+        else -> cs.surfaceContainerHighest
+    }
+    val fg = when {
+        sending -> Color.White
+        enabled -> cs.onTertiary
+        else -> cs.onSurfaceVariant
+    }
+    val target = if (sending || enabled) 1f else 0.92f
+    val scale by animateFloatAsState(
+        target,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "sendScale"
+    )
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .scale(scale)
+            .clip(CircleShape)
+            .background(bg)
+            .bouncyClickable(
+                enabled = sending || enabled,
+                pressedScale = 0.90f,
+                onClick = { if (sending) onStop() else onSend() }
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = if (sending) Icons.Rounded.Stop else Icons.Rounded.ArrowUpward,
+            contentDescription = if (sending) "停止" else "发送",
+            modifier = Modifier.size(18.dp),
+            tint = fg
+        )
+    }
+}
+
+// =====================================================================
+// Model picker bottom sheet
+// =====================================================================
+
+// =====================================================================
+// Voice sheet
+// =====================================================================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VoiceSheet(
+    state: VoiceState,
+    onConfirm: (String) -> Unit,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = cs.surface
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            val (icon, text) = when (state) {
+                is VoiceState.Idle -> Icons.Rounded.Mic to "等待开始…"
+                is VoiceState.Listening -> Icons.Rounded.Mic to (state.partial.ifBlank { "在听…" })
+                is VoiceState.Result -> Icons.Outlined.AutoAwesome to state.text
+                is VoiceState.Error -> Icons.Rounded.Mic to state.message
+            }
+            val pulse by animateFloatAsState(
+                targetValue = if (state is VoiceState.Listening) 1.08f else 1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessLow
+                ),
+                label = "pulse"
+            )
+            Box(
+                Modifier
+                    .size(72.dp)
+                    .scale(pulse)
+                    .clip(CircleShape)
+                    .background(cs.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(34.dp),
+                    tint = cs.onPrimaryContainer
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = cs.onSurface
+            )
+            Spacer(Modifier.height(22.dp))
+            Row {
+                SheetButton(
+                    label = "取消",
+                    color = cs.surfaceContainerHigh,
+                    onColor = cs.onSurface,
+                    onClick = onCancel,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(10.dp))
+                when (state) {
+                    is VoiceState.Result -> SheetButton(
+                        label = "确认填入",
+                        color = cs.tertiary,
+                        onColor = cs.onTertiary,
+                        onClick = { onConfirm(state.text) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    is VoiceState.Error -> SheetButton(
+                        label = "重试",
+                        color = cs.primary,
+                        onColor = cs.onPrimary,
+                        onClick = onRetry,
+                        modifier = Modifier.weight(1f)
+                    )
+                    is VoiceState.Listening -> SheetButton(
+                        label = "停止",
+                        color = cs.tertiary,
+                        onColor = cs.onTertiary,
+                        onClick = onCancel,
+                        modifier = Modifier.weight(1f)
+                    )
+                    else -> SheetButton(
+                        label = "开始",
+                        color = cs.primary,
+                        onColor = cs.onPrimary,
+                        onClick = onRetry,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetButton(
+    label: String,
+    color: Color,
+    onColor: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(color)
+            .bouncyClickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.titleMedium,
+            color = onColor,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+// =====================================================================
+// Misc
+// =====================================================================
+
+@Composable
+private fun ScrollToBottomButton(onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .background(cs.surfaceContainerHigh)
+            .bouncyClickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            Icons.Rounded.ArrowDownward,
+            contentDescription = "回到底部",
+            modifier = Modifier.size(18.dp),
+            tint = cs.onSurface
+        )
+    }
+}
+
+@Composable
+private fun StatusPill(text: String) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(cs.surfaceContainerHigh)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(14.dp),
+            strokeWidth = 2.dp,
+            color = cs.primary
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            color = cs.onSurface,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+@Composable
+private fun ErrorRow(message: String, onDismiss: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(cs.error.copy(alpha = 0.12f))
+            .bouncyClickable(pressedScale = 0.99f, onClick = onDismiss)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(message, style = MaterialTheme.typography.bodyMedium, color = cs.error)
+    }
+}
+
+/**
+ * Stage-tracker panel that floats above the composer while a multi-tool
+ * turn is in flight. 80% of the screen width, frosted-glass surface,
+ * one row per step (running / done / error). Hidden when the workflow
+ * list is empty.
+ */
+@Composable
+private fun WorkflowPanel(steps: List<WorkflowStep>) {
+    if (steps.isEmpty()) return
+    val cs = MaterialTheme.colorScheme
+    var open by remember { mutableStateOf(true) }
+    val rotation by animateFloatAsState(
+        targetValue = if (open) 180f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "wfPanelChev"
+    )
+    val active = steps.lastOrNull { it.state == WorkflowStepState.RUNNING } ?: steps.last()
+    Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier
+                .fillMaxWidth(0.8f)
+                .clip(RoundedCornerShape(18.dp))
+                .background(cs.surface.copy(alpha = 0.85f))
+                .androidx_border_compat(cs.outlineVariant.copy(alpha = 0.7f))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .bouncyClickable(pressedScale = 0.99f) { open = !open }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                StepIcon(state = active.state)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (active.state == WorkflowStepState.RUNNING)
+                        active.label
+                    else
+                        "${steps.size} 步已完成",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cs.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    Icons.Rounded.ExpandMore,
+                    contentDescription = if (open) "收起" else "展开",
+                    modifier = Modifier.size(16.dp).rotate(rotation),
+                    tint = cs.onSurfaceVariant
+                )
+            }
+            AnimatedVisibility(
+                visible = open,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    steps.forEachIndexed { i, s ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${i + 1}.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = cs.onSurfaceVariant
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            StepIcon(state = s.state)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                s.label,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = cs.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StepIcon(state: WorkflowStepState) {
+    val cs = MaterialTheme.colorScheme
+    when (state) {
+        WorkflowStepState.RUNNING ->
+            androidx.compose.material3.CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 1.5.dp,
+                color = cs.primary
+            )
+        WorkflowStepState.DONE ->
+            Icon(
+                Icons.Rounded.Check,
+                contentDescription = null,
+                modifier = Modifier.size(13.dp),
+                tint = cs.primary
+            )
+        WorkflowStepState.ERROR ->
+            Icon(
+                Icons.Outlined.AutoAwesome,
+                contentDescription = null,
+                modifier = Modifier.size(13.dp),
+                tint = cs.error
+            )
+    }
+}
+
+private fun Modifier.androidx_border_compat(color: Color) =
+    this.then(
+        Modifier.drawBehind {
+            drawRect(
+                color = color,
+                size = size,
+                style = Stroke(width = 0.5.dp.toPx())
+            )
+        }
+    )
+
+@Composable
+private fun EmptyChatHint() {
+    val cs = MaterialTheme.colorScheme
+    Column(
+        Modifier.fillMaxWidth().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            Modifier
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(cs.surface),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Outlined.AutoAwesome,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = cs.primary
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(
+            "和 DeepSeek 说点什么",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+            color = cs.onSurface
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "在底部聊天栏的模型胶囊里可以切换模型与思考模式；点 🎤 可以语音输入。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = cs.onSurfaceVariant
+        )
+    }
+}
+
+// =====================================================================
+// Context-stats popup — bounds morph from the ring's CONTEXT_STATS_KEY
+// =====================================================================
+
+private const val CACHE_DETAILS_KEY = "biji-cache-details"
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun ContextStatsPopup(
+    usage: ContextUsage,
+    model: String,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope,
+    onUsedRowClick: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val sharedMod = if (sharedTransitionScope != null) {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key = CONTEXT_STATS_KEY),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(160)),
+                resizeMode = androidx.compose.animation.SharedTransitionScope
+                    .ResizeMode.RemeasureToBounds
+            )
+        }
+    } else Modifier
+    Box(
+        Modifier.fillMaxSize().statusBarsPadding().padding(16.dp),
+        contentAlignment = Alignment.TopEnd
+    ) {
+        Column(
+            modifier = sharedMod
+                // Fixed width so both context-stats popups share the
+                // exact same right-edge anchor and visual silhouette.
+                .width(340.dp)
+                .clip(RoundedCornerShape(28.dp))
+                .background(cs.surface)
+                .pointerInput(Unit) {
+                    // Swallow taps so the scrim's tap-to-dismiss doesn't
+                    // fire when the user touches the popup card.
+                    detectTapGestures { /* eat */ }
+                }
+                .padding(20.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(56.dp)
+                        .clip(CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Canvas(Modifier.size(48.dp)) {
+                        val stroke = 4.dp.toPx()
+                        val gapDp = 4.dp.toPx()
+                        val radius = (size.minDimension - stroke) / 2f
+                        val gapDeg = (gapDp / radius) * (180f / Math.PI.toFloat())
+                        val warn = usage.fraction > 0.78f
+                        val activeColor = if (warn) cs.error else cs.primary
+                        val trackColor = cs.outline.copy(alpha = 0.55f)
+                        val used = (usage.fraction * 360f).coerceIn(0f, 360f)
+                        if (used > 0.5f) drawArc(
+                            color = activeColor,
+                            startAngle = -90f, sweepAngle = used,
+                            useCenter = false,
+                            style = Stroke(width = stroke, cap = StrokeCap.Round)
+                        )
+                        val trackStart = -90f + used + gapDeg
+                        val trackSweep = 360f - used - gapDeg * 2
+                        if (trackSweep > 0.5f) drawArc(
+                            color = trackColor,
+                            startAngle = trackStart, sweepAngle = trackSweep,
+                            useCenter = false,
+                            style = Stroke(width = stroke, cap = StrokeCap.Round)
+                        )
+                    }
+                    Text(
+                        formatPercent(usage.fraction),
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = cs.onSurface
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        "上下文用量",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = cs.onSurface,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        model.removePrefix("deepseek-"),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            // "已用 token" row is itself a shared element — tap to expand
+            // into the cache-breakdown card.
+            val usedRowMod = if (sharedTransitionScope != null) {
+                with(sharedTransitionScope) {
+                    Modifier.sharedBounds(
+                        rememberSharedContentState(key = CACHE_DETAILS_KEY),
+                        animatedVisibilityScope = animatedVisibilityScope,
+                        enter = fadeIn(tween(200)),
+                        exit = fadeOut(tween(140)),
+                        resizeMode = androidx.compose.animation.SharedTransitionScope
+                            .ResizeMode.RemeasureToBounds
+                    )
+                }
+            } else Modifier
+            Row(
+                modifier = usedRowMod
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .bouncyClickable(pressedScale = 0.985f, onClick = onUsedRowClick)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "已用 token",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    formatTokens(usage.tokens),
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    ),
+                    color = cs.onSurface,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = cs.onSurfaceVariant
+                )
+            }
+            StatsRow(label = "上下文窗口", value = formatTokens(usage.limit))
+            StatsRow(
+                label = "剩余预算",
+                value = formatTokens((usage.limit - usage.tokens).coerceAtLeast(0L))
+            )
+            Spacer(Modifier.height(14.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(50))
+                    .background(cs.primary)
+                    .bouncyClickable(pressedScale = 0.97f, onClick = onDismiss)
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "好",
+                    color = cs.onPrimary,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatsRow(label: String, value: String) {
+    val cs = MaterialTheme.colorScheme
+    // Match the clickable "已用 token >" row's geometry so every value
+    // column lands at the same right-edge x: same horizontal padding
+    // (10 dp), same vertical padding (8 dp), and a 22-dp trailing
+    // phantom space (16 dp chevron + 6 dp pre-spacer) the clickable
+    // row reserves. Without this the chevron-bearing row shoved its
+    // value left while the rest stayed right-aligned.
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = cs.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.titleMedium.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+            color = cs.onSurface,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.width(22.dp))
+    }
+}
+
+private fun formatTokens(n: Long): String =
+    when {
+        n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
+        n >= 1_000 -> "%.1fK".format(n / 1_000.0)
+        else -> n.toString()
+    }
+
+/**
+ * Compact percentage display. Renders `<1%` when there's some
+ * non-zero usage that would otherwise round down to `0%` — keeps the
+ * UX honest about "you have used *some* of the context window" even
+ * when the integer-percent rounds to nothing. With [withSign] the
+ * percent suffix is appended.
+ */
+private fun formatPercent(fraction: Float, withSign: Boolean = true): String {
+    val pct = (fraction * 100).toInt()
+    val core = when {
+        fraction <= 0f -> "0"
+        pct <= 0 -> "<1"
+        else -> "$pct"
+    }
+    return if (withSign) "$core%" else core
+}
+
+// =====================================================================
+// Cache-details popup — second-level shared element from the
+// "已用 token" row of the context-stats card.
+// =====================================================================
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun CacheDetailsPopup(
+    usage: ContextUsage,
+    details: UsageDetails,
+    sessionSpent: Long,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope,
+    onBack: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val sharedMod = if (sharedTransitionScope != null) {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key = CACHE_DETAILS_KEY),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(160)),
+                resizeMode = androidx.compose.animation.SharedTransitionScope
+                    .ResizeMode.RemeasureToBounds
+            )
+        }
+    } else Modifier
+
+    val totalCacheHitMiss = (details.cacheHit + details.cacheMiss).coerceAtLeast(1L)
+    val hitFraction = details.cacheHit.toFloat() / totalCacheHitMiss
+
+    Box(
+        Modifier.fillMaxSize().statusBarsPadding().padding(16.dp),
+        contentAlignment = Alignment.TopEnd
+    ) {
+        Column(
+            modifier = sharedMod
+                // Fixed width so both context-stats popups share the
+                // exact same right-edge anchor and visual silhouette.
+                .width(340.dp)
+                .clip(RoundedCornerShape(28.dp))
+                .background(cs.surface)
+                .pointerInput(Unit) { detectTapGestures { /* eat */ } }
+                .padding(20.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .bouncyClickable(pressedScale = 0.9f, onClick = onBack),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = "返回",
+                        modifier = Modifier.size(18.dp),
+                        tint = cs.onSurface
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Token 缓存命中",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = cs.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    formatPercent(hitFraction),
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = if (hitFraction > 0.5f) cs.primary else cs.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            // Visual hit / miss split bar.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(10.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(cs.surfaceContainerHighest)
+            ) {
+                if (details.cacheHit > 0) {
+                    Box(
+                        Modifier
+                            .weight(details.cacheHit.toFloat().coerceAtLeast(0.001f))
+                            .fillMaxHeight()
+                            .background(cs.primary)
+                    )
+                }
+                if (details.cacheMiss > 0) {
+                    Box(
+                        Modifier
+                            .weight(details.cacheMiss.toFloat().coerceAtLeast(0.001f))
+                            .fillMaxHeight()
+                            .background(cs.outline.copy(alpha = 0.5f))
+                    )
+                }
+                if (details.cacheHit == 0L && details.cacheMiss == 0L) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(cs.surfaceContainerHighest)
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            StatsRow(label = "缓存命中", value = formatTokens(details.cacheHit))
+            StatsRow(label = "缓存未命中", value = formatTokens(details.cacheMiss))
+            StatsRow(label = "Prompt tokens", value = formatTokens(details.prompt))
+            StatsRow(label = "Completion tokens", value = formatTokens(details.completion))
+            StatsRow(label = "本次请求总计", value = formatTokens(details.total))
+            StatsRow(label = "上下文占用", value = formatTokens(usage.tokens))
+            StatsRow(label = "本会话累计", value = formatTokens(sessionSpent))
+            Spacer(Modifier.height(14.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(50))
+                    .background(cs.primary)
+                    .bouncyClickable(pressedScale = 0.97f, onClick = onBack)
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "返回",
+                    color = cs.onPrimary,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+// =====================================================================
+// Model-picker popup — bounds morph from the composer model chip
+// =====================================================================
+
+private const val MODEL_PICKER_KEY = "biji-model-picker"
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun ModelPickerPopup(
+    models: List<String>,
+    loading: Boolean,
+    error: String?,
+    currentModel: String,
+    convoThinking: Boolean,
+    onPick: (String) -> Unit,
+    onToggleThinking: (Boolean) -> Unit,
+    onRefresh: () -> Unit,
+    onDismiss: () -> Unit,
+    sharedTransitionScope: androidx.compose.animation.SharedTransitionScope?,
+    animatedVisibilityScope: androidx.compose.animation.AnimatedVisibilityScope
+) {
+    val cs = MaterialTheme.colorScheme
+    val sharedMod = if (sharedTransitionScope != null) {
+        with(sharedTransitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key = MODEL_PICKER_KEY),
+                animatedVisibilityScope = animatedVisibilityScope,
+                enter = fadeIn(tween(240)),
+                exit = fadeOut(tween(160)),
+                resizeMode = androidx.compose.animation.SharedTransitionScope
+                    .ResizeMode.RemeasureToBounds
+            )
+        }
+    } else Modifier
+    val all = (listOf(com.biji.notes.data.MODEL_CHAT, com.biji.notes.data.MODEL_REASONER) + models).distinct()
+    Box(
+        Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 90.dp),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Column(
+            modifier = sharedMod
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(28.dp))
+                .background(cs.surface)
+                .pointerInput(Unit) {
+                    detectTapGestures { /* eat */ }
+                }
+                .padding(16.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "选择模型",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = cs.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .bouncyClickable(onClick = onRefresh)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = cs.primary
+                        )
+                    } else {
+                        Icon(
+                            Icons.Rounded.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = cs.primary
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "刷新",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(cs.surfaceContainer)
+                    .bouncyClickable(pressedScale = 0.99f) { onToggleThinking(!convoThinking) }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Outlined.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = cs.primary
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "本对话 · 深度思考",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = cs.onSurface,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        if (convoThinking) "已开启 <think> 提示" else "未开启",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = convoThinking,
+                    onCheckedChange = onToggleThinking,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = cs.primary,
+                        uncheckedThumbColor = Color.White,
+                        uncheckedTrackColor = cs.surfaceContainerHighest,
+                        checkedBorderColor = Color.Transparent,
+                        uncheckedBorderColor = Color.Transparent
+                    )
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            // Scrollable model list — cap height so the popup doesn't
+            // grow past the screen on long lists.
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 260.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                all.forEach { id ->
+                    val selected = id == currentModel
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .bouncyClickable(pressedScale = 0.985f) { onPick(id) }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            id,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = cs.onSurface,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (selected) {
+                            Icon(
+                                Icons.Rounded.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = cs.primary
+                            )
+                        }
+                    }
+                }
+                error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text("拉取失败：$it", style = MaterialTheme.typography.labelLarge, color = cs.error)
+                }
+            }
+        }
+    }
+}
