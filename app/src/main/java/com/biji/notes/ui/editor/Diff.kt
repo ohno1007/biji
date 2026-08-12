@@ -46,6 +46,22 @@ internal fun nearChange(lines: List<DiffLine>, index: Int, window: Int = 2): Boo
  * Myers refinement, just produce a readable +/- view.
  */
 internal fun lineDiff(before: String, after: String): List<DiffLine> {
+    // C++ 版走 Myers O(ND)。下面这套 Kotlin 实现是 O(n*m) DP —— 4000 行
+    // 就要 64 MB 的 dp 数组、约 390 ms（实测外推），再大直接 OOM。
+    if (com.biji.notes.nativebridge.NativeGate.text) {
+        com.biji.notes.nativebridge.NativeText.lineDiff(before, after)?.let { nd ->
+            val out = ArrayList<DiffLine>(nd.size)
+            for (i in 0 until nd.size) {
+                val t = when (nd.typeAt(i)) {
+                    com.biji.notes.nativebridge.NativeText.OP_ADDED -> DiffType.ADDED
+                    com.biji.notes.nativebridge.NativeText.OP_REMOVED -> DiffType.REMOVED
+                    else -> DiffType.COMMON
+                }
+                out.add(DiffLine(t, nd.textAt(i)))
+            }
+            return out
+        }
+    }
     val a = before.split("\n")
     val b = after.split("\n")
     val n = a.size

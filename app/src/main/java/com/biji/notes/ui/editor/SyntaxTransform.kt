@@ -75,6 +75,10 @@ class SyntaxVisualTransformation(
  */
 internal fun findSyntaxIssues(text: String): List<IntRange> {
     if (text.isEmpty()) return emptyList()
+    // C++ 版是同一套状态机，返回的 offset 同样是 UTF-16 下标。
+    if (com.biji.notes.nativebridge.NativeGate.text) {
+        com.biji.notes.nativebridge.NativeText.syntaxIssues(text)?.let { return it }
+    }
     val out = mutableListOf<IntRange>()
     val stack = ArrayDeque<Pair<Char, Int>>()
     val opens = mapOf('(' to ')', '[' to ']', '{' to '}')
