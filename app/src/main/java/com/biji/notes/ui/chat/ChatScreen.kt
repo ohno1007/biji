@@ -133,6 +133,11 @@ import kotlinx.coroutines.launch
 const val DOCK_SHARED_KEY = "biji-bottom-dock"
 
 /** A single visible row in the chat log. */
+/** 标 @Immutable 是必须的：SearchGroup / SandboxTool 里带
+ *  List<Message>，List 是接口类型，Compose 编译器只能保守地判定
+ *  为 unstable —— 结果是列表里每一项每次重组都要重新执行，哪怕
+ *  只有最后一条消息在变。这些对象构造后确实不会再改。 */
+@androidx.compose.runtime.Immutable
 sealed interface ChatItem {
     val key: Any
     data class Plain(val message: Message) : ChatItem {
@@ -168,6 +173,48 @@ sealed interface ChatItem {
  * read_url and other non-search tool results are dropped — the article
  * body is already folded into the next assistant answer.
  */
+/**
+ * 取 tool 结果的 `kind`。
+ *
+ * 这里值得单独拎出来：一条 run_shell_command 的 toolData 可能有几十 KB
+ * 的 stdout，为了读一个十几字符的字段去 parse 整棵 JSON 树太亏 —— 流式
+ * 输出期间 groupChatItems 每 90 ms 就要把全表走一遍，实测这一处能吃掉
+ * 将近半个核。
+ *
+ * 两层优化：按 message id 缓存（tool 结果写进去就不再改），未命中时先
+ * 试字符串快路径（我们自己生成的 payload 里 `kind` 一定是第一个键），
+ * 只有历史遗留格式才会退回完整 parse。
+ *
+ * 只在组合期（主线程）调用，不加锁。
+ */
+private val toolKindCache =
+    object : LinkedHashMap<Long, Pair<Int, String?>>(64, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<Long, Pair<Int, String?>>
+        ): Boolean = size > 256
+    }
+
+private fun toolKindOf(m: Message): String? {
+    if (m.kind != MessageKind.TOOL_RESULT) return null
+    val raw = m.toolData ?: return null
+    toolKindCache[m.id]?.let { (len, kind) -> if (len == raw.length) return kind }
+    val kind = scanToolKind(raw)
+    toolKindCache[m.id] = raw.length to kind
+    return kind
+}
+
+private const val KIND_HEAD = "{\"kind\":\""
+
+private fun scanToolKind(raw: String): String? {
+    if (raw.startsWith(KIND_HEAD)) {
+        val end = raw.indexOf('"', KIND_HEAD.length)
+        if (end > KIND_HEAD.length) return raw.substring(KIND_HEAD.length, end)
+    }
+    return runCatching {
+        Lite.parseToJsonElement(raw).jsonObject["kind"]?.jsonPrimitive?.contentOrNull
+    }.getOrNull()
+}
+
 internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
     val out = mutableListOf<ChatItem>()
     val searchBuf = mutableListOf<Message>()
@@ -186,15 +233,16 @@ internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
     }
     for (m in messages) {
         if (m.archived) continue
-        val toolKind = if (m.kind == MessageKind.TOOL_RESULT) runCatching {
-            Lite.parseToJsonElement(m.toolData.orEmpty())
-                .jsonObject["kind"]?.jsonPrimitive?.contentOrNull
-        }.getOrNull() else null
+        val toolKind = toolKindOf(m)
         val isSearch = toolKind == Tools.WEB_SEARCH
         val isSandbox = toolKind == Tools.LIST_DIRECTORY ||
             toolKind == Tools.READ_FILE ||
             toolKind == Tools.WRITE_FILE ||
-            toolKind == Tools.RUN_SHELL
+            toolKind == Tools.RUN_SHELL ||
+            toolKind == Tools.CONTAINER_EXEC ||
+            toolKind == Tools.CONTAINER_TASK ||
+            toolKind == Tools.CONTAINER_INFO ||
+            toolKind == Tools.CONTAINER_MANAGE
         val isHiddenTool = m.kind == MessageKind.TOOL_RESULT && !isSearch && !isSandbox
         val isReasoningOnlyCarrier = m.role == Role.ASSISTANT &&
             !m.reasoning.isNullOrBlank() && m.content.isBlank()
@@ -330,6 +378,16 @@ fun ChatScreen(
     var workflowPanelHeight by remember { mutableStateOf(0.dp) }
     val dockReserve = workflowPanelHeight + 8.dp
 
+    // 方法引用在每次重组都会新建一个实例，作为参数传下去会让接收
+    // 它的 composable 全部失去跳过资格。记住一份。
+    val stableOpenUrl = remember(vm) { { url: String -> vm.openWebUrl(url) } }
+
+    // 分组只跟消息列表有关。放在 LazyColumn 的 content lambda 里
+    // 会随每次重组（流式输出时每秒几十次）重算整张列表。
+    val renderedItems = remember(messages) {
+        runCatching { groupChatItems(messages) }.getOrElse { emptyList() }
+    }
+
     Box(Modifier.fillMaxSize().imePadding()) {
         LazyColumn(
             state = listState,
@@ -344,16 +402,14 @@ fun ChatScreen(
             if (messages.isEmpty()) {
                 item { EmptyChatHint() }
             } else {
-                val rendered = runCatching { groupChatItems(messages) }
-                    .getOrElse { emptyList() }
-                items(rendered, key = { it.key }) { item ->
+                items(renderedItems, key = { it.key }) { item ->
                     when (item) {
                         is ChatItem.Plain ->
-                            MessageItem(m = item.message, onOpenUrl = vm::openWebUrl)
+                            MessageItem(m = item.message, onOpenUrl = stableOpenUrl)
                         is ChatItem.SearchGroup -> {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 item.messages.forEach { m ->
-                                    SearchedForChip(message = m, onOpenUrl = vm::openWebUrl)
+                                    SearchedForChip(message = m, onOpenUrl = stableOpenUrl)
                                 }
                             }
                         }
@@ -1136,7 +1192,7 @@ private fun AssistantBlock(m: Message, onOpenUrl: (String) -> Unit = {}) {
             // leakage of raw `<||DSML|| tool_calls>` / `<|tool_call|>`
             // XML-ish markup that some proxies emit when their tool
             // routing fails.
-            val cleaned = stripToolCallMarkup(m.content)
+            val cleaned = remember(m.content) { stripToolCallMarkup(m.content) }
             if (cleaned.isNotBlank()) {
                 MarkdownText(markdown = cleaned, onOpenUrl = onOpenUrl)
             }
@@ -1150,19 +1206,29 @@ private fun AssistantBlock(m: Message, onOpenUrl: (String) -> Unit = {}) {
  * try to *execute* these — just hide them from the rendered output so
  * the user sees the clean prose, not a wall of pseudo-XML.
  */
+// 这四条正则原来写在函数体里，每次调用都要重新编译一遍 —— 流式
+// 输出时这个函数每 90ms 对全文跑一次，编译开销比匹配还大。提到
+// 顶层只编译一次。
+private val ToolMarkupClosed =
+    Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*?</\\|\\|[A-Za-z]+\\|\\|[^>]*>")
+private val ToolMarkupClosedAlt =
+    Regex("<\\|tool_calls?\\|>[\\s\\S]*?</\\|tool_calls?\\|>")
+private val ToolMarkupOpen = Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*$")
+private val ToolMarkupOpenAlt = Regex("<\\|tool_calls?\\|>[\\s\\S]*$")
+
 internal fun stripToolCallMarkup(raw: String): String {
+    // 绝大多数消息里根本没有这种标记，先做一次廉价的 contains 判断，
+    // 命中不了就直接返回，省掉四遍全文正则扫描。
+    if (!raw.contains("<|")) return raw.trim()
     var s = raw
-    // Closed `<||TAG|| ...>...</||TAG|| ...>` blocks.
-    s = Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*?</\\|\\|[A-Za-z]+\\|\\|[^>]*>")
-        .replace(s, "")
-    // `<|tool_call|>...</|tool_call|>` (gpt / qwen style).
-    s = Regex("<\\|tool_calls?\\|>[\\s\\S]*?</\\|tool_calls?\\|>").replace(s, "")
+    s = ToolMarkupClosed.replace(s, "")
+    s = ToolMarkupClosedAlt.replace(s, "")
     // Mid-stream half-open `<||TAG|| ...` runs we never matched — drop
     // everything from the open marker to the end of the string so the
     // partial markup doesn't bleed into the rendered text while the
     // model is still typing.
-    s = Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*$").replace(s, "")
-    s = Regex("<\\|tool_calls?\\|>[\\s\\S]*$").replace(s, "")
+    s = ToolMarkupOpen.replace(s, "")
+    s = ToolMarkupOpenAlt.replace(s, "")
     return s.trim()
 }
 
