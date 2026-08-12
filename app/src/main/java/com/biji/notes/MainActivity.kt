@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity() {
                         sandbox = app.localSandbox,
                         bootstrap = app.bootstrap,
                         pkg = app.pkg,
+                        containers = app.aiContainers,
                         isForeground = app::isForeground
                     )
                 )
