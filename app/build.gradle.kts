@@ -23,6 +23,9 @@ android {
         // Vosk / JNA 各带 4 个 ABI 的 .so，占了 APK 45 MB 以上。
         // 现役设备基本都是 arm64，只保留它，包体直接砍到 ~20 MB。
         ndk { abiFilters += listOf("arm64-v8a") }
+        externalNativeBuild {
+            cmake { cppFlags += "-std=c++17" }
+        }
     }
 
     buildTypes {
@@ -34,8 +37,15 @@ android {
             )
         }
         debug {
-            // 语音模型是运行时下载的，调试包也不需要额外 native 变体
-            isMinifyEnabled = false
+            // 纯 shrink（-dontobfuscate）：debug 包的 classes.dex 有 44 MB，
+            // 大半是 material-icons-extended 里没用到的图标类。只删死代码、
+            // 不改名，反射按名字找类的地方不受影响。
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 
@@ -44,6 +54,15 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    // Telegram 那套思路：算法密集、每帧都跑的东西下沉到 C++，
+    // Kotlin 只留 UI 和编排。native 挂了就自动退回 Kotlin 实现。
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 
     buildFeatures {
         compose = true
