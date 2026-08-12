@@ -55,6 +55,7 @@ import com.biji.notes.ui.glass.bouncyClickable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -269,7 +270,7 @@ fun SandboxToolCard(message: Message) {
                 // run_shell_command → render a high-contrast terminal
                 // view (bold prompt, dim metadata, red stderr / non-
                 // zero exit) instead of the flat monospace dump.
-                if (kind == "run_shell_command") {
+                if (kind == "run_shell_command" || kind == "container_exec") {
                     TerminalView(data)
                     return@Column
                 }
@@ -444,12 +445,132 @@ private fun describeSandboxImpl(kind: String, data: JsonObject): SandboxPreview 
             body = body
         )
     }
+    // container_exec 走 TerminalView，不会落到这里；这个分支只在展开前
+    // 的头部摘要里用得上。
+    "container_exec" -> SandboxPreview(
+        icon = Icons.Outlined.Terminal,
+        header = "容器命令",
+        primaryLine = data.str("command").orEmpty(),
+        body = data.str("stdout").orEmpty()
+    )
+    "container_task" -> {
+        val action = data.str("action").orEmpty()
+        val id = data.str("taskId").orEmpty()
+        val state = data.str("state").orEmpty()
+        when (action) {
+            "start" -> SandboxPreview(
+                icon = Icons.Outlined.Terminal,
+                header = "后台任务已启动",
+                primaryLine = data.str("command").orEmpty(),
+                body = buildString {
+                    appendLine("task_id=$id  pid=${data.int("pid") ?: -1}  $state")
+                    data.str("error")?.let { appendLine("错误: $it") }
+                    data.str("headOutput")?.takeIf { it.isNotBlank() }?.let { append(it) }
+                }
+            )
+            "poll" -> SandboxPreview(
+                icon = Icons.Outlined.Terminal,
+                header = "任务输出",
+                primaryLine = "$id  $state  ${data.long("durationMs") ?: 0L}ms",
+                body = buildString {
+                    data.str("stdout")?.takeIf { it.isNotBlank() }?.let {
+                        append(it); if (!it.endsWith("\n")) appendLine()
+                    }
+                    data.str("stderr")?.takeIf { it.isNotBlank() }?.let {
+                        appendLine("--- stderr ---"); append(it)
+                    }
+                }
+            )
+            "stop" -> SandboxPreview(
+                icon = Icons.Outlined.Terminal,
+                header = "任务已停止",
+                primaryLine = "$id  $state",
+                body = "已终止整棵进程树。"
+            )
+            else -> {
+                val tasks = data["tasks"] as? JsonArray
+                SandboxPreview(
+                    icon = Icons.Outlined.Terminal,
+                    header = "后台任务",
+                    primaryLine = "${tasks?.size ?: 0} 个",
+                    body = buildString {
+                        tasks?.forEach { el ->
+                            val o = (el as? JsonObject) ?: return@forEach
+                            appendLine("${o.str("taskId")}  ${o.str("state")}  ${o.str("command").orEmpty().take(80)}")
+                        }
+                        if (tasks.isNullOrEmpty()) appendLine("（没有任务）")
+                    }
+                )
+            }
+        }
+    }
+    "container_info" -> {
+        val cmds = (data["commands"] as? JsonArray)?.mapNotNull {
+            (it as? JsonPrimitive)?.contentOrNull
+        }.orEmpty()
+        SandboxPreview(
+            icon = Icons.Outlined.FolderOpen,
+            header = "容器状态",
+            primaryLine = data.str("root").orEmpty(),
+            body = buildString {
+                appendLine("work  ${data.str("workDir")}  (${data.int("workEntries") ?: 0} 项 / ${bytesLabel(data.long("workBytes") ?: 0L)})")
+                appendLine("tmp   ${data.str("tmpDir")}  (${bytesLabel(data.long("tmpBytes") ?: 0L)})")
+                appendLine("bin   ${data.str("binDir")}")
+                appendLine("exec  ${data.str("execDir")}")
+                appendLine("剩余空间 ${bytesLabel(data.long("freeDiskBytes") ?: 0L)}")
+                appendLine(
+                    if (data.bool("sessionAlive") == true)
+                        "shell 运行中 pid=${data.int("sessionPid") ?: -1} cwd=${data.str("sessionCwd")}"
+                    else "shell 未启动"
+                )
+                appendLine("命令 (${cmds.size}): ${cmds.joinToString(" ")}")
+            }
+        )
+    }
+    "container_manage" -> {
+        val action = data.str("action").orEmpty()
+        val header = when (action) {
+            "init" -> "容器初始化"
+            "reset" -> "容器重置"
+            "restart_session" -> "重启 shell"
+            "close_session" -> "关闭 shell"
+            else -> "容器管理"
+        }
+        SandboxPreview(
+            icon = Icons.Outlined.FolderOpen,
+            header = header,
+            primaryLine = data.str("root") ?: data.str("cwd").orEmpty(),
+            body = buildString {
+                data.str("error")?.let { appendLine("错误: $it") }
+                (data["created"] as? JsonArray)?.takeIf { it.isNotEmpty() }?.let { arr ->
+                    appendLine("新建: " + arr.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.joinToString(", "))
+                }
+                (data["skipped"] as? JsonArray)?.takeIf { it.isNotEmpty() }?.let { arr ->
+                    appendLine("已存在: " + arr.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.joinToString(", "))
+                }
+                data.int("deletedEntries")?.let {
+                    appendLine("删除 $it 项 / 释放 ${bytesLabel(data.long("freedBytes") ?: 0L)}")
+                    appendLine("停止 ${data.int("stoppedTasks") ?: 0} 个任务，保留 ${data.int("keptCommands") ?: 0} 个已装命令")
+                }
+                data.bool("alive")?.let {
+                    appendLine(if (it) "shell 运行中 pid=${data.int("pid") ?: -1}" else "shell 已关闭")
+                }
+            }
+        )
+    }
     else -> SandboxPreview(
         icon = Icons.Outlined.Description,
         header = "工具结果",
         primaryLine = "",
         body = data.toString()
     )
+}
+
+private fun bytesLabel(bytes: Long): String = when {
+    bytes >= 1L shl 30 -> String.format("%.1f GB", bytes / (1L shl 30).toDouble())
+    bytes >= 1L shl 20 -> String.format("%.1f MB", bytes / (1L shl 20).toDouble())
+    bytes >= 1024 -> String.format("%.1f KB", bytes / 1024.0)
+    else -> "$bytes B"
 }
 
 /**
