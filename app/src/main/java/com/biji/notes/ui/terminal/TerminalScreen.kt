@@ -32,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -60,6 +61,15 @@ import com.biji.notes.sandbox.LocalSandbox
 import com.biji.notes.ui.glass.bouncyClickable
 import kotlinx.coroutines.launch
 
+/** 终端一行。id 稳定，给 LazyColumn 当 key —— 没有 key 的话高速
+ *  输出时 Compose 每次都要重新匹配整张列表。 */
+private data class TermLine(val id: Long, val text: String, val isErr: Boolean)
+
+/** 输出批量刷新间隔。shell 一个 chunk 可能只有几个字符，逐条推给
+ *  UI 会让 LazyColumn 每秒重组几百次。 */
+private const val FLUSH_MS = 50L
+private const val MAX_LINES = 4000
+
 // Termux-style palette: black bg, green prompt, white default, red stderr.
 private val TermBg = Color(0xFF000000)
 private val TermFg = Color(0xFFE6E6E6)
@@ -82,28 +92,56 @@ fun TerminalScreen(
         listOf(bootstrap.binDir.absolutePath)
     }
     val shell = remember(workDir) { InteractiveShell(workDir, extraPath, scope) }
-    val lines = remember { mutableStateListOf<InteractiveShell.Chunk>() }
+    val lines = remember { mutableStateListOf<TermLine>() }
+    // shell 线程往这里塞，UI 侧定时批量取 —— 两边不争锁。
+    val pending = remember { java.util.concurrent.ConcurrentLinkedQueue<TermLine>() }
+    val nextId = remember { java.util.concurrent.atomic.AtomicLong(0L) }
+    // 整个输出区共用一条横向滚动，而不是每行一个 state（4000 行就是
+    // 4000 个 state），顺带修了"每行各滚各的"这个怪行为。
+    val hScroll = rememberScrollState()
     var input by remember { mutableStateOf(TextFieldValue("")) }
     val listState = rememberLazyListState()
     // 命令历史 + 当前游标（-1 表示「不在历史里」）。
     val history = remember { mutableStateListOf<String>() }
     var histPos by remember { mutableStateOf(-1) }
 
+    // 用户手动上滚后就别再抢着往下拽；回到底部自动恢复跟随。
+    val following by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            last >= info.totalItemsCount - 2
+        }
+    }
+
     LaunchedEffect(shell) {
         shell.start()
         shell.output.collect { chunk ->
             val pieces = chunk.text.split('\n')
-            pieces.forEachIndexed { i, piece ->
-                val withNl = if (i < pieces.size - 1) piece + "\n" else piece
+            for (i in pieces.indices) {
+                val withNl = if (i < pieces.size - 1) pieces[i] + "\n" else pieces[i]
                 if (withNl.isNotEmpty()) {
-                    lines += InteractiveShell.Chunk(withNl, chunk.isStderr)
+                    pending.add(TermLine(nextId.getAndIncrement(), withNl, chunk.isStderr))
                 }
             }
-            while (lines.size > 4000) lines.removeAt(0)
         }
     }
-    LaunchedEffect(lines.size) {
-        if (lines.isNotEmpty()) listState.animateScrollToItem(lines.size - 1)
+    // 批量刷新：50ms 一次，把攒下的行一次性并进列表。裁剪用
+    // removeRange 一刀切，逐个 removeAt(0) 在 4000 行时是 O(n²)。
+    LaunchedEffect(shell) {
+        while (true) {
+            kotlinx.coroutines.delay(FLUSH_MS)
+            if (pending.isEmpty()) continue
+            val batch = ArrayList<TermLine>(pending.size)
+            while (true) { val x = pending.poll() ?: break; batch.add(x) }
+            if (batch.isEmpty()) continue
+            val wasFollowing = following
+            lines.addAll(batch)
+            if (lines.size > MAX_LINES) lines.removeRange(0, lines.size - MAX_LINES)
+            // 高频输出时不要用 animateScrollToItem：动画会互相打断，
+            // 每帧都在跑插值，比直接跳贵得多。
+            if (wasFollowing && lines.isNotEmpty()) listState.scrollToItem(lines.size - 1)
+        }
     }
     DisposableEffect(shell) {
         onDispose { shell.shutdown() }
@@ -123,6 +161,7 @@ fun TerminalScreen(
                 onRestart = {
                     shell.shutdown()
                     lines.clear()
+                    pending.clear()
                     scope.launch { shell.start() }
                 }
             )
@@ -135,14 +174,13 @@ fun TerminalScreen(
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.Top
             ) {
-                items(lines.toList()) { chunk ->
-                    val hScroll = rememberScrollState()
+                items(lines, key = { it.id }) { line ->
                     Box(
                         Modifier
                             .fillMaxWidth()
                             .horizontalScroll(hScroll)
                     ) {
-                        TerminalLine(chunk)
+                        TerminalLine(line.text, line.isErr)
                     }
                 }
             }
@@ -256,11 +294,10 @@ private fun TerminalIconBtn(
 }
 
 @Composable
-private fun TerminalLine(chunk: InteractiveShell.Chunk) {
-    val text = chunk.text
-    val rendered = remember(text, chunk.isStderr) {
+private fun TerminalLine(text: String, isErr: Boolean) {
+    val rendered = remember(text, isErr) {
         when {
-            chunk.isStderr -> AnnotatedString(text, SpanStyle(color = TermErr))
+            isErr -> AnnotatedString(text, SpanStyle(color = TermErr))
             text.startsWith("$ ") -> buildAnnotatedString {
                 withStyle(SpanStyle(color = TermPrompt, fontWeight = FontWeight.Bold)) {
                     append("$ ")
