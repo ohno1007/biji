@@ -88,8 +88,8 @@ private sealed interface Block {
 
 private val FenceRegex = Regex("^```([\\w+-]*)\\s*$")
 private val MathFenceRegex = Regex("^\\$\\$\\s*$")
-private val LatexBlockOpen = Regex("^\\\\\\[\\s*$")
-private val LatexBlockClose = Regex("^\\\\]\\s*$")
+private val LatexBlockOpen = Regex("^\\\\\\\\\\\\[\\\\s*$")
+private val LatexBlockClose = Regex("^\\\\\\\\]\\\\s*$")
 private val HrRegex = Regex("^(-{3,}|_{3,}|\\*{3,})\\s*$")
 private val HeadingRegex = Regex("^(#{1,6})\\s+(.*)$")
 private val OrderedRegex = Regex("^(\\d+)\\.\\s+(.*)$")
@@ -104,9 +104,52 @@ private fun indentDepth(line: String): Int {
     return count / 2
 }
 
+/**
+ * 优先走 C++ 版（markdown_parser.cpp，与下面的 Kotlin 版逐行对齐、
+ * 差分对拍过 36 万篇随机文档）。native 不可用 / 输入超限 / 返回结构
+ * 不合法时整体降级到 [parseBlocks]。
+ *
+ * native 侧一个字符串都不跨 JNI —— 返回的全是原串上的 UTF-16 offset，
+ * 这里按需 substring。
+ */
+private fun parseBlocksFast(source: String): List<Block> {
+    if (!com.biji.notes.nativebridge.NativeGate.markdown) return parseBlocks(source)
+    val nb = com.biji.notes.nativebridge.NativeMarkdown.parseBlocks(source)
+        ?: return parseBlocks(source)
+    val out = ArrayList<Block>(nb.count)
+    for (i in 0 until nb.count) {
+        out += when (nb.type(i)) {
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_BLANK -> Block.Blank
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_DIVIDER -> Block.Divider
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_HEADING ->
+                Block.Heading(nb.arg0(i), nb.inlineText(i))
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_PARAGRAPH ->
+                Block.Paragraph(nb.paragraph(i))
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_BULLET ->
+                Block.BulletItem(nb.arg0(i), nb.inlineText(i))
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_TASK ->
+                Block.TaskItem(nb.arg0(i), nb.inlineText(i), nb.checked(i))
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_NUMBERED ->
+                Block.NumberedItem(nb.arg0(i), nb.arg1(i), nb.inlineText(i))
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_QUOTE ->
+                Block.Quote(nb.quoteLines(i))
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_CODE ->
+                Block.CodeBlock(nb.lang(i), nb.code(i))
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_MERMAID ->
+                Block.Mermaid(nb.body(i))
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_MATH ->
+                Block.MathBlock(nb.body(i))
+            com.biji.notes.nativebridge.NativeMarkdown.TYPE_TABLE ->
+                Block.Table(nb.tableHeader(i), nb.tableRows(i))
+            else -> return parseBlocks(source)
+        }
+    }
+    return out
+}
+
 private fun parseBlocks(source: String): List<Block> {
     val out = mutableListOf<Block>()
-    val lines = source.replace("\r\n", "\n").split("\n")
+    val lines = source.replace("\\r\\n", "\\n").split("\\n")
     var i = 0
     val orderedCounters = mutableMapOf<Int, Int>()
     while (i < lines.size) {
@@ -125,11 +168,11 @@ private fun parseBlocks(source: String): List<Block> {
                 buf.appendLine(lines[i]); i++
             }
             if (i < lines.size) i++
-            out += Block.MathBlock(buf.toString().trimEnd('\n'))
+            out += Block.MathBlock(buf.toString().trimEnd('\\n'))
             orderedCounters.clear(); continue
         }
-        // LaTeX-style block math: a line containing only `\[` opens, a
-        // line containing only `\]` closes. This is what the deepseek
+        // LaTeX-style block math: a line containing only `\\[` opens, a
+        // line containing only `\\]` closes. This is what the deepseek
         // models actually emit for display math.
         if (LatexBlockOpen.matches(trimmed)) {
             val buf = StringBuilder(); i++
@@ -137,10 +180,10 @@ private fun parseBlocks(source: String): List<Block> {
                 buf.appendLine(lines[i]); i++
             }
             if (i < lines.size) i++
-            out += Block.MathBlock(buf.toString().trimEnd('\n'))
+            out += Block.MathBlock(buf.toString().trimEnd('\\n'))
             orderedCounters.clear(); continue
         }
-        // Single-line `\[ … \]` shorthand — fall through to a paragraph
+        // Single-line `\\[ … \\]` shorthand — fall through to a paragraph
         // and let the inline math handler render it.
         val fence = FenceRegex.matchEntire(trimmed)
         if (fence != null) {
@@ -150,7 +193,7 @@ private fun parseBlocks(source: String): List<Block> {
                 buf.appendLine(lines[i]); i++
             }
             if (i < lines.size) i++
-            val body = buf.toString().trimEnd('\n')
+            val body = buf.toString().trimEnd('\\n')
             val isFlowSyntax = body.contains("=>") && body.contains("->")
             out += when {
                 lang.equals("mermaid", ignoreCase = true) -> Block.Mermaid(body)
@@ -214,7 +257,7 @@ private fun parseBlocks(source: String): List<Block> {
                 HrRegex.matches(nts) || OrderedRegex.matches(nts) ||
                 TablePipeRow.matches(nt)
             ) break
-            paraBuf.append('\n').append(nt); i++
+            paraBuf.append('\\n').append(nt); i++
         }
         out += Block.Paragraph(paraBuf.toString())
         orderedCounters.clear()
@@ -250,14 +293,14 @@ private fun inlineImpl(
     var i = 0
     val s = source
     while (i < s.length) {
-        if (s[i] == '\n') { append('\n'); i++; continue }
-        // LaTeX bracket math: `\(...\)` inline, `\[...\]` single-line
+        if (s[i] == '\\n') { append('\\n'); i++; continue }
+        // LaTeX bracket math: `\\(...\\)` inline, `\\[...\\]` single-line
         // block-style inline (the multi-line variant becomes a Block
         // up in parseBlocks). These are what most modern LLMs emit
         // for math, in preference to dollar-sign syntax.
-        if (i + 1 < s.length && s[i] == '\\' && (s[i + 1] == '(' || s[i + 1] == '[')) {
+        if (i + 1 < s.length && s[i] == '\\\\' && (s[i + 1] == '(' || s[i + 1] == '[')) {
             val isBlock = s[i + 1] == '['
-            val closer = if (isBlock) "\\]" else "\\)"
+            val closer = if (isBlock) "\\\\]" else "\\\\)"
             val end = s.indexOf(closer, i + 2)
             if (end != -1 && end > i + 2) {
                 val raw = s.substring(i + 2, end)
@@ -412,6 +455,12 @@ private fun inlineImpl(
 // underlying URL.
 // =====================================================================
 
+/** inline() 会跑一堆正则 + latexToUnicode，流式输出时每个 token 都
+ *  会触发重组 —— 不缓存的话 CPU 直接烧起来。 */
+@Composable
+private fun rememberInline(text: String, baseColor: Color, accent: Color) =
+    remember(text, baseColor, accent) { inline(text, baseColor, accent) }
+
 @Composable
 internal fun PillText(
     annotated: AnnotatedString,
@@ -519,7 +568,7 @@ fun MarkdownText(
     // of letting the whole chat composition crash and become unusable
     // forever — reopening the chat would just hit the same exception.
     val blocks = remember(markdown) {
-        runCatching { parseBlocks(markdown) }
+        runCatching { parseBlocksFast(markdown) }
             .getOrElse { listOf(Block.Paragraph(markdown)) }
     }
 
@@ -548,7 +597,7 @@ fun MarkdownText(
 @Composable
 private fun Paragraph(text: String, baseColor: Color, accent: Color, linkBg: Color, onOpenUrl: (String) -> Unit) {
     PillText(
-        annotated = inline(text, baseColor, accent),
+        annotated = rememberInline(text, baseColor, accent),
         style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 26.sp),
         color = baseColor,
         linkBg = linkBg,
@@ -581,7 +630,7 @@ private fun Heading(
     }
     Spacer(Modifier.height(if (level <= 2) 10.dp else 6.dp))
     PillText(
-        annotated = inline(text, baseColor, accent),
+        annotated = rememberInline(text, baseColor, accent),
         style = style.copy(fontWeight = FontWeight.Bold),
         color = baseColor,
         linkBg = linkBg,
@@ -608,7 +657,7 @@ private fun Bullet(
         }
         Spacer(Modifier.width(2.dp))
         PillText(
-            annotated = inline(text, baseColor, accent),
+            annotated = rememberInline(text, baseColor, accent),
             style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 24.sp),
             color = baseColor,
             linkBg = linkBg,
@@ -635,7 +684,7 @@ private fun Numbered(
             )
         }
         PillText(
-            annotated = inline(text, baseColor, accent),
+            annotated = rememberInline(text, baseColor, accent),
             style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 24.sp),
             color = baseColor,
             linkBg = linkBg,
@@ -661,7 +710,7 @@ private fun TaskItem(
         )
         Spacer(Modifier.width(8.dp))
         PillText(
-            annotated = inline(text, baseColor, accent),
+            annotated = rememberInline(text, baseColor, accent),
             style = MaterialTheme.typography.bodyLarge.copy(
                 textDecoration = if (checked) TextDecoration.LineThrough else null
             ),
@@ -693,7 +742,7 @@ private fun Quote(
         Column(Modifier.weight(1f)) {
             lines.forEach { l ->
                 PillText(
-                    annotated = inline(l, baseColor, accent),
+                    annotated = rememberInline(l, baseColor, accent),
                     style = MaterialTheme.typography.bodyLarge.copy(
                         fontStyle = FontStyle.Italic,
                         lineHeight = 24.sp
@@ -711,13 +760,19 @@ private fun Quote(
 private fun CodeBlock(lang: String, code: String, baseColor: Color, isDark: Boolean) {
     val cs = MaterialTheme.colorScheme
     val clipboard = LocalClipboardManager.current
-    var copied by remember(code) { mutableStateOf(false) }
-    // Long code blocks auto-collapse; the user can tap the chevron to
-    // expand. Short blocks stay open. Threshold of 12 lines mirrors
-    // what feels like a phone-screen sweet spot.
-    val isLong = remember(code) { code.count { it == '\n' } >= 12 }
-    var expanded by remember(code) { mutableStateOf(!isLong) }
-    var previewing by remember(code) { mutableStateOf(false) }
+    // 这几个 UI 状态原来拿整段 code 当 remember 的 key。流式输出时
+    // code 每次 flush 都在变长，状态就被反复重建 —— 超过 12 行的代码
+    // 块每秒被强制折叠十来次，用户根本没法看着它写完。改用「语言 +
+    // 前 64 个字符」当 key：追加内容时它不变，不同代码块之间又足够
+    // 区分，于是流式期间折叠/展开状态稳定保留。
+    val blockKey = remember(lang, code.take(64)) { lang + " " + code.take(64) }
+    var copied by remember(blockKey) { mutableStateOf(false) }
+    // 行数要跟着内容走：短块写着写着变长了，isLong 得能翻成 true。
+    val isLong = remember(code) { code.count { it == '\\n' } >= 12 }
+    // 初值只在 blockKey 变化时求一次 —— 短块流式写长之后仍然保持
+    // 展开，不会在用户眼皮底下自己收起来。
+    var expanded by remember(blockKey) { mutableStateOf(!isLong) }
+    var previewing by remember(blockKey) { mutableStateOf(false) }
     val langLower = lang.lowercase()
     val canPreview = langLower in setOf("html", "htm", "xml", "svg")
     LaunchedEffect(copied) {
@@ -758,7 +813,7 @@ private fun CodeBlock(lang: String, code: String, baseColor: Color, isDark: Bool
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                lang.ifBlank { "code" } + if (!expanded) "  ·  ${code.count { it == '\n' } + 1} 行" else "",
+                lang.ifBlank { "code" } + if (!expanded) "  ·  ${code.count { it == '\\n' } + 1} 行" else "",
                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                 color = baseColor.copy(alpha = 0.55f),
                 modifier = Modifier.weight(1f)
@@ -823,7 +878,7 @@ private fun CodeBlock(lang: String, code: String, baseColor: Color, isDark: Bool
                         .padding(horizontal = 12.dp, vertical = 10.dp)
                 ) {
                     Text(
-                        SyntaxHighlight.colorize(code, lang, isDark),
+                        remember(code, lang, isDark) { SyntaxHighlight.colorize(code, lang, isDark) },
                         fontFamily = FontFamily.Monospace,
                         fontSize = 13.sp,
                         color = baseColor
@@ -900,7 +955,7 @@ private fun CodeBlock(lang: String, code: String, baseColor: Color, isDark: Bool
 
 @Composable
 private fun MathBlockBox(source: String, baseColor: Color) {
-    val text = latexToUnicode(source).trim()
+    val text = remember(source) { latexToUnicode(source).trim() }
     Box(
         Modifier
             .fillMaxWidth()
@@ -1119,7 +1174,7 @@ private fun TableRow(
                 contentAlignment = Alignment.CenterStart
             ) {
                 PillText(
-                    annotated = inline(c, baseColor, accent),
+                    annotated = rememberInline(c, baseColor, accent),
                     style = if (isHeader)
                         MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
                     else
