@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -39,6 +40,22 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+
+/** 流式落库最小间隔（毫秒）。攒够这么久才写一次 DB，避免每个
+ *  token 触发一轮全列表重组。 */
+private const val STREAM_FLUSH_MS = 90L
+
+/** 开发者模式下附加的一段说明。不写这段的话模型会一直挑
+ *  run_shell_command —— 它每次 fork 新 sh，cd/export 全丢，多步流程必崩。 */
+private const val CONTAINER_BRIEF = """本会话有一个专属的本地容器（Android 用户态，无 root），优先用它做开发：
+
+- container_exec 跑在长驻 shell 里，cd / export / shell 函数 / source venv 都会保留到下一次调用；run_shell_command 每次都是全新的 sh，只适合单条独立命令。
+- 目录：${'$'}BIJI_WORK 工作区（等同 read_file / write_file 里的 work/ 前缀）、${'$'}BIJI_TMP 临时、${'$'}BIJI_BIN 已装命令、${'$'}BIJI_EXEC 可执行区。
+- 工作区在共享存储上是 noexec 的：自己编出来的二进制要先 cp 到 ${'$'}BIJI_EXEC 再执行。
+- 没有 PTY，别用 vi / top / 需要交互确认的命令，一律走非交互参数。
+- 超过 2 分钟的活儿（编译、下载大文件、跑服务）用 container_task action=start，然后 poll 拉增量输出。
+- 缺工具先 list_packages / install_package；只认静态链接的 aarch64 二进制。
+- 不清楚环境就先 container_info，一次拿到目录、已装命令、磁盘和任务状态。"""
 
 data class ModelsState(
     val loading: Boolean = false,
@@ -91,6 +108,7 @@ class ChatViewModel(
     val sandbox: com.biji.notes.sandbox.LocalSandbox,
     val bootstrap: com.biji.notes.sandbox.BijiBootstrap,
     val pkg: com.biji.notes.sandbox.BijiPkg,
+    val containers: com.biji.notes.sandbox.AiContainerManager,
     private val isForeground: () -> Boolean
 ) : ViewModel() {
 
@@ -275,6 +293,12 @@ class ChatViewModel(
 
     fun deleteConversation(id: Long) {
         viewModelScope.launch {
+            // 会话没了，它的容器也该收掉：停掉长驻 shell 和后台任务，
+            // 顺手删掉内部存储上的可执行暂存区。项目文件本身不动 ——
+            // 那是用户的东西，删会话不等于删代码。
+            val folder = settingsRepo.convoFolder(id).first()
+                .ifBlank { "conv-$id" }
+            runCatching { containers.drop(folder) }
             chat.deleteConversation(id)
             if (_activeConvoId.value == id) _activeConvoId.value = null
             memory.invalidate()
@@ -393,6 +417,26 @@ class ChatViewModel(
             var toolCalls: List<ToolCall> = emptyList()
             var lastUsageTotal: Long = -1L
             var sawError: String? = null
+            // 每个 token 写一次 DB → Flow emit → 整个聊天列表重组 +
+            // 末条消息全量 Markdown 重解析，一秒几十次，CPU 直接顶
+            // 满。攒够 STREAM_FLUSH_MS 再落库，观感一样但开销降一个
+            // 数量级；收尾时无条件 flush 保证不丢字。
+            var lastFlushAt = 0L
+            var pendingFlush = false
+            suspend fun flushStream(force: Boolean) {
+                val now = System.currentTimeMillis()
+                if (!force && now - lastFlushAt < STREAM_FLUSH_MS) {
+                    pendingFlush = true
+                    return
+                }
+                lastFlushAt = now
+                pendingFlush = false
+                chat.updateAssistantStream(
+                    placeholderId,
+                    contentBuf.toString(),
+                    reasoningBuf.takeIf { it.isNotEmpty() }?.toString()
+                )
+            }
 
             client.stream(
                 baseUrl = s.baseUrl,
@@ -408,19 +452,11 @@ class ChatViewModel(
                 when (ev) {
                     is ChatEvent.Delta -> {
                         contentBuf.append(ev.content)
-                        chat.updateAssistantStream(
-                            placeholderId,
-                            contentBuf.toString(),
-                            reasoningBuf.takeIf { it.isNotEmpty() }?.toString()
-                        )
+                        flushStream(force = false)
                     }
                     is ChatEvent.Reasoning -> {
                         reasoningBuf.append(ev.content)
-                        chat.updateAssistantStream(
-                            placeholderId,
-                            contentBuf.toString(),
-                            reasoningBuf.toString()
-                        )
+                        flushStream(force = false)
                     }
                     is ChatEvent.ToolCalls -> { toolCalls = ev.calls }
                     is ChatEvent.Usage -> {
@@ -438,6 +474,11 @@ class ChatViewModel(
                     ChatEvent.Done -> Unit
                     is ChatEvent.Error -> { sawError = ev.message }
                 }
+            }
+
+            // 收尾：把节流期间攒下的最后一段落库。
+            if (pendingFlush || contentBuf.isNotEmpty() || reasoningBuf.isNotEmpty()) {
+                flushStream(force = true)
             }
 
             if (lastUsageTotal > 0) {
@@ -615,6 +656,34 @@ class ChatViewModel(
                     ?.content.orEmpty()
                 "运行 $ ${c.take(48)}${if (c.length > 48) "…" else ""}"
             }
+            Tools.CONTAINER_EXEC -> {
+                val c = args?.get("command")?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.content.orEmpty()
+                "容器 $ ${c.take(48)}${if (c.length > 48) "…" else ""}"
+            }
+            Tools.CONTAINER_TASK -> {
+                val act = args?.get("action")?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.content.orEmpty()
+                val c = args?.get("command")?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.content.orEmpty()
+                when (act) {
+                    "start" -> "后台任务 $ ${c.take(40)}${if (c.length > 40) "…" else ""}"
+                    "poll" -> "拉取任务输出"
+                    "stop" -> "停止任务"
+                    else -> "查看后台任务"
+                }
+            }
+            Tools.CONTAINER_INFO -> "查看容器状态"
+            Tools.CONTAINER_MANAGE -> {
+                val act = args?.get("action")?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                    ?.content.orEmpty()
+                when (act) {
+                    "init" -> "初始化容器"
+                    "reset" -> "重置容器"
+                    else -> "容器会话管理"
+                }
+            }
+            Tools.CONTAINER_ENV -> "容器环境变量"
             else -> call.name
         }
     }
@@ -649,6 +718,9 @@ class ChatViewModel(
         if (s.webSearch) {
             systemBlocks += "当用户问到需要实时、最新或不确定的信息时，主动调用 web_search；" +
                 "当确认某个网页有用时再调用 read_url 抓正文。"
+        }
+        if (s.developerMode) {
+            systemBlocks += CONTAINER_BRIEF
         }
         val systemDto = if (systemBlocks.isNotEmpty()) {
             ChatMessageDto(role = Role.SYSTEM, content = systemBlocks.joinToString("\n\n"))
@@ -968,12 +1040,14 @@ class ChatViewModel(
             sandbox: com.biji.notes.sandbox.LocalSandbox,
             bootstrap: com.biji.notes.sandbox.BijiBootstrap,
             pkg: com.biji.notes.sandbox.BijiPkg,
+            containers: com.biji.notes.sandbox.AiContainerManager,
             isForeground: () -> Boolean
         ) = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
                 ChatViewModel(
-                    chat, settings, client, memory, toolExec, notifier, voice, sandbox, bootstrap, pkg, isForeground
+                    chat, settings, client, memory, toolExec, notifier, voice, sandbox,
+                    bootstrap, pkg, containers, isForeground
                 ) as T
         }
     }
