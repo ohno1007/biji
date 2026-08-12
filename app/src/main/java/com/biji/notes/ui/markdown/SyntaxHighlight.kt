@@ -108,9 +108,37 @@ object SyntaxHighlight {
     /** 超过这个长度不高亮，直接返回纯文本。 */
     private const val MAX_HIGHLIGHT_CHARS = 60_000
 
-    fun colorize(code: String, lang: String, darkMode: Boolean): AnnotatedString =
-        runCatching { colorizeImpl(code, lang, darkMode) }
+    // native 侧用的调色板：token id -> SpanStyle，与下面 Palette 同色。
+    // lazy 是因为 SpanStyle 构造不便宜，而且 native 不可用时压根不需要。
+    private val nativeLight by lazy {
+        com.biji.notes.nativebridge.HighlightPalette(
+            Light.comment, Light.string, Light.number,
+            Light.keyword, Light.func, Light.type, Light.preprocessor
+        )
+    }
+    private val nativeDark by lazy {
+        com.biji.notes.nativebridge.HighlightPalette(
+            Dark.comment, Dark.string, Dark.number,
+            Dark.keyword, Dark.func, Dark.type, Dark.preprocessor
+        )
+    }
+
+    /**
+     * 优先走 C++ 单遍词法扫描（O(n)，一趟出所有 token），拿不到结果
+     * 再退回下面这套 Kotlin 正则实现。实测编辑器打字场景 20 KB 文件
+     * 每按键 18 ms、60 KB 55 ms，全在主线程 —— 这是整个 app 最值得
+     * 下沉的一处。native 返回 null 的情况：.so 没加载、语言不认识、
+     * 输入超过 20 万 code unit。
+     */
+    fun colorize(code: String, lang: String, darkMode: Boolean): AnnotatedString {
+        if (com.biji.notes.nativebridge.NativeGate.highlight) {
+            com.biji.notes.nativebridge.NativeHighlight
+                .colorize(code, lang, if (darkMode) nativeDark else nativeLight)
+                ?.let { return it }
+        }
+        return runCatching { colorizeImpl(code, lang, darkMode) }
             .getOrElse { AnnotatedString(code) }
+    }
 
     // 每条规则都是一个 Regex，rulesFor() 每次调用都会重新编译一整
     // 套。流式输出时 colorize 会被反复调用，编译开销比匹配还大 ——
