@@ -14,6 +14,7 @@ import com.biji.notes.net.WebSearchService
 import com.biji.notes.notif.ChatNotifier
 import com.biji.notes.sandbox.BijiBootstrap
 import com.biji.notes.sandbox.LocalSandbox
+import kotlinx.coroutines.launch
 
 class BijiApp : Application() {
 
@@ -27,12 +28,33 @@ class BijiApp : Application() {
         com.biji.notes.sandbox.BijiPkg(this, bootstrap)
     }
     val localSandbox: LocalSandbox by lazy { LocalSandbox(this, bootstrap) }
-    val toolExecutor: ToolExecutor by lazy { ToolExecutor(webSearchService, localSandbox, pkg) }
+
+    /**
+     * 每个会话一个本地容器（持久 shell + 后台任务 + 可重置工作区）。
+     *
+     * 挂在 Application 上而不是某个 Compose 树里 —— 用户离开终端页时
+     * 容器不能跟着没，AI 那边还拿着它在编译东西。
+     */
+    val aiContainers: com.biji.notes.sandbox.AiContainerManager by lazy {
+        com.biji.notes.sandbox.AiContainerManager(
+            rootProvider = localSandbox::projectRoot,
+            binDir = bootstrap.binDir,
+            execBase = java.io.File(filesDir, "exec")
+        )
+    }
+
+    val toolExecutor: ToolExecutor by lazy {
+        ToolExecutor(webSearchService, localSandbox, pkg, aiContainers)
+    }
     val memoryService: MemoryService by lazy { MemoryService(chatRepository) }
     val chatNotifier: ChatNotifier by lazy { ChatNotifier(this) }
     val voiceRecognizer: com.biji.notes.voice.VoiceRecognizer by lazy {
         com.biji.notes.voice.VoiceRecognizer(this)
     }
+
+    private val appScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
 
     @Volatile private var foreground: Boolean = false
     fun isForeground(): Boolean = foreground
@@ -46,7 +68,12 @@ class BijiApp : Application() {
         CrashHandler.install(this)
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) { foreground = true }
-            override fun onStop(owner: LifecycleOwner) { foreground = false }
+            override fun onStop(owner: LifecycleOwner) {
+                foreground = false
+                // 回后台时收一遍闲置容器：长驻 sh 不费 CPU，但每个都占
+                // 一份内存 + 两个读取协程。有后台任务的容器不会被动。
+                appScope.launch { runCatching { aiContainers.reapIdle() } }
+            }
         })
     }
 }
