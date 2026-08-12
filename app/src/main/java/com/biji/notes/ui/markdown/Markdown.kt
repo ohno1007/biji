@@ -88,8 +88,8 @@ private sealed interface Block {
 
 private val FenceRegex = Regex("^```([\\w+-]*)\\s*$")
 private val MathFenceRegex = Regex("^\\$\\$\\s*$")
-private val LatexBlockOpen = Regex("^\\\\\\\\\\\\[\\\\s*$")
-private val LatexBlockClose = Regex("^\\\\\\\\]\\\\s*$")
+private val LatexBlockOpen = Regex("^\\\\\\[\\s*$")
+private val LatexBlockClose = Regex("^\\\\]\\s*$")
 private val HrRegex = Regex("^(-{3,}|_{3,}|\\*{3,})\\s*$")
 private val HeadingRegex = Regex("^(#{1,6})\\s+(.*)$")
 private val OrderedRegex = Regex("^(\\d+)\\.\\s+(.*)$")
@@ -149,7 +149,7 @@ private fun parseBlocksFast(source: String): List<Block> {
 
 private fun parseBlocks(source: String): List<Block> {
     val out = mutableListOf<Block>()
-    val lines = source.replace("\\r\\n", "\\n").split("\\n")
+    val lines = source.replace("\r\n", "\n").split("\n")
     var i = 0
     val orderedCounters = mutableMapOf<Int, Int>()
     while (i < lines.size) {
@@ -168,11 +168,11 @@ private fun parseBlocks(source: String): List<Block> {
                 buf.appendLine(lines[i]); i++
             }
             if (i < lines.size) i++
-            out += Block.MathBlock(buf.toString().trimEnd('\\n'))
+            out += Block.MathBlock(buf.toString().trimEnd('\n'))
             orderedCounters.clear(); continue
         }
-        // LaTeX-style block math: a line containing only `\\[` opens, a
-        // line containing only `\\]` closes. This is what the deepseek
+        // LaTeX-style block math: a line containing only `\[` opens, a
+        // line containing only `\]` closes. This is what the deepseek
         // models actually emit for display math.
         if (LatexBlockOpen.matches(trimmed)) {
             val buf = StringBuilder(); i++
@@ -180,10 +180,10 @@ private fun parseBlocks(source: String): List<Block> {
                 buf.appendLine(lines[i]); i++
             }
             if (i < lines.size) i++
-            out += Block.MathBlock(buf.toString().trimEnd('\\n'))
+            out += Block.MathBlock(buf.toString().trimEnd('\n'))
             orderedCounters.clear(); continue
         }
-        // Single-line `\\[ … \\]` shorthand — fall through to a paragraph
+        // Single-line `\[ … \]` shorthand — fall through to a paragraph
         // and let the inline math handler render it.
         val fence = FenceRegex.matchEntire(trimmed)
         if (fence != null) {
@@ -193,7 +193,7 @@ private fun parseBlocks(source: String): List<Block> {
                 buf.appendLine(lines[i]); i++
             }
             if (i < lines.size) i++
-            val body = buf.toString().trimEnd('\\n')
+            val body = buf.toString().trimEnd('\n')
             val isFlowSyntax = body.contains("=>") && body.contains("->")
             out += when {
                 lang.equals("mermaid", ignoreCase = true) -> Block.Mermaid(body)
@@ -257,7 +257,7 @@ private fun parseBlocks(source: String): List<Block> {
                 HrRegex.matches(nts) || OrderedRegex.matches(nts) ||
                 TablePipeRow.matches(nt)
             ) break
-            paraBuf.append('\\n').append(nt); i++
+            paraBuf.append('\n').append(nt); i++
         }
         out += Block.Paragraph(paraBuf.toString())
         orderedCounters.clear()
@@ -293,14 +293,14 @@ private fun inlineImpl(
     var i = 0
     val s = source
     while (i < s.length) {
-        if (s[i] == '\\n') { append('\\n'); i++; continue }
-        // LaTeX bracket math: `\\(...\\)` inline, `\\[...\\]` single-line
+        if (s[i] == '\n') { append('\n'); i++; continue }
+        // LaTeX bracket math: `\(...\)` inline, `\[...\]` single-line
         // block-style inline (the multi-line variant becomes a Block
         // up in parseBlocks). These are what most modern LLMs emit
         // for math, in preference to dollar-sign syntax.
-        if (i + 1 < s.length && s[i] == '\\\\' && (s[i + 1] == '(' || s[i + 1] == '[')) {
+        if (i + 1 < s.length && s[i] == '\\' && (s[i + 1] == '(' || s[i + 1] == '[')) {
             val isBlock = s[i + 1] == '['
-            val closer = if (isBlock) "\\\\]" else "\\\\)"
+            val closer = if (isBlock) "\\]" else "\\)"
             val end = s.indexOf(closer, i + 2)
             if (end != -1 && end > i + 2) {
                 val raw = s.substring(i + 2, end)
@@ -765,10 +765,10 @@ private fun CodeBlock(lang: String, code: String, baseColor: Color, isDark: Bool
     // 块每秒被强制折叠十来次，用户根本没法看着它写完。改用「语言 +
     // 前 64 个字符」当 key：追加内容时它不变，不同代码块之间又足够
     // 区分，于是流式期间折叠/展开状态稳定保留。
-    val blockKey = remember(lang, code.take(64)) { lang + " " + code.take(64) }
+    val blockKey = remember(lang, code.take(64)) { lang + " " + code.take(64) }
     var copied by remember(blockKey) { mutableStateOf(false) }
     // 行数要跟着内容走：短块写着写着变长了，isLong 得能翻成 true。
-    val isLong = remember(code) { code.count { it == '\\n' } >= 12 }
+    val isLong = remember(code) { code.count { it == '\n' } >= 12 }
     // 初值只在 blockKey 变化时求一次 —— 短块流式写长之后仍然保持
     // 展开，不会在用户眼皮底下自己收起来。
     var expanded by remember(blockKey) { mutableStateOf(!isLong) }
@@ -813,7 +813,7 @@ private fun CodeBlock(lang: String, code: String, baseColor: Color, isDark: Bool
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                lang.ifBlank { "code" } + if (!expanded) "  ·  ${code.count { it == '\\n' } + 1} 行" else "",
+                lang.ifBlank { "code" } + if (!expanded) "  ·  ${code.count { it == '\n' } + 1} 行" else "",
                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                 color = baseColor.copy(alpha = 0.55f),
                 modifier = Modifier.weight(1f)
