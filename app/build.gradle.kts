@@ -20,6 +20,9 @@ android {
         versionCode = 1
         versionName = "1.0.0"
         vectorDrawables { useSupportLibrary = true }
+        // Vosk / JNA 各带 4 个 ABI 的 .so，占了 APK 45 MB 以上。
+        // 现役设备基本都是 arm64，只保留它，包体直接砍到 ~20 MB。
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     buildTypes {
@@ -29,6 +32,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            // 语音模型是运行时下载的，调试包也不需要额外 native 变体
+            isMinifyEnabled = false
         }
     }
 

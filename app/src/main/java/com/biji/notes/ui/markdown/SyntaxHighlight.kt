@@ -105,21 +105,44 @@ object SyntaxHighlight {
         "as", "union", "all"
     )
 
+    /** 超过这个长度不高亮，直接返回纯文本。 */
+    private const val MAX_HIGHLIGHT_CHARS = 60_000
+
     fun colorize(code: String, lang: String, darkMode: Boolean): AnnotatedString =
         runCatching { colorizeImpl(code, lang, darkMode) }
             .getOrElse { AnnotatedString(code) }
 
-    private fun colorizeImpl(code: String, lang: String, darkMode: Boolean): AnnotatedString {
+    // 每条规则都是一个 Regex，rulesFor() 每次调用都会重新编译一整
+    // 套。流式输出时 colorize 会被反复调用，编译开销比匹配还大 ——
+    // 按 (lang, darkMode) 缓存，顺便把两个 priority 也预分好组。
+    private class Rules(val claim: List<Rule>, val fill: List<Rule>)
+    private val ruleCache = HashMap<String, Rules>()
+
+    private fun rulesCached(lang: String, darkMode: Boolean): Rules {
+        val key = "$lang|$darkMode"
+        ruleCache[key]?.let { return it }
         val palette = if (darkMode) Dark else Light
-        val rules = runCatching { rulesFor(lang.lowercase(), palette) }
-            .getOrElse { emptyList() }
-        if (rules.isEmpty()) return AnnotatedString(code)
+        val all = runCatching { rulesFor(lang, palette) }.getOrElse { emptyList() }
+        val r = Rules(
+            all.filter { it.priority == Priority.CLAIM },
+            all.filter { it.priority == Priority.FILL }
+        )
+        ruleCache[key] = r
+        return r
+    }
+
+    private fun colorizeImpl(code: String, lang: String, darkMode: Boolean): AnnotatedString {
+        // 超长代码块直接放弃高亮：正则全文扫描是 O(rules × len)，
+        // 几百 KB 的输出会把主线程钉死。
+        if (code.length > MAX_HIGHLIGHT_CHARS) return AnnotatedString(code)
+        val cached = rulesCached(lang.lowercase(), darkMode)
+        if (cached.claim.isEmpty() && cached.fill.isEmpty()) return AnnotatedString(code)
 
         val claim = BooleanArray(code.length)
         val builder = AnnotatedString.Builder(code)
 
         // Pass 1: CLAIM-priority (strings, comments, preprocessor lines).
-        for (rule in rules.filter { it.priority == Priority.CLAIM }) {
+        for (rule in cached.claim) {
             for (m in rule.regex.findAll(code)) {
                 val r = m.range
                 if (r.any { claim[it] }) continue
@@ -128,7 +151,7 @@ object SyntaxHighlight {
             }
         }
         // Pass 2: FILL-priority — only on unclaimed ranges.
-        for (rule in rules.filter { it.priority == Priority.FILL }) {
+        for (rule in cached.fill) {
             for (m in rule.regex.findAll(code)) {
                 val r = m.range
                 if (r.any { claim[it] }) continue

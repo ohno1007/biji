@@ -25,11 +25,17 @@ class SyntaxVisualTransformation(
     private val errorRanges: List<IntRange>
 ) : VisualTransformation {
 
+    // filter() 在每次重组 / 重绘都会被 BasicTextField 调一次，文本
+    // 没变也照调。全文正则不便宜，缓存住上一次的结果。
+    private var cachedRaw: String? = null
+    private var cachedResult: TransformedText? = null
+
     override fun filter(text: AnnotatedString): TransformedText {
         if (lang.isEmpty() && errorRanges.isEmpty()) {
             return TransformedText(text, OffsetMapping.Identity)
         }
         val raw = text.text
+        cachedResult?.let { if (cachedRaw == raw) return it }
         // Colorize gives us spans relative to the same raw string —
         // attach them on top of the existing AnnotatedString without
         // creating any new offsets.
@@ -53,6 +59,7 @@ class SyntaxVisualTransformation(
             }
         }
         return TransformedText(builder.toAnnotatedString(), OffsetMapping.Identity)
+            .also { cachedRaw = raw; cachedResult = it }
     }
 }
 
