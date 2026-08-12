@@ -122,7 +122,10 @@ fun EditorScreen(
     // bookkeeping without a real benefit, and avoids a Kotlin type
     // inference quirk where the delegate landed as `Any?`.
     val completion: Pair<String, List<CompletionItem>> =
-        if (mode == EditorMode.EDIT) suggestCompletions(fieldValue, lang)
+        if (mode == EditorMode.EDIT)
+            remember(fieldValue.text, fieldValue.selection, lang) {
+                suggestCompletions(fieldValue, lang)
+            }
         else "" to emptyList()
 
     // Bracket / quote balance scan — runCatching just in case the
@@ -239,11 +242,9 @@ fun EditorScreen(
                                 .horizontalScroll(hScroll)
                         ) {
                             Text(
-                                text = SyntaxHighlight.colorize(
-                                    fieldValue.text,
-                                    lang,
-                                    isDark
-                                ),
+                                text = remember(fieldValue.text, lang, isDark) {
+                                    SyntaxHighlight.colorize(fieldValue.text, lang, isDark)
+                                },
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 13.sp,
                                 color = cs.onSurface

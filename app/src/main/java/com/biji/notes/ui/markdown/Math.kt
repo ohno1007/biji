@@ -7,8 +7,13 @@ package com.biji.notes.ui.markdown
  * super/sub-scripts, common operators, simple fractions) into Unicode
  * so the rendered text reads like math at a glance.
  */
-internal fun latexToUnicode(raw: String): String =
-    runCatching { latexToUnicodeImpl(raw) }.getOrElse { raw }
+internal fun latexToUnicode(raw: String): String {
+    // C++ 版是表驱动单遍扫描，对齐下面这套正则实现的语义。
+    if (com.biji.notes.nativebridge.NativeGate.text) {
+        com.biji.notes.nativebridge.NativeText.latexToUnicode(raw)?.let { return it }
+    }
+    return runCatching { latexToUnicodeImpl(raw) }.getOrElse { raw }
+}
 
 private fun latexToUnicodeImpl(raw: String): String {
     var s = raw.trim()
