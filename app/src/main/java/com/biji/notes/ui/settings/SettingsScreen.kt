@@ -1226,7 +1226,7 @@ private fun DevEnvRow(bootstrap: com.biji.notes.sandbox.BijiBootstrap) {
                     HorizontalDivider(thickness = 0.5.dp, color = cs.outlineVariant)
                     Spacer(Modifier.size(8.dp))
                     val policy = manifest.policy
-                    // setPolicy 会写一次账本文件（几 KB），扇到 IO 上做，
+                    // setPolicy 会写一次账本文件（几 KB），扔到 IO 上做，
                     // 别让开关的动画去等一次 write。
                     MiniToggle("允许 AI 自动装工具", null, policy.autoInstall) { v ->
                         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
