@@ -108,6 +108,40 @@ object TerminalColors {
     const val DEFAULT_CURSOR = 0xFF6FE26F.toInt()
 
     /**
+     * 浅色模式的 0-15 号色。
+     *
+     * 不是把 [BASE_16] 调暗了事：那套是为黑底选的，直接搬到白底上，
+     * 3 号黄（#E5E510）和 10-15 号亮色系的对比度全部掉到 2:1 以下，
+     * `ls` 的目录名和 grep 的高亮会白得看不见。这里每一项都是照着
+     * 白底重新取的，普通色对比度 ≥ 4.5:1，亮色系 ≥ 3:1（它们本来就
+     * 只用在"已经有别的信号"的场合，例如粗体或选中）。
+     *
+     * 7 / 15 号在白底上必须反过来给深色 —— 程序拿它们当"默认前景"用。
+     */
+    val BASE_16_LIGHT = intArrayOf(
+        0xFF2B2B2B.toInt(), // 0  black
+        0xFFC02121.toInt(), // 1  red
+        0xFF117A3D.toInt(), // 2  green
+        0xFF8A6D00.toInt(), // 3  yellow —— 白底上纯黄不可读，压成琥珀
+        0xFF1D5FBF.toInt(), // 4  blue
+        0xFF9020A0.toInt(), // 5  magenta
+        0xFF0E6E80.toInt(), // 6  cyan
+        0xFF3C3C3C.toInt(), // 7  white（白底上当默认前景）
+        0xFF6E6E6E.toInt(), // 8  bright black
+        0xFFD93A3A.toInt(), // 9  bright red
+        0xFF1A9350.toInt(), // 10 bright green
+        0xFFA37D00.toInt(), // 11 bright yellow
+        0xFF2C74D6.toInt(), // 12 bright blue
+        0xFFA934BA.toInt(), // 13 bright magenta
+        0xFF14818F.toInt(), // 14 bright cyan
+        0xFF1F1F1F.toInt()  // 15 bright white（同上，反过来给最深）
+    )
+
+    const val LIGHT_FOREGROUND = 0xFF1F1F1F.toInt()
+    const val LIGHT_BACKGROUND = 0xFFFCFCFC.toInt()
+    const val LIGHT_CURSOR = 0xFF1A7F37.toInt()
+
+    /**
      * 建一张 256 项 ARGB 调色板：16 项基本色 + 6×6×6 色立方 + 24 级灰阶。
      *
      * 每帧渲染都要按 index 取色，所以做成一次性构建的 IntArray 而不是函数：
@@ -135,6 +169,8 @@ object TerminalColors {
 
     /** 进程内共用的默认调色板。UI 换主题时自己 `buildPalette(自己的 16 色)`。 */
     val DEFAULT_PALETTE: IntArray by lazy { buildPalette() }
+
+    val LIGHT_PALETTE: IntArray by lazy { buildPalette(BASE_16_LIGHT) }
 
     // ---------------------------------------------------------------
     // 解析成 ARGB
