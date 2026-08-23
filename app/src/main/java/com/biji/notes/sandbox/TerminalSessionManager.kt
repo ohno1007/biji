@@ -50,7 +50,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * `terminal/TerminalBuffer.kt`），而"退出后不自动移除"意味着死会话也照样
  * 占着这一份。所以这里有两道闸：全局 [MAX_SESSIONS]、单 folder
  * [MAX_PER_FOLDER]。超了的处置见 [create] / [ensure]，一句话是
- * **先回收死的，回收不出来就拒绝，绝不掉用户正开着的 shell**。
+ * **先回收死的，回收不出来就拒绝，绝不掐用户正开着的 shell**。
  */
 class TerminalSessionManager(
     private val layoutProvider: (String?) -> ContainerLayout,
@@ -274,7 +274,7 @@ class TerminalSessionManager(
      * 关掉并从列表里移除。
      *
      * 作用域延后再 cancel：[TerminalSession.shutdown] 之后还有回收要走（宽限期
-     * 里的 SIGKILL 升级、waiter 收尾），立刻 cancel 会把这些半途掉掉，留下僵尸。
+     * 里的 SIGKILL 升级、waiter 收尾），立刻 cancel 会把这些半途掐掉，留下僵尸。
      */
     fun close(id: String) {
         val entry = synchronized(lock) { entries.remove(id) } ?: return
