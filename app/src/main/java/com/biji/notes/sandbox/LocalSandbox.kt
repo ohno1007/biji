@@ -387,7 +387,7 @@ class LocalSandbox(
             val execDirEnv = execDir(folder)
             // 容器那边靠 ContainerLayout.mkdirs() 建这两个目录，但 run_shell_command
             // 可能先于任何容器被调到。导出一个不存在的 $BIJI_WORK 只会让模型
-            // 第一条 `cd \"$BIJI_WORK\"` 就失败，顺手建掉。
+            // 第一条 `cd "$BIJI_WORK"` 就失败，顺手建掉。
             val workDirEnv = File(home, "work").also { it.mkdirs() }
             val tmpDirEnv = File(home, "tmp").also { it.mkdirs() }
             val binDir = bootstrap?.binDir?.absolutePath?.takeIf { it.isNotBlank() }
