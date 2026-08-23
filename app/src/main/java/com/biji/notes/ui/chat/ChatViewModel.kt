@@ -776,11 +776,18 @@ class ChatViewModel(
         var budget = TOOL_KEEP_BUDGET_CHARS
         for (i in live.indices.reversed()) {
             val m = live[i]
-            if (m.kind != MessageKind.TOOL_RESULT) continue
-            if (currentRoundFrom >= 0 && i > currentRoundFrom) continue
+            // 两种消息都吃预算：tool 结果吃 content，assistant 载体吃
+            // toolData（write_file 的 content 就在里面）。只管前者的话，
+            // 一次 200 KB 的写入会绕开整套预算，之后每轮都原样重发。
+            val isResult = m.kind == MessageKind.TOOL_RESULT
+            val isCarrier = m.role == Role.ASSISTANT && m.toolData != null
+            if (!isResult && !isCarrier) continue
+            // 本轮的一律不折。载体自己也算「本轮」—— 它就是这一轮的调用。
+            if (currentRoundFrom >= 0 && (if (isCarrier) i >= currentRoundFrom else i > currentRoundFrom)) continue
+            val size = if (isResult) m.content.length else (m.toolData?.length ?: 0)
             if (keptCount < TOOL_KEEP_MIN || budget > 0) {
                 keptCount++
-                budget -= m.content.length
+                budget -= size
             } else {
                 foldIds += m.id
             }
@@ -886,11 +893,19 @@ class ChatViewModel(
             // with `HTTP 400 · The reasoning_content in the thinking
             // mode must be passed back to the API.`
             reasoningContent = if (keepReasoning && !m.reasoning.isNullOrBlank()) m.reasoning else null,
-            // tool_calls 的 arguments **故意不折叠**：write_file 那种大 content
-            // 确实占地方，但 arguments 是一段必须原样成立的 JSON，掐掉中间就
-            // 不是合法 JSON 了，代理端校验会直接 400。要省这块得从源头限
-            // write_file 的 content 长度，不是在这里剪。
-            toolCalls = decodeToolCalls(m.toolData)
+            // arguments 里的大块正文（write_file 的 content、container_exec 的
+            // stdin）是上下文预算里最后一个没有闸的入口：一次写 200 KB 的文件，
+            // 那 200 KB 就原样躺在之后**每一次**请求里。
+            //
+            // 曾经的结论是「不能折」—— 理由是 arguments 必须是一段成立的 JSON，
+            // 掐掉中间就不合法了，代理端直接 400。那个理由只否掉了「按字符截断
+            // 原始串」这一种做法。**重新解析、只替换某个字段的值、再编码回去**，
+            // 出来仍然是合法 JSON，而且字段类型不变（还是 string），schema 校验
+            // 也过得去。
+            //
+            // 只对已经出了预算窗口的老消息做。模型刚写完那一轮看得到原文；
+            // 真要回头看更早写了什么，read_file 一句话的事。
+            toolCalls = decodeToolCalls(m.toolData, fold)
         )
         m.role == Role.ASSISTANT && m.content.isBlank() && m.toolData == null -> null
         else -> ChatMessageDto(
@@ -917,7 +932,7 @@ class ChatViewModel(
         val live = chat.getLiveMessages(convoId)
         // 归档的是一整段**连续前缀** —— 切点之前的所有消息，包括夹在中间的
         // tool 结果。曾经这里归档的是「过滤掉 TOOL_RESULT 之后的子集」，
-        // 于是跑过 50 条命令的会话，摘要把寒暄压没了，几百 KB 的 stdout
+        // 于是跑过 50 条命令的会话，摘要把寒的压没了，几百 KB 的 stdout
         // 一条不少地留着。
         //
         // 这里只用正文条数做一道「太短就别压」的闸：会话还没几个来回时压缩
@@ -982,7 +997,7 @@ class ChatViewModel(
             // 但至少是能跑通的。
             model = s.model,
             system = "请把下面这段多轮对话压缩成一段不超过 500 字的客观摘要，" +
-                "保留关键事实、已确认的偏好、未决的问题与代办，去除寒暄。直接输出摘要正文，不要加标题。",
+                "保留关键事实、已确认的偏好、未决的问题与代办，去除寒的。直接输出摘要正文，不要加标题。",
             user = transcript
         ).getOrNull()?.takeIf { it.isNotBlank() }
 
@@ -1037,7 +1052,34 @@ class ChatViewModel(
         return arr.toString()
     }
 
-    private fun decodeToolCalls(raw: String): List<ToolCall> = runCatching {
+    /**
+     * 把 arguments 里超长的字符串字段换成一句说明，其余原样。
+     *
+     * 不按 key 白名单挑（write_file.content / container_exec.stdin …）：工具会
+     * 不断加，白名单必然漏。按**长度**挑更稳 —— 路径、命令名、枚举这些语义字段
+     * 天然就短，够得着这个阈值的只可能是正文。
+     *
+     * 解析失败就原样返回：宁可多花点 token，也不能把一段本来成立的 JSON 弄坏。
+     */
+    private fun foldToolCallArgs(raw: String): String = runCatching {
+        val o = json.parseToJsonElement(raw) as? JsonObject ?: return raw
+        var touched = false
+        val out = buildJsonObject {
+            for ((k, v) in o) {
+                val text = (v as? kotlinx.serialization.json.JsonPrimitive)
+                    ?.takeIf { it.isString }?.content
+                if (text != null && text.length > ARG_FOLD_MIN_CHARS) {
+                    touched = true
+                    put(k, "（${text.length} 字符，已从上下文中省略）")
+                } else {
+                    put(k, v)
+                }
+            }
+        }
+        if (touched) out.toString() else raw
+    }.getOrElse { raw }
+
+    private fun decodeToolCalls(raw: String, fold: Boolean = false): List<ToolCall> = runCatching {
         json.parseToJsonElement(raw)
             .let { it as? kotlinx.serialization.json.JsonArray ?: return emptyList() }
             .mapNotNull { el ->
@@ -1048,7 +1090,7 @@ class ChatViewModel(
                     ?: return@mapNotNull null
                 val args = o["arguments"]?.let { it as? kotlinx.serialization.json.JsonPrimitive }?.content
                     ?: ""
-                ToolCall(id, name, args)
+                ToolCall(id, name, if (fold) foldToolCallArgs(args) else args)
             }
     }.getOrElse { emptyList() }
 
@@ -1239,6 +1281,11 @@ class ChatViewModel(
         /** 低于这个长度的工具结果原样发。折叠标记本身就要二三十字，对一条
          *  几百字的结果省不下什么，反而把"这是完整输出"的信号弄没了。 */
         private const val TOOL_FOLD_MIN_CHARS = 800
+
+        /** arguments 里超过这个长度的字符串字段才折。取 600 是因为一条
+         *  write_file 写几百字的配置文件是常态，折了纯属添乱；真正吃预算的是
+         *  几十 KB 那一档。 */
+        private const val ARG_FOLD_MIN_CHARS = 600
 
         /** 折叠后保留的头 / 尾行数。头几行是命令回显和第一条报错，尾几行是
          *  最终结论和退出码 —— 中间那段是 make 的滚屏。 */
