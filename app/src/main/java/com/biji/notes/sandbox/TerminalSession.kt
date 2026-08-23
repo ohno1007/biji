@@ -354,7 +354,7 @@ class TerminalSession(
 
         // 让 reader 先把 pty 里残留的输出读完再打退出提示，否则提示会插在最后
         // 一段输出前面。给上界：子进程都没了还读不到 EIO 说明有后台 job 还
-        // 攒着从设备，不能为这个把退出提示一直压着不发。
+        // 攥着从设备，不能为这个把退出提示一直压着不发。
         // **超时也绝不在这里关 pfd** —— fd 归 reader 所有，理由见 readerLoop。
         runCatching { run.reader?.join(READER_JOIN_MS) }
         run.writer?.cancel()
