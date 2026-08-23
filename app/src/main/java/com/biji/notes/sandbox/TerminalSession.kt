@@ -67,6 +67,17 @@ interface TerminalSink {
 }
 
 /** 没接模拟器时用（测试 / 无头场景），字节直接丢掉。 */
+
+/**
+ * ESC (0x1B)。
+ *
+ * 不写成反斜杠 u 转义：这份源码要经 JSON 通道搬运（本地 git push 没凭据时
+ * 只能走 GitHub API），那种转义在送达之前必然被解码成真正的 0x1B 字节塞进
+ * 源文件 —— 编译照样过，但源码里从此躺着一堆看不见的控制字符，而且每搬一次
+ * 就再错一次。插值写法反而更贴近它表达的东西：ESC + 后面那串。
+ */
+private val ESC = Char(0x1B).toString()
+
 object DiscardSink : TerminalSink {
     override fun append(bytes: ByteArray, off: Int, len: Int) = Unit
     override fun resize(cols: Int, rows: Int) = Unit
@@ -343,7 +354,7 @@ class TerminalSession(
 
         // 让 reader 先把 pty 里残留的输出读完再打退出提示，否则提示会插在最后
         // 一段输出前面。给上界：子进程都没了还读不到 EIO 说明有后台 job 还
-        // 攥着从设备，不能为这个把退出提示一直压着不发。
+        // 攒着从设备，不能为这个把退出提示一直压着不发。
         // **超时也绝不在这里关 pfd** —— fd 归 reader 所有，理由见 readerLoop。
         runCatching { run.reader?.join(READER_JOIN_MS) }
         run.writer?.cancel()
@@ -645,7 +656,7 @@ class TerminalSession(
                         note("^C 发不出信号，命令不会停。")
                     }
                     // 还是把 0x03 送进去：个别自己读 stdin 的程序认这个字节。
-                    runCatching { run.shell.sendRaw("") }
+                    runCatching { run.shell.sendRaw(CTRL_C_CHAR.toString()) }
                 }
                 CTRL_D_CHAR -> {
                     if (!run.warnedNoEof) {
@@ -784,14 +795,15 @@ class TerminalSession(
         const val AUTO_FALLBACK_WINDOW_MS = 3000L
 
         const val CTRL_C: Byte = 0x03
-        const val CTRL_C_CHAR = ''
-        const val CTRL_D_CHAR = ''
+        // Char(n) 而不是 '\uXXXX'：见 ToolchainInstaller 里 NUL 的注释。
+        val CTRL_C_CHAR = Char(3)
+        val CTRL_D_CHAR = Char(4)
         const val BACKSPACE = '\b'
-        const val DELETE = ''
+        val DELETE = Char(0x7F)
 
         /** SGR 红色，降级路径里用来标出 stderr。 */
-        const val SGR_RED = "[31m"
-        const val SGR_RESET = "[0m"
+        val SGR_RED = "${ESC}[31m"
+        val SGR_RESET = "${ESC}[0m"
     }
 }
 
