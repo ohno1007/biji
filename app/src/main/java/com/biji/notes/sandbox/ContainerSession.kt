@@ -466,9 +466,12 @@ internal class ContainerSession(
     }
 
     companion object {
-        private const val SOH = ''
-        private const val STX = ''
-        private const val ETX = ''
+        // 用 Char(n) 而不是 '\uXXXX' 字面量：这三行要经过 JSON 通道搬运时，
+        // \u 转义会被提前解码成真正的控制字符塞进源文件 —— 编译照样过，但
+        // 源码里从此躺着三个看不见的字节。Char(1) 语义完全相同且搬不坏。
+        private val SOH = Char(1)
+        private val STX = Char(2)
+        private val ETX = Char(3)
 
         private const val POLL_MS = 200L
         private const val STDERR_GRACE_MS = 400L
