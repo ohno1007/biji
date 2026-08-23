@@ -73,6 +73,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -313,26 +314,7 @@ fun SettingsScreen(
                                 onProbe = { vm.probeRoot() }
                             )
                             InsetDivider()
-                            DevEnvRow(
-                                runShell = { cmd ->
-                                    val r = vm.sandbox.runShell(
-                                        folder = null,
-                                        command = cmd,
-                                        asRoot = settings.useRoot
-                                    )
-                                    r.exitCode to r.stdout
-                                },
-                                bootstrap = vm.bootstrap
-                            )
-                        }
-                    }
-                }
-
-                // ===== 工具包 ==============================================
-                if (settings.developerMode) {
-                    item {
-                        Group {
-                            PackagesRow(pkg = vm.pkg)
+                            DevEnvRow(bootstrap = vm.bootstrap)
                         }
                     }
                 }
@@ -746,10 +728,9 @@ private fun RootAccessRow(
                 )
                 Text(
                     when (lastResult) {
-                        true -> "su 可用 · 命令将通过 su -c 执行"
-                        false -> "su 不可用或被拒绝"
-                        null -> if (enabled) "命令将通过 su -c 执行"
-                        else "命令以普通进程执行"
+                        true -> "su 可用"
+                        false -> "su 不可用"
+                        null -> if (enabled) "走 su -c" else "普通进程"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = when (lastResult) {
@@ -804,154 +785,23 @@ private fun RootAccessRow(
     }
 }
 
-/** biji 工具包：每一项是单文件静态二进制 / 从 release tarball
- *  里抽出来的二进制。下载到 bootstrap/bin，立即 PATH 可见。完全
- *  不依赖 Termux、proot、apt。 */
-@Composable
-private fun PackagesRow(pkg: com.biji.notes.sandbox.BijiPkg) {
-    val cs = MaterialTheme.colorScheme
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val progress by pkg.progress.collectAsState()
-    var tick by remember { mutableStateOf(0) }
-    androidx.compose.runtime.LaunchedEffect(progress) {
-        if (progress is com.biji.notes.sandbox.BijiPkg.Progress.Done) tick++
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                Icons.Outlined.Code,
-                contentDescription = null,
-                modifier = Modifier.size(22.dp),
-                tint = cs.onSurface
-            )
-            Spacer(Modifier.size(16.dp))
-            Text(
-                "工具包",
-                style = MaterialTheme.typography.titleMedium,
-                color = cs.onSurface,
-                fontWeight = FontWeight.Medium
-            )
-        }
-        Spacer(Modifier.size(4.dp))
-        Text(
-            "单文件静态二进制，下载到 app 私有目录，立刻在终端 / AI shell 里可用。",
-            style = MaterialTheme.typography.bodySmall,
-            color = cs.onSurfaceVariant
-        )
-        Spacer(Modifier.size(8.dp))
-        pkg.catalogue.forEach { p ->
-            val installed = remember(tick, p.id) { pkg.isInstalled(p) }
-            val downloading = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Downloading)
-                ?.takeIf { it.pkgId == p.id }
-            val installing = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Installing)
-                ?.takeIf { it.pkgId == p.id }
-            val failed = (progress as? com.biji.notes.sandbox.BijiPkg.Progress.Failed)
-                ?.takeIf { it.pkgId == p.id }
-            val busy = downloading != null || installing != null
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 6.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                p.title,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = cs.onSurface,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Spacer(Modifier.size(6.dp))
-                            Text(
-                                p.sizeLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = cs.onSurfaceVariant
-                            )
-                            if (installed) {
-                                Spacer(Modifier.size(6.dp))
-                                Text("已装", style = MaterialTheme.typography.labelSmall, color = cs.primary)
-                            }
-                        }
-                        Text(
-                            p.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = cs.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                        )
-                    }
-                    Spacer(Modifier.size(8.dp))
-                    val (label, fg, bg) = when {
-                        installed -> Triple("卸载", cs.error, cs.error.copy(alpha = 0.10f))
-                        else -> Triple("安装", cs.primary, cs.primary.copy(alpha = 0.14f))
-                    }
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(bg)
-                            .bouncyClickable(enabled = !busy, pressedScale = 0.95f) {
-                                scope.launch {
-                                    if (installed) {
-                                        pkg.uninstall(p); tick++
-                                    } else {
-                                        pkg.install(p)
-                                    }
-                                }
-                            }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = fg,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-                if (downloading != null) {
-                    Spacer(Modifier.size(4.dp))
-                    androidx.compose.material3.LinearProgressIndicator(
-                        progress = {
-                            if (downloading.total > 0) downloading.bytes.toFloat() / downloading.total
-                            else 0f
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        color = cs.primary
-                    )
-                } else if (installing != null) {
-                    Spacer(Modifier.size(4.dp))
-                    androidx.compose.material3.LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = cs.primary
-                    )
-                } else if (failed != null) {
-                    Spacer(Modifier.size(2.dp))
-                    Text(
-                        failed.message,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = cs.error
-                    )
-                }
-            }
-        }
-    }
-}
-
 @Composable
 private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) {
     val cs = MaterialTheme.colorScheme
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val progress by offline.install.collectAsState()
     var installed by remember { mutableStateOf(offline.installed) }
+    // 模型在不在，和「离线识别能不能用」是两件事：老用户升上来时模型是全的、
+    // 只缺这次改成现下的 libvosk.so，installed 是 false。卸载按钮必须挂在
+    // modelPresent 上，否则那个最大 1.3 GB 的模型在 UI 上就删不掉了。
+    var modelPresent by remember { mutableStateOf(offline.modelPresent) }
+    var needsLib by remember { mutableStateOf(offline.modelPresent && offline.nativeMissing) }
     var picked by remember { mutableStateOf(offline.defaultModel) }
     var menuOpen by remember { mutableStateOf(false) }
     androidx.compose.runtime.LaunchedEffect(progress) {
         installed = offline.installed
+        modelPresent = offline.modelPresent
+        needsLib = offline.modelPresent && offline.nativeMissing
     }
     val busy = progress is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Downloading ||
         progress is com.biji.notes.voice.OfflineVoiceRecognizer.InstallProgress.Extracting
@@ -1064,25 +914,59 @@ private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) 
             }
             else -> Unit
         }
+        // 模型齐了只缺 native 库 —— 独立的一条路，**不能**并进「下载」。
+        // 「下载」按的是上面选中的那个模型，把补库悄悄塞进去，用户选了大模型
+        // 却拿到「已安装」+ 原来的小模型，而且一个字都不提。
+        if (needsLib) {
+            Spacer(Modifier.size(8.dp))
+            Text(
+                "模型已在本机，缺离线语音库（约 2.9 MB）。补齐后即可离线识别；" +
+                    "在此之前用的是系统语音识别。",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.onSurfaceVariant
+            )
+        }
         Spacer(Modifier.size(10.dp))
         Row {
+            if (needsLib) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(cs.primary.copy(alpha = 0.14f))
+                        .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                            scope.launch { offline.repairNativeLib() }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        "补齐语音库",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Spacer(Modifier.size(8.dp))
+            }
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
-                    .background(cs.primary.copy(alpha = 0.14f))
+                    .background(
+                        if (needsLib) cs.surfaceContainerHigh
+                        else cs.primary.copy(alpha = 0.14f)
+                    )
                     .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
                         scope.launch { offline.installModel(picked.url) }
                     }
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 Text(
-                    if (installed) "重新下载" else "下载",
+                    if (modelPresent) "重新下载" else "下载",
                     style = MaterialTheme.typography.labelLarge,
-                    color = cs.primary,
+                    color = if (needsLib) cs.onSurfaceVariant else cs.primary,
                     fontWeight = FontWeight.SemiBold
                 )
             }
-            if (installed) {
+            if (modelPresent) {
                 Spacer(Modifier.size(8.dp))
                 Row(
                     modifier = Modifier
@@ -1105,22 +989,49 @@ private fun VoiceModelRow(offline: com.biji.notes.voice.OfflineVoiceRecognizer) 
     }
 }
 
-/** 初始化开发环境：下载 toybox bootstrap + 扫描可用工具链。 */
+/**
+ * 开发环境。
+ *
+ * 这一块的立场是**「状态 + 兜底」，不是「操作台」**：工具由 AI 在对话里
+ * 自己查、自己装、自己验，用户不需要知道 mlr 和 socat 是什么，也不该为
+ * 「初始化开发环境」这种事负责 —— 那是实现细节，不是待办事项。
+ *
+ * 所以这里只剩三样东西：装了多少占多少、出问题时的清空按钮、以及要不要
+ * 放手让 AI 装的策略开关。逐个包的「安装 / 卸载」按钮列表整个删掉了。
+ *
+ * 体积数字取自环境清单（安装时记的），不在这里走文件系统 —— 光 zig 一个
+ * 就是两万多个文件，为了在设置页显示一个数字去 walk 它太蠢。
+ */
 @Composable
-private fun DevEnvRow(
-    runShell: (suspend (String) -> Pair<Int, String>)? = null,
-    bootstrap: com.biji.notes.sandbox.BijiBootstrap? = null
-) {
+private fun DevEnvRow(bootstrap: com.biji.notes.sandbox.BijiBootstrap) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     val cs = MaterialTheme.colorScheme
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    // 必须拿进程级单例：AI 那边的工具执行器用的是同一个实例，
+    // 否则「AI 说装完了但设置页里没有」。
+    val installer = remember { com.biji.notes.sandbox.ToolchainInstaller.get(ctx, bootstrap) }
+    val manifest by installer.registry.state.collectAsState()
+    val progress by installer.progress.collectAsState()
+
     var open by remember { mutableStateOf(false) }
-    var probing by remember { mutableStateOf(false) }
-    var probeReport by remember { mutableStateOf<List<Triple<String, Boolean, String>>>(emptyList()) }
-    val tools = listOf("sh", "ls", "cat", "grep", "find", "tar", "gcc", "clang", "cmake", "make", "git", "python")
-    val bootstrapProgress by (bootstrap?.progress
-        ?: kotlinx.coroutines.flow.MutableStateFlow(com.biji.notes.sandbox.BijiBootstrap.Progress.Idle))
-        .collectAsState()
-    val bootstrapInstalled = bootstrap?.installed == true
+    var free by remember { mutableStateOf(0L) }
+    var busy by remember { mutableStateOf(false) }
+    var toast by remember { mutableStateOf<String?>(null) }
+
+    // usableSpace 是一次 statfs，便宜；但仍旧只在对话框开合或清单变化时问。
+    LaunchedEffect(open, manifest) {
+        free = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { installer.root.usableSpace }.getOrDefault(0L)
+        }
+    }
+
+    val ready = manifest.tools.isNotEmpty() || bootstrap.installed
+    // 不写「AI 首次使用时会自动准备」：没有任何代码在做这件事（BijiBootstrap
+    // 那条自装路径已经删了）。工具是模型在对话里按需装的，副标题就照实说。
+    val subtitle = if (!ready) "还没装工具"
+    else "就绪 · ${manifest.commandCount.coerceAtLeast(manifest.tools.size)} 个命令 · " +
+        com.biji.notes.sandbox.ToolchainInstaller.human(manifest.totalBytes)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1138,238 +1049,458 @@ private fun DevEnvRow(
         Spacer(Modifier.size(16.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                "初始化开发环境",
+                "开发环境",
                 style = MaterialTheme.typography.titleMedium,
                 color = cs.onSurface,
                 fontWeight = FontWeight.Medium
             )
             Text(
-                if (bootstrapInstalled) "已就绪 · 终端可直接用" else "下载 toybox 让终端可用",
+                subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (bootstrapInstalled) cs.primary else cs.onSurfaceVariant
+                color = if (ready) cs.primary else cs.onSurfaceVariant
             )
         }
+        Icon(
+            Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = cs.onSurfaceVariant
+        )
     }
+
     if (open) {
         androidx.compose.material3.AlertDialog(
-            onDismissRequest = { open = false },
+            onDismissRequest = { if (!busy) open = false },
             title = {
                 Text(
-                    "开发工具链",
+                    "开发环境",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
             },
-            text = {
-                Column {
-                    if (bootstrap != null) {
-                        Column(
-                            Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(cs.surfaceContainerHigh)
-                                .padding(12.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Outlined.Code,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = if (bootstrapInstalled) cs.primary else cs.onSurfaceVariant
-                                )
-                                Spacer(Modifier.size(6.dp))
-                                Text(
-                                    "toybox bootstrap",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = cs.onSurface,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                if (bootstrapInstalled) {
-                                    Text(
-                                        "已就绪",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = cs.primary,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.size(6.dp))
-                            Text(
-                                "下载一份 toybox 到 ${bootstrap.binDir.absolutePath}，终端会自动把它加进 PATH。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = cs.onSurfaceVariant
-                            )
-                            when (val p = bootstrapProgress) {
-                                is com.biji.notes.sandbox.BijiBootstrap.Progress.Downloading -> {
-                                    Spacer(Modifier.size(8.dp))
-                                    androidx.compose.material3.LinearProgressIndicator(
-                                        progress = { p.fraction.coerceIn(0f, 1f) },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        color = cs.primary
-                                    )
-                                    Text(
-                                        "${p.bytes / 1024} / ${if (p.total > 0) (p.total / 1024).toString() else "?"} KB",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = cs.onSurfaceVariant,
-                                        modifier = Modifier.padding(top = 4.dp)
-                                    )
-                                }
-                                is com.biji.notes.sandbox.BijiBootstrap.Progress.Linking -> {
-                                    Spacer(Modifier.size(8.dp))
-                                    androidx.compose.material3.LinearProgressIndicator(
-                                        progress = { p.current.toFloat() / p.total.toFloat().coerceAtLeast(1f) },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        color = cs.primary
-                                    )
-                                    Text(
-                                        "${p.current} / ${p.total}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = cs.onSurfaceVariant,
-                                        modifier = Modifier.padding(top = 4.dp)
-                                    )
-                                }
-                                is com.biji.notes.sandbox.BijiBootstrap.Progress.Failed -> {
-                                    Spacer(Modifier.size(8.dp))
-                                    Text(
-                                        p.message,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = cs.error
-                                    )
-                                }
-                                else -> Unit
-                            }
-                            Spacer(Modifier.size(8.dp))
-                            val busy = bootstrapProgress is com.biji.notes.sandbox.BijiBootstrap.Progress.Downloading ||
-                                bootstrapProgress is com.biji.notes.sandbox.BijiBootstrap.Progress.Linking
-                            Row {
-                                Row(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(50))
-                                        .background(cs.primary.copy(alpha = 0.14f))
-                                        .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
-                                            scope.launch { bootstrap.install() }
-                                        }
-                                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                                ) {
-                                    Text(
-                                        if (bootstrapInstalled) "重新下载" else "下载并安装",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = cs.primary,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                                if (bootstrapInstalled) {
-                                    Spacer(Modifier.size(8.dp))
-                                    Row(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(50))
-                                            .background(cs.error.copy(alpha = 0.10f))
-                                            .bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
-                                                scope.launch { bootstrap.uninstall() }
-                                            }
-                                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                                    ) {
-                                        Text(
-                                            "卸载",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            color = cs.error,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (runShell != null) {
-                        Spacer(Modifier.size(10.dp))
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .background(cs.primary.copy(alpha = 0.14f))
-                                .bouncyClickable(enabled = !probing, pressedScale = 0.96f) {
-                                    probing = true
-                                    probeReport = emptyList()
-                                    scope.launch {
-                                        val results = tools.map { tool ->
-                                            val (exit, out) = runCatching {
-                                                runShell("command -v $tool 2>/dev/null")
-                                            }.getOrDefault(1 to "")
-                                            val path = out.trim().lineSequence().firstOrNull().orEmpty()
-                                            Triple(tool, exit == 0 && path.isNotBlank(), path)
-                                        }
-                                        probeReport = results
-                                        probing = false
-                                    }
-                                }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (probing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    color = cs.primary,
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(Modifier.size(8.dp))
-                                Text(
-                                    "扫描中…",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = cs.primary,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            } else {
-                                Text(
-                                    "扫描工具链",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = cs.primary,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                    }
-                    if (probeReport.isNotEmpty()) {
-                        Spacer(Modifier.size(8.dp))
-                        probeReport.forEach { (tool, present, path) ->
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(vertical = 2.dp)
-                            ) {
-                                Text(
-                                    if (present) "✓" else "✗",
-                                    color = if (present) cs.primary else cs.error,
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                                Spacer(Modifier.size(8.dp))
-                                Text(
-                                    tool,
-                                    style = MaterialTheme.typography.labelLarge.copy(
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                    ),
-                                    color = cs.onSurface,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Spacer(Modifier.size(8.dp))
-                                Text(
-                                    if (present) path else "未找到",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                    ),
-                                    color = cs.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { if (!busy) open = false }) {
+                    Text("好")
                 }
             },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { open = false }) {
-                    Text("好")
+            text = {
+                Column(
+                    Modifier
+                        .heightIn(max = 460.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    // ---- 状态条 ----
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(cs.surfaceContainerHigh)
+                            .padding(12.dp)
+                    ) {
+                        StatCell("命令", "${manifest.commandCount}", cs.onSurface, Modifier.weight(1f))
+                        StatCell(
+                            "占用",
+                            com.biji.notes.sandbox.ToolchainInstaller.human(manifest.totalBytes),
+                            cs.onSurface, Modifier.weight(1f)
+                        )
+                        StatCell(
+                            "剩余",
+                            com.biji.notes.sandbox.ToolchainInstaller.human(free),
+                            if (free in 1 until 500L * 1024 * 1024) cs.error else cs.onSurface,
+                            Modifier.weight(1f)
+                        )
+                    }
+
+                    // ---- 正在进行 ----
+                    val running = progress
+                    if (running !is com.biji.notes.sandbox.ToolchainProgress.Idle &&
+                        running !is com.biji.notes.sandbox.ToolchainProgress.Done
+                    ) {
+                        Spacer(Modifier.size(10.dp))
+                        val label = when (running) {
+                            is com.biji.notes.sandbox.ToolchainProgress.Downloading ->
+                                "AI 正在下载 ${running.name}" +
+                                    if (running.total > 0)
+                                        "  ${running.bytes * 100 / running.total}%（${com.biji.notes.sandbox.ToolchainInstaller.human(running.total)}）"
+                                    else "  ${com.biji.notes.sandbox.ToolchainInstaller.human(running.bytes)}"
+                            // 解包 zig 是两万多个条目、好几分钟。只写「正在解包」
+                            // 的话这行字一动不动，用户分不清在干活还是卡死了。
+                            // 目录里没登记安装后体积时（手工 url 装）算不出百分比，
+                            // 退回报条目数 —— 它至少能证明还在动。
+                            is com.biji.notes.sandbox.ToolchainProgress.Extracting ->
+                                "正在解包 ${running.name}" + (
+                                    running.fraction?.let { "  ${(it * 100).toInt()}%" }
+                                        ?: "  ${running.entries} 个文件"
+                                    )
+                            is com.biji.notes.sandbox.ToolchainProgress.Verifying -> "正在校验 ${running.name}"
+                            is com.biji.notes.sandbox.ToolchainProgress.Failed -> "${running.name} 安装失败：${running.message.take(80)}"
+                            else -> ""
+                        }
+                        val failed = running is com.biji.notes.sandbox.ToolchainProgress.Failed
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (failed) cs.error else cs.primary
+                        )
+                        if (!failed) {
+                            // 两个阶段都可能算得出比例，算不出的（体积未知、校验中）
+                            // 才走不确定式。null 而不是 0f —— 一条停在最左边的确定式
+                            // 进度条看着就是卡死了。
+                            val frac: Float? = when (running) {
+                                is com.biji.notes.sandbox.ToolchainProgress.Downloading ->
+                                    if (running.total > 0)
+                                        (running.bytes.toFloat() / running.total).coerceIn(0f, 1f)
+                                    else null
+                                is com.biji.notes.sandbox.ToolchainProgress.Extracting -> running.fraction
+                                else -> null
+                            }
+                            Spacer(Modifier.size(4.dp))
+                            if (frac != null) {
+                                androidx.compose.material3.LinearProgressIndicator(
+                                    progress = { frac },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = cs.primary
+                                )
+                            } else {
+                                androidx.compose.material3.LinearProgressIndicator(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = cs.primary
+                                )
+                            }
+                        }
+                    }
+
+                    // ---- 已装工具 ----
+                    Spacer(Modifier.size(14.dp))
+                    if (manifest.tools.isEmpty()) {
+                        Text(
+                            "还没装工具",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.onSurfaceVariant
+                        )
+                    } else {
+                        var showAll by remember { mutableStateOf(false) }
+                        var manage by remember { mutableStateOf(false) }
+                        val sorted = manifest.tools.sortedByDescending { it.sizeBytes }
+                        val shown = if (showAll) sorted else sorted.take(8)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "已装 ${sorted.size} 个",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = cs.onSurface,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                if (manage) "完成" else "管理",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = cs.primary,
+                                modifier = Modifier.bouncyClickable(pressedScale = 0.95f) {
+                                    manage = !manage
+                                }
+                            )
+                        }
+                        Spacer(Modifier.size(4.dp))
+                        shown.forEach { t -> ToolLine(t, manage, busy, cs) { name ->
+                            busy = true
+                            scope.launch {
+                                val r = installer.remove(name, purge = true)
+                                toast = r.message
+                                busy = false
+                            }
+                        } }
+                        if (sorted.size > 8) {
+                            Text(
+                                if (showAll) "收起" else "展开全部（${sorted.size}）",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = cs.primary,
+                                modifier = Modifier
+                                    .padding(top = 4.dp)
+                                    .bouncyClickable(pressedScale = 0.96f) { showAll = !showAll }
+                            )
+                        }
+                    }
+
+                    // ---- 策略 ----
+                    Spacer(Modifier.size(16.dp))
+                    HorizontalDivider(thickness = 0.5.dp, color = cs.outlineVariant)
+                    Spacer(Modifier.size(8.dp))
+                    val policy = manifest.policy
+                    // setPolicy 会写一次账本文件（几 KB），扇到 IO 上做，
+                    // 别让开关的动画去等一次 write。
+                    MiniToggle("允许 AI 自动装工具", null, policy.autoInstall) { v ->
+                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            installer.setPolicy(policy.copy(autoInstall = v))
+                        }
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        "磁盘预算",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = cs.onSurface,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.size(4.dp))
+                    Row {
+                        listOf(
+                            "512 MB" to 512L * 1024 * 1024,
+                            "2 GB" to 2L * 1024 * 1024 * 1024,
+                            "不限" to com.biji.notes.sandbox.ToolchainPolicy.UNLIMITED
+                        ).forEach { (label, value) ->
+                            val on = policy.budgetBytes == value
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (on) cs.primary else cs.onSurfaceVariant,
+                                fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                                modifier = Modifier
+                                    .padding(end = 8.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(
+                                        if (on) cs.primary.copy(alpha = 0.14f) else cs.surfaceContainerHigh
+                                    )
+                                    .bouncyClickable(pressedScale = 0.95f) {
+                                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                            installer.setPolicy(policy.copy(budgetBytes = value))
+                                        }
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+
+                    // ---- 兜底动作 ----
+                    Spacer(Modifier.size(16.dp))
+                    HorizontalDivider(thickness = 0.5.dp, color = cs.outlineVariant)
+                    Spacer(Modifier.size(8.dp))
+                    var confirmWipe by remember { mutableStateOf(false) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (confirmWipe) "确定清空？" else "全部清空并重建",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = cs.error,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.bouncyClickable(enabled = !busy, pressedScale = 0.96f) {
+                                if (!confirmWipe) confirmWipe = true
+                                else {
+                                    busy = true
+                                    scope.launch {
+                                        val r = installer.wipe()
+                                        toast = r.message
+                                        confirmWipe = false
+                                        busy = false
+                                    }
+                                }
+                            }
+                        )
+                    }
+
+                    // ---- 高级 ----
+                    Spacer(Modifier.size(12.dp))
+                    var advanced by remember { mutableStateOf(false) }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .bouncyClickable(pressedScale = 0.99f) { advanced = !advanced }
+                    ) {
+                        Text(
+                            "高级",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = cs.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Icon(
+                            Icons.Rounded.ChevronRight,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp).rotate(if (advanced) 90f else 0f),
+                            tint = cs.onSurfaceVariant
+                        )
+                    }
+                    if (advanced) {
+                        Spacer(Modifier.size(6.dp))
+                        Text(
+                            "bin  ${installer.binDir.absolutePath}\nopt  ${installer.optDir.absolutePath}",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            ),
+                            color = cs.onSurfaceVariant
+                        )
+                        Spacer(Modifier.size(10.dp))
+                        ManualInstall(installer, busy, { busy = it }) { toast = it }
+                    }
+
+                    toast?.let {
+                        Spacer(Modifier.size(10.dp))
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = cs.onSurfaceVariant
+                        )
+                    }
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun StatCell(label: String, value: String, color: Color, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(
+            value,
+            style = MaterialTheme.typography.titleMedium,
+            color = color,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** 一行只读的已装工具。默认没有按钮 —— 点「管理」才露出删除。 */
+@Composable
+private fun ToolLine(
+    t: com.biji.notes.sandbox.InstalledTool,
+    manage: Boolean,
+    busy: Boolean,
+    cs: androidx.compose.material3.ColorScheme,
+    onRemove: (String) -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            t.name,
+            style = MaterialTheme.typography.labelLarge.copy(
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+            ),
+            color = if (t.smokeOk) cs.onSurface else cs.error,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            com.biji.notes.sandbox.ToolchainInstaller.human(t.sizeBytes),
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.onSurfaceVariant
+        )
+        if (manage) {
+            Spacer(Modifier.size(10.dp))
+            Text(
+                "删除",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.error,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.bouncyClickable(enabled = !busy, pressedScale = 0.95f) {
+                    onRemove(t.name)
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun MiniToggle(
+    title: String,
+    subtitle: String?,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .bouncyClickable(pressedScale = 0.99f) { onChange(!checked) }
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.labelLarge, color = cs.onSurface)
+            if (subtitle != null) {
+                Text(subtitle, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+            }
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** 手动直链安装。主路径是让 AI 装，这里只是高级区里的一个逃生口 ——
+ *  走的是和 AI 完全相同的那条安装流水线（校验 + 验活 + 记账）。 */
+@Composable
+private fun ManualInstall(
+    installer: com.biji.notes.sandbox.ToolchainInstaller,
+    busy: Boolean,
+    setBusy: (Boolean) -> Unit,
+    onResult: (String) -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var name by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            "aarch64 静态二进制直链",
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.onSurfaceVariant
+        )
+        Spacer(Modifier.size(6.dp))
+        androidx.compose.material3.OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("命令名，如 rg") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.size(6.dp))
+        androidx.compose.material3.OutlinedTextField(
+            value = url,
+            onValueChange = { url = it },
+            label = { Text("下载直链 https://…") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.size(8.dp))
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(cs.primary.copy(alpha = 0.14f))
+                .bouncyClickable(
+                    enabled = !busy && name.isNotBlank() && url.startsWith("https://"),
+                    pressedScale = 0.95f
+                ) {
+                    setBusy(true)
+                    scope.launch {
+                        val r = installer.install(
+                            com.biji.notes.sandbox.InstallRequest(
+                                url = url.trim(),
+                                binName = name.trim(),
+                                installedBy = "user",
+                                note = "设置页手动安装"
+                            )
+                        )
+                        onResult(r.message)
+                        if (r.ok) { name = ""; url = "" }
+                        setBusy(false)
+                    }
+                }
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp), color = cs.primary, strokeWidth = 2.dp
+                )
+            } else {
+                Text(
+                    "下载安装",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cs.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
     }
 }
 
