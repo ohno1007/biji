@@ -430,11 +430,22 @@ internal class ContainerSession(
 
         @Synchronized fun append(s: String) {
             sb.append(s)
-            if (sb.length > HARD_CAP) {
-                val cut = sb.length - HARD_CAP
-                sb.delete(0, cut)
-                dropped += cut
-            }
+            if (sb.length <= HARD_CAP) return
+            // 一次砍到低水位，而不是"多出多少砍多少"。
+            //
+            // 后者的问题在于：缓冲一旦顶到上限，**之后每一次 append 都要触发
+            // 一次 delete(0, cut)**，而 StringBuilder 的 delete 是把后面整段
+            // memmove 到前面 —— 每次搬近 HARD_CAP 个字符。`yes` 这类命令一秒
+            // 吐几十 MB，按 4 KB 一个 chunk 算，跑 100 MB 就是两万五千次
+            // × 一百万字符的搬移，两百多亿次字符拷贝，全花在把同一批数据
+            // 反复往前挪。
+            //
+            // 砍到 3/4 之后，下一次触发要再攒够 1/4 上限的量，摊还下来每个
+            // 字符最多被搬一次。代价是最坏情况下留的是 75% 而不是 100% 的
+            // 尾巴 —— 这本来就是个"只保尾巴"的有损缓冲，无所谓。
+            val cut = sb.length - LOW_WATER
+            sb.delete(0, cut)
+            dropped += cut
         }
 
         @Synchronized fun takeDropped(): Long {
@@ -462,12 +473,15 @@ internal class ContainerSession(
 
         companion object {
             const val HARD_CAP = 1_000_000
+
+            /** 超限后一次砍到这里。见 [append] 里为什么不是"多出多少砍多少"。 */
+            const val LOW_WATER = HARD_CAP * 3 / 4
         }
     }
 
     companion object {
-        // 用 Char(n) 而不是 '\uXXXX' 字面量：这三行要经过 JSON 通道搬运时，
-        // \u 转义会被提前解码成真正的控制字符塞进源文件 —— 编译照样过，但
+        // 用 Char(n) 而不是反斜杠 u 转义：这三行要经过 JSON 通道搬运时，
+        // 那种转义会被提前解码成真正的控制字符塞进源文件 —— 编译照样过，但
         // 源码里从此躺着三个看不见的字节。Char(1) 语义完全相同且搬不坏。
         private val SOH = Char(1)
         private val STX = Char(2)
