@@ -932,7 +932,7 @@ class ChatViewModel(
         val live = chat.getLiveMessages(convoId)
         // 归档的是一整段**连续前缀** —— 切点之前的所有消息，包括夹在中间的
         // tool 结果。曾经这里归档的是「过滤掉 TOOL_RESULT 之后的子集」，
-        // 于是跑过 50 条命令的会话，摘要把寒的压没了，几百 KB 的 stdout
+        // 于是跑过 50 条命令的会话，摘要把寒暄压没了，几百 KB 的 stdout
         // 一条不少地留着。
         //
         // 这里只用正文条数做一道「太短就别压」的闸：会话还没几个来回时压缩
@@ -997,7 +997,7 @@ class ChatViewModel(
             // 但至少是能跑通的。
             model = s.model,
             system = "请把下面这段多轮对话压缩成一段不超过 500 字的客观摘要，" +
-                "保留关键事实、已确认的偏好、未决的问题与代办，去除寒的。直接输出摘要正文，不要加标题。",
+                "保留关键事实、已确认的偏好、未决的问题与代办，去除寒暄。直接输出摘要正文，不要加标题。",
             user = transcript
         ).getOrNull()?.takeIf { it.isNotBlank() }
 
