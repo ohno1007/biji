@@ -645,7 +645,7 @@ class TerminalSession(
                         note("^C 发不出信号，命令不会停。")
                     }
                     // 还是把 0x03 送进去：个别自己读 stdin 的程序认这个字节。
-                    runCatching { run.shell.sendRaw("") }
+                    runCatching { run.shell.sendRaw("\\u0003") }
                 }
                 CTRL_D_CHAR -> {
                     if (!run.warnedNoEof) {
@@ -784,14 +784,14 @@ class TerminalSession(
         const val AUTO_FALLBACK_WINDOW_MS = 3000L
 
         const val CTRL_C: Byte = 0x03
-        const val CTRL_C_CHAR = ''
-        const val CTRL_D_CHAR = ''
+        const val CTRL_C_CHAR = '\\u0003'
+        const val CTRL_D_CHAR = '\\u0004'
         const val BACKSPACE = '\b'
-        const val DELETE = ''
+        const val DELETE = '\\u007F'
 
         /** SGR 红色，降级路径里用来标出 stderr。 */
-        const val SGR_RED = "[31m"
-        const val SGR_RESET = "[0m"
+        const val SGR_RED = "\\u001B[31m"
+        const val SGR_RESET = "\\u001B[0m"
     }
 }
 
