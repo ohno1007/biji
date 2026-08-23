@@ -77,6 +77,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -203,11 +204,11 @@ private fun toolKindOf(m: Message): String? {
     return kind
 }
 
-private const val KIND_HEAD = "{\"kind\":\""
+private const val KIND_HEAD = "{\\\"kind\\\":\\\""
 
 private fun scanToolKind(raw: String): String? {
     if (raw.startsWith(KIND_HEAD)) {
-        val end = raw.indexOf('"', KIND_HEAD.length)
+        val end = raw.indexOf('\"', KIND_HEAD.length)
         if (end > KIND_HEAD.length) return raw.substring(KIND_HEAD.length, end)
     }
     return runCatching {
@@ -232,7 +233,10 @@ internal fun groupChatItems(messages: List<Message>): List<ChatItem> {
         }
     }
     for (m in messages) {
-        if (m.archived) continue
+        // 归档 ≠ 删除。压缩只该改变**发给 API 的内容**（那条路走
+        // getLiveMessages，本来就过滤 archived），不该动用户看到的东西。
+        // 原来这里 `continue`，结果一压缩用户往上翻，自己的聊天记录就没了 ——
+        // 数据一直在库里，是 UI 拒绝渲染。
         val toolKind = toolKindOf(m)
         val isSearch = toolKind == Tools.WEB_SEARCH
         val isSandbox = toolKind == Tools.LIST_DIRECTORY ||
@@ -420,7 +424,7 @@ fun ChatScreen(
                             ReasoningBlock(
                                 reasoning = item.messages
                                     .mapNotNull { it.reasoning?.takeIf { r -> r.isNotBlank() } }
-                                    .joinToString("\n\n")
+                                    .joinToString("\\n\\n")
                             )
                         }
                     }
@@ -721,7 +725,7 @@ private fun FolderRenameDialog(
         text = {
             Column {
                 Text(
-                    "为这个会话选一个工作目录名称。AI 的 read_file / write_file / list_directory 工具会限定在这个目录里，shell 命令以它为默认 cwd 但不受限制。",
+                    "这个会话的工作目录名",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1076,7 +1080,6 @@ private fun ContextRing(
 
 @Composable
 private fun MessageItem(m: Message, onOpenUrl: (String) -> Unit) {
-    if (m.archived) return
     if (m.kind == MessageKind.CONTEXT_SUMMARY) {
         ArchivedSummary(m)
         return
@@ -1128,26 +1131,38 @@ private fun MessageItem(m: Message, onOpenUrl: (String) -> Unit) {
 @Composable
 private fun ArchivedSummary(m: Message) {
     val cs = MaterialTheme.colorScheme
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(cs.surfaceContainerLow)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            Icons.Outlined.AutoAwesome,
-            contentDescription = null,
-            modifier = Modifier.size(14.dp),
-            tint = cs.primary
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "早期对话已自动向量化压缩",
-            style = MaterialTheme.typography.labelLarge,
-            color = cs.onSurfaceVariant
-        )
+    var open by remember(m.id) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .bouncyClickable(pressedScale = 0.99f) { open = !open }
+                .padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HorizontalDivider(Modifier.weight(1f), thickness = 0.5.dp, color = cs.outlineVariant)
+            Text(
+                "模型上下文从这里开始",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
+            HorizontalDivider(Modifier.weight(1f), thickness = 0.5.dp, color = cs.outlineVariant)
+        }
+        AnimatedVisibility(visible = open, enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()) {
+            Text(
+                m.content,
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(cs.surfaceContainerLow)
+                    .padding(12.dp)
+            )
+        }
     }
 }
 
@@ -1210,11 +1225,11 @@ private fun AssistantBlock(m: Message, onOpenUrl: (String) -> Unit = {}) {
 // 输出时这个函数每 90ms 对全文跑一次，编译开销比匹配还大。提到
 // 顶层只编译一次。
 private val ToolMarkupClosed =
-    Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*?</\\|\\|[A-Za-z]+\\|\\|[^>]*>")
+    Regex("<\\\\|\\\\|[A-Za-z]+\\\\|\\\\|[\\\\s\\\\S]*?</\\\\|\\\\|[A-Za-z]+\\\\|\\\\|[^>]*>")
 private val ToolMarkupClosedAlt =
-    Regex("<\\|tool_calls?\\|>[\\s\\S]*?</\\|tool_calls?\\|>")
-private val ToolMarkupOpen = Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*$")
-private val ToolMarkupOpenAlt = Regex("<\\|tool_calls?\\|>[\\s\\S]*$")
+    Regex("<\\\\|tool_calls?\\\\|>[\\\\s\\\\S]*?</\\\\|tool_calls?\\\\|>")
+private val ToolMarkupOpen = Regex("<\\\\|\\\\|[A-Za-z]+\\\\|\\\\|[\\\\s\\\\S]*$")
+private val ToolMarkupOpenAlt = Regex("<\\\\|tool_calls?\\\\|>[\\\\s\\\\S]*$")
 
 internal fun stripToolCallMarkup(raw: String): String {
     // 绝大多数消息里根本没有这种标记，先做一次廉价的 contains 判断，
