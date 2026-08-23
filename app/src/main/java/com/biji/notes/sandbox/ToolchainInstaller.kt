@@ -1817,7 +1817,7 @@ class ToolchainInstaller(
     // =================================================================
 
     /**
-     * 一次性把「架构 / 磁盘 / PATH 上有什么」全捠回来。
+     * 一次性把「架构 / 磁盘 / PATH 上有什么」全捞回来。
      *
      * 不 fork shell 做 `command -v`：一是 30 次 fork 很贵，二是 shell 的
      * PATH 和实际执行环境未必一致（老的 check_environment 就栽在这上面），
