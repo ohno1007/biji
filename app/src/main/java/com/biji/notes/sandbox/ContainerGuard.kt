@@ -60,7 +60,12 @@ internal object ContainerGuard {
         if (CHMOD_ROOT.containsMatchIn(c)) return "chmod 改根目录权限"
         if (CHOWN_ROOT.containsMatchIn(c)) return "chown 改根目录归属"
         if (POWER.containsMatchIn(c)) return "关机 / 重启"
-        if (SU.containsMatchIn(c)) return "容器内不提供 root（root 模式请走 run_shell_command）"
+        // 这条会**原样进模型的上下文**，所以不能点名 run_shell_command：
+        // 它现在只在设置里开了 root 时才发给模型（Tools.definitions(useRoot)），
+        // 关着的时候照这句去调，模型拿到的是一个非 root 的 shell —— 它要的是
+        // root，得到的却是一次静默降级。root 开着时该怎么走，由系统提示里的
+        // ROOT_SHELL_BRIEF 负责讲，那一条和工具列表是同一个开关。
+        if (SU.containsMatchIn(c)) return "容器内不提供 root（su / sudo 都不可用）"
         if (PKG_MGR.containsMatchIn(c)) return "pm 卸载 / 清数据会动到设备上的其它应用"
         return null
     }
