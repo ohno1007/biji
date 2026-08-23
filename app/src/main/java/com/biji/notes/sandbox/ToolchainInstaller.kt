@@ -185,7 +185,7 @@ object ElfProbe {
                             val b = ByteArray(pFilesz.toInt())
                             raf.seek(pOffset)
                             raf.readFully(b)
-                            interp = String(b, Charsets.UTF_8).trimEnd(' ')
+                            interp = String(b, Charsets.UTF_8).trimEnd(NUL)
                         }
                         PT_DYNAMIC -> { dynOff = pOffset; dynSize = pFilesz }
                         PT_LOAD -> loads += Triple(pVaddr, pFilesz, pOffset)
@@ -340,7 +340,7 @@ internal class TarReader(private val input: InputStream) {
             var name = cstr(header, 0, 100)
             val mode = octal(header, 100, 8).toInt()
             val size = numeric(header, 124, 12)
-            val type = header[156].toInt().toChar().let { if (it == ' ') '0' else it }
+            val type = header[156].toInt().toChar().let { if (it == NUL) '0' else it }
             val linkName = cstr(header, 157, 100)
             val prefix = if (isPosixUstar(header)) cstr(header, 345, 155) else ""
             if (prefix.isNotEmpty()) name = "$prefix/$name"
@@ -349,7 +349,7 @@ internal class TarReader(private val input: InputStream) {
             padding = ((512 - (size % 512)) % 512)
 
             when (type) {
-                'L' -> { pendingLongName = readCurrentAsString().trimEnd(' '); continue }
+                'L' -> { pendingLongName = readCurrentAsString().trimEnd(NUL); continue }
                 'K' -> { readCurrentAsString(); continue }   // GNU longlink，用不上
                 'x', 'X' -> { pendingPaxPath = parsePaxPath(readCurrentAsString()); continue }
                 'g' -> { readCurrentAsString(); continue }   // PAX 全局头
@@ -426,7 +426,7 @@ internal class TarReader(private val input: InputStream) {
 
     private fun octal(b: ByteArray, off: Int, len: Int): Long =
         String(b, off, len, Charsets.US_ASCII)
-            .trim(' ', ' ').takeIf { it.isNotEmpty() }?.toLongOrNull(8) ?: 0L
+            .trim(NUL, ' ').takeIf { it.isNotEmpty() }?.toLongOrNull(8) ?: 0L
 
     /** GNU 对 >8 GB 的文件用 base-256 编码（首字节 0x80），虽然这里
      *  遇不到，但解错会把整条流的偏移带歪，成本很低就顺手处理了。 */
@@ -575,6 +575,16 @@ data class ManageResult(
  *    才动 bin / opt；smoke 没过就整包回滚。半成品比装不上更坑。
  * 3. **按名字加锁**。两个 tool call 同时装同一个东西不会互相踩临时文件。
  */
+/**
+ * tar header 里的填充字节。
+ *
+ * 写成 `Char(0)` 而不是反斜杠 u 转义：这份源码要经 JSON 通道搬运（git push
+ * 没凭据时只能走 GitHub API），而那种转义在送达之前必然被解码成真正的
+ * 控制字节塞进源文件 —— 编译照样过，但源码里从此躺着几个看不见的字节，
+ * 而且每次搬运都会再错一次。
+ */
+private val NUL = Char(0)
+
 class ToolchainInstaller(
     context: Context,
     private val bootstrap: BijiBootstrap
@@ -1183,7 +1193,7 @@ class ToolchainInstaller(
             val e = reader.next() ?: break
             if (seen.size < MAX_LISTING) seen += e.name
             if (e.type == '5') continue                    // 目录：按需在写文件时建
-            if (e.type != '0' && e.type != ' ' && e.type != '2') continue
+            if (e.type != '0' && e.type != NUL && e.type != '2') continue
             if (!matchesAny(patterns, e.name)) continue
             val rel = strip(e.name, req.stripComponents) ?: continue
             val dst = safeChild(stage, if (flat) rel.substringAfterLast('/') else rel) ?: continue
@@ -1430,7 +1440,7 @@ class ToolchainInstaller(
         val attempts = listOf(listOf("--list"), listOf("--long"), listOf("--help"), emptyList())
         val names = attempts.firstNotNullOfOrNull { flags ->
             val r = exec(listOf(main.absolutePath) + flags, 8_000L)
-            r.output.split(Regex("[\\\\s,]+"))
+            r.output.split(Regex("[\\s,]+"))
                 .map { it.trim().substringAfterLast('/') }
                 .filter { n ->
                     n.isNotBlank() && n.length <= 24 &&
