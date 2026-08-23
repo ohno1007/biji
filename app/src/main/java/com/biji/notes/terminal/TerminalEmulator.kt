@@ -85,6 +85,20 @@ interface TerminalHost {
  *  - **`XTVERSION` / `XTGETTCAP`**：tmux 查不到会自己降级，无害。
  *  - **双向文字 / 阿拉伯字形整形**：终端是网格，容器里的程序也按 wcwidth 算列。
  */
+
+/**
+ * ESC (0x1B)。
+ *
+ * 不写成反斜杠 u 转义：这份源码要经 JSON 通道搬运（本地 git push 没凭据时
+ * 只能走 GitHub API），那种转义在送达之前必然被解码成真正的 0x1B 字节塞进
+ * 源文件 —— 编译照样过，但源码里从此躺着一堆看不见的控制字符，而且每搬一次
+ * 就再错一次。插值写法反而更贴近它表达的东西：ESC + 后面那串。
+ */
+private val ESC = Char(0x1B).toString()
+
+/** DEL (0x7F)。同上，别写成转义。 */
+private val DEL = Char(0x7F).toString()
+
 class TerminalEmulator(
     cols: Int,
     rows: Int,
@@ -607,7 +621,7 @@ class TerminalEmulator(
             }
             '>'.code -> {
                 // DA2。vim / tmux 会等这个回复，不回就是启动时的一次超时卡顿。
-                if (f == 'c') respond("[>0;10;1c")
+                if (f == 'c') respond("${ESC}[>0;10;1c")
                 return
             }
             '='.code -> return   // DA3 等，认得但不回
@@ -1268,12 +1282,12 @@ class TerminalEmulator(
 
     private fun deviceStatus() {
         when (param(0, 0)) {
-            5 -> respond("[0n")
+            5 -> respond("${ESC}[0n")
             // CPR。**不回复会让部分程序直接阻塞等待**（bash 的 checkwinsize、
             // zsh 的行编辑都会问）。原点模式下要报相对坐标。
             6 -> {
                 val r = if (decom) cursorRow - scrollTop else cursorRow
-                respond("[${r + 1};${cursorCol + 1}R")
+                respond("${ESC}[${r + 1};${cursorCol + 1}R")
             }
         }
     }
@@ -1282,7 +1296,7 @@ class TerminalEmulator(
         when (param(0, 0)) {
             6 -> {
                 val r = if (decom) cursorRow - scrollTop else cursorRow
-                respond("[?${r + 1};${cursorCol + 1}R")
+                respond("${ESC}[?${r + 1};${cursorCol + 1}R")
             }
             // 其余（打印机、UDK 状态）一律不回：回错比不回更糟。
         }
@@ -1301,7 +1315,7 @@ class TerminalEmulator(
             2026 -> if (syncUpdate) 1 else 2
             else -> 0   // 0 = 不认识这个模式
         }
-        respond("[?$m;$v\$y")
+        respond("${ESC}[?$m;$v\$y")
     }
 
     // -----------------------------------------------------------------
@@ -1404,11 +1418,11 @@ class TerminalEmulator(
         val idx = parts[0].toIntOrNull() ?: return
         if (idx !in 0..255) return
         val argb = TerminalColors.DEFAULT_PALETTE[idx]
-        respond("]4;$idx;${rgbSpec(argb)}\\")
+        respond("${ESC}]4;$idx;${rgbSpec(argb)}${ESC}\\")
     }
 
     private fun respondColor(code: Int, argb: Int) {
-        respond("]$code;${rgbSpec(argb)}\\")
+        respond("${ESC}]$code;${rgbSpec(argb)}${ESC}\\")
     }
 
     /**
@@ -1618,7 +1632,7 @@ class TerminalEmulator(
         val modParam = 1 + (if (shift) 1 else 0) + (if (alt) 2 else 0) + (if (ctrl) 4 else 0)
         val plain = modParam == 1
 
-        fun esc(body: String) = if (alt && key != KEY_CHAR) "$body" else body
+        fun esc(body: String) = if (alt && key != KEY_CHAR) "${ESC}$body" else body
 
         return when (key) {
             KEY_CHAR -> {
@@ -1630,7 +1644,7 @@ class TerminalEmulator(
                 }
                 // Alt 前缀一个 ESC（xterm 的 metaSendsEscape）：readline 的
                 // Alt-b / Alt-f、vim 的 Alt 映射全指望这个。
-                if (alt) "$body" else body
+                if (alt) "${ESC}$body" else body
             }
             // 光标键：DECCKM 决定发 CSI 还是 SS3。不做的话 vi 里方向键失灵。
             KEY_UP -> cursorKey('A', plain, modParam)
@@ -1644,11 +1658,11 @@ class TerminalEmulator(
             KEY_PAGE_UP -> tildeKey(5, plain, modParam)
             KEY_PAGE_DOWN -> tildeKey(6, plain, modParam)
             KEY_ENTER -> esc(if (lnm) "\r\n" else "\r")
-            KEY_TAB -> if (shift) "[Z" else esc("\t")
+            KEY_TAB -> if (shift) "${ESC}[Z" else esc("\t")
             // 退格发 DEL(0x7F) 不是 BS(0x08)：terminfo 里 xterm 的 kbs 就是 \177，
             // 发 0x08 的话 bash 行编辑删不掉字符，只是把光标往左挪。
-            KEY_BACKSPACE -> esc(if (ctrl) "\b" else "")
-            KEY_ESCAPE -> ""
+            KEY_BACKSPACE -> esc(if (ctrl) "\b" else DEL)
+            KEY_ESCAPE -> "${ESC}"
             KEY_F1 -> functionKey(0, plain, modParam)
             KEY_F2 -> functionKey(1, plain, modParam)
             KEY_F3 -> functionKey(2, plain, modParam)
@@ -1666,17 +1680,17 @@ class TerminalEmulator(
     }
 
     private fun cursorKey(final: Char, plain: Boolean, modParam: Int): String = when {
-        !plain -> "[1;$modParam$final"
-        decckm -> "O$final"
-        else -> "[$final"
+        !plain -> "${ESC}[1;$modParam$final"
+        decckm -> "${ESC}O$final"
+        else -> "${ESC}[$final"
     }
 
     private fun tildeKey(n: Int, plain: Boolean, modParam: Int): String =
-        if (plain) "[$n~" else "[$n;$modParam~"
+        if (plain) "${ESC}[$n~" else "${ESC}[$n;$modParam~"
 
     private fun functionKey(i: Int, plain: Boolean, modParam: Int): String {
         val final = "PQRS"[i]
-        return if (plain) "O$final" else "[1;$modParam$final"
+        return if (plain) "${ESC}O$final" else "${ESC}[1;$modParam$final"
     }
 
     private fun controlChar(cp: Int): String? {
@@ -1705,7 +1719,7 @@ class TerminalEmulator(
     fun encodePaste(text: String): ByteArray {
         val wrap = synchronized(lock) { bracketedPaste }
         val sb = StringBuilder(text.length + 16)
-        if (wrap) sb.append("[200~")
+        if (wrap) sb.append("${ESC}[200~")
         var i = 0
         while (i < text.length) {
             val ch = text[i]
@@ -1715,12 +1729,12 @@ class TerminalEmulator(
                     if (i + 1 < text.length && text[i + 1] == '\n') i++
                 }
                 ch == '\n' -> sb.append('\r')
-                ch == '' -> Unit
+                ch == Char(0x1B) -> Unit
                 else -> sb.append(ch)
             }
             i++
         }
-        if (wrap) sb.append("[201~")
+        if (wrap) sb.append("${ESC}[201~")
         return sb.toString().toByteArray(Charsets.UTF_8)
     }
 
@@ -1731,9 +1745,9 @@ class TerminalEmulator(
     fun encodeFocus(focused: Boolean): ByteArray? {
         val s = synchronized(lock) {
             if (!focusEvents) return@synchronized null
-            // ESC 写成  而不是源码里的裸 0x1B 字节：裸控制符会被很多工具
+            // ESC 写成 ${ESC} 而不是源码里的裸 0x1B 字节：裸控制符会被很多工具
             // （格式化器 / patch / 剪贴板）静默吃掉，一旦丢了就是把字面量 "[I" 敲进 shell 命令行。
-            if (focused) "[I" else "[O"
+            if (focused) "${ESC}[I" else "${ESC}[O"
         } ?: return null
         return s.toByteArray(Charsets.US_ASCII)
     }
@@ -1757,13 +1771,13 @@ class TerminalEmulator(
             val x = col + 1
             val y = row + 1
             if (mouseSgr) {
-                "[<$b;$x;$y${if (pressed) 'M' else 'm'}"
+                "${ESC}[<$b;$x;$y${if (pressed) 'M' else 'm'}"
             } else {
                 // X10：坐标 +32 塞进一个字节，超过 223 就没法表达了，直接丢弃
                 // 比发一个错的坐标好（错的坐标会让 vim 把光标扔到屏幕外）。
                 if (x > 223 || y > 223) return@synchronized null
                 val code = if (pressed) b else 3
-                "[M${(32 + code).toChar()}${(32 + x).toChar()}${(32 + y).toChar()}"
+                "${ESC}[M${(32 + code).toChar()}${(32 + x).toChar()}${(32 + y).toChar()}"
             }
         } ?: return null
         return s.toByteArray(Charsets.UTF_8)
@@ -1795,7 +1809,7 @@ class TerminalEmulator(
         private const val COLOR_UNSET = Int.MIN_VALUE + 1
 
         /** DA1：宣称 VT220 级 + 132 列 + 选择性擦除 + 彩色 + 技术字符 + ANSI 颜色。 */
-        private const val DA1 = "[?62;1;6;9;15;22c"
+        private val DA1 = "${ESC}[?62;1;6;9;15;22c"
 
         // ---- encodeKey 的键码 ----
         const val KEY_CHAR = 0
@@ -1873,21 +1887,21 @@ class TerminalEmulator(
             if (e.screenText().lineSequence().first() != "a中😀b") return@runCatching false
 
             // CUP + SGR 31 + EL。CUP 是 1 起的，(2,3) → 屏幕 (1,2)。
-            e.feed("[2;3H[31mX[0m[K")
+            e.feed("${ESC}[2;3H${ESC}[31mX${ESC}[0m${ESC}[K")
             if (e.cellForeground(1, 2) != 1) return@runCatching false
             if (e.cursorPosition != (1 shl 16 or 3)) return@runCatching false
 
             // 分片：一条 SGR 被劈成三段，状态必须跨 feed 保持。
-            e.feed("[3")
+            e.feed("${ESC}[3")
             e.feed("2")
             e.feed("mG")
             if (e.cellForeground(1, 3) != 2) return@runCatching false
 
             // 备用屏往返：主屏内容必须原样还在。
             val before = e.screenText()
-            e.feed("[?1049h")
-            e.feed("[HZZZ")
-            e.feed("[?1049l")
+            e.feed("${ESC}[?1049h")
+            e.feed("${ESC}[HZZZ")
+            e.feed("${ESC}[?1049l")
             if (e.screenText() != before) return@runCatching false
 
             // 延迟换行：正好写满一行不能立刻换行。
