@@ -312,6 +312,22 @@ class AiContainer internal constructor(
 
     private fun touch() { lastUsedAt = System.currentTimeMillis() }
 
+    /**
+     * 正在跑的前台 [exec] 条数。
+     *
+     * [lastUsedAt] 是在 exec **开始**时打的，一条 120 秒的编译跑到第 61 秒时
+     * 它已经"闲置 61 秒"了 —— 而 AiContainerManager.trimToCap 的门槛正是 60 秒，
+     * 且它只跳过有**后台任务**（container_task）在跑的容器。于是一条正在跑的
+     * container_exec 会被判成可回收，[shutdown] 把长驻 shell 连同 scope 一起
+     * 收掉，用户看到的是编译无缘无故断在半路。
+     *
+     * 回收方必须同时看这个计数，见 [busy]。
+     */
+    private val inFlight = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** 有前台命令正在这个容器里跑。回收前必须问一句。 */
+    val busy: Boolean get() = inFlight.get() > 0
+
     // ---- 容器管理 ------------------------------------------------------
 
     /** 建目录 + 写 README。已存在的东西不覆盖，除非 [force]。 */
@@ -467,21 +483,29 @@ class AiContainer internal constructor(
         touch()
         val blocked = guard(command)
         if (blocked != null) return blocked
-        return runCatching {
-            layout.mkdirs()
-            session.run(
-                command = command,
-                cwdOverride = cwd?.takeIf { it.isNotBlank() }?.let { resolveCwd(it) },
-                timeoutMs = timeoutMs.coerceIn(MIN_EXEC_TIMEOUT_MS, MAX_EXEC_TIMEOUT_MS),
-                stdin = stdin,
-                maxOutputChars = maxOutputChars.coerceIn(512, HARD_MAX_OUTPUT)
-            )
-        }.getOrElse { e ->
-            ExecResult(
-                command = command, stdout = "", stderr = "", exitCode = -1,
-                cwd = session.cwd, durationMs = 0L, timedOut = false, truncated = false,
-                error = e.message ?: e.javaClass.simpleName
-            )
+        // 计数必须**包住整条命令**，不能只在入口 touch 一下：回收方看的是
+        // 「现在有没有人在里面跑」，而不是「最后一次进来是多久以前」。
+        inFlight.incrementAndGet()
+        return try {
+            runCatching {
+                layout.mkdirs()
+                session.run(
+                    command = command,
+                    cwdOverride = cwd?.takeIf { it.isNotBlank() }?.let { resolveCwd(it) },
+                    timeoutMs = timeoutMs.coerceIn(MIN_EXEC_TIMEOUT_MS, MAX_EXEC_TIMEOUT_MS),
+                    stdin = stdin,
+                    maxOutputChars = maxOutputChars.coerceIn(512, HARD_MAX_OUTPUT)
+                )
+            }.getOrElse { e ->
+                ExecResult(
+                    command = command, stdout = "", stderr = "", exitCode = -1,
+                    cwd = session.cwd, durationMs = 0L, timedOut = false, truncated = false,
+                    error = e.message ?: e.javaClass.simpleName
+                )
+            }
+        } finally {
+            inFlight.decrementAndGet()
+            touch()
         }
     }
 
@@ -690,30 +714,24 @@ class AiContainer internal constructor(
         return buildString {
             appendLine("# biji 本地容器")
             appendLine()
-            appendLine("这是当前会话专属的运行环境，重启 app 后依然在。")
-            appendLine()
-            appendLine("## 目录")
-            appendLine()
             appendLine("| 路径 | 变量 | 用途 |")
             appendLine("| --- | --- | --- |")
-            appendLine("| `${layout.work.absolutePath}` | `\$BIJI_WORK` | 项目区，放代码和产物。`read_file` / `write_file` 用 `work/xxx` 也能访问同一批文件 |")
-            appendLine("| `${layout.tmp.absolutePath}` | `\$BIJI_TMP` / `\$TMPDIR` | 临时文件，reset 会清 |")
-            appendLine("| `${layout.binDir.absolutePath}` | `\$BIJI_BIN` | 已装的命令行工具，已在 PATH 上；reset **不会**清 |")
-            appendLine("| `${layout.execDir.absolutePath}` | `\$BIJI_EXEC` | 可执行区（内部存储）。自己编出来的二进制要跑，先拷到这里 |")
+            appendLine("| `${layout.work.absolutePath}` | `\$BIJI_WORK` | 项目区，= read_file / write_file 的 `work/` |")
+            appendLine("| `${layout.tmp.absolutePath}` | `\$BIJI_TMP` | 临时，reset 会清 |")
+            appendLine("| `${layout.binDir.absolutePath}` | `\$BIJI_BIN` | 已装工具，在 PATH 上，reset 不清 |")
+            appendLine("| `${layout.execDir.absolutePath}` | `\$BIJI_EXEC` | 可执行区，自己编的二进制拷到这里才能跑 |")
             appendLine()
-            appendLine("## 注意")
+            appendLine("- `work/` 是 noexec 的，chmod +x 也执行不了。")
+            appendLine("- shell 持久：cd / export / 函数留到下一条命令。")
+            appendLine("- 超过 ${MAX_EXEC_TIMEOUT_MS / 1000} 秒的活儿用后台任务。")
+            appendLine("- 无 PTY：vi / top 这类交互式命令用不了。")
             appendLine()
-            appendLine("- `work/` 在共享存储上，多数设备挂载为 noexec：**在那里 chmod +x 也执行不了**。")
-            appendLine("  编译产物请 `cp foo \$BIJI_EXEC/ && \$BIJI_EXEC/foo`。")
-            appendLine("- shell 是持久的：`cd`、`export`、定义的函数、`source venv/bin/activate` 都会留到下一条命令。")
-            appendLine("- 超过 ${MAX_EXEC_TIMEOUT_MS / 1000} 秒的活儿用后台任务跑，别占着会话。")
-            appendLine("- 环境变量写在 `.env`，会话重启后自动恢复。")
-            appendLine("- 没有 root，也没有 PTY：交互式命令（vi、top、需要按 y 确认的）不要用，改用非交互参数。")
-            appendLine()
-            appendLine("## 当前可用命令 (${cmds.size})")
+            appendLine("## 可用命令 (${cmds.size})")
             appendLine()
             if (cmds.isEmpty()) {
-                appendLine("（空 —— 先用 install_package / list_packages 装 toybox 等基础工具）")
+                // 「空」说的只是 $BIJI_BIN。系统 /system/bin 一直在 PATH 上，Android
+                // 自带的 toybox 在那里。不写这句，模型看到「空」会先去装一遍 toybox。
+                appendLine("（\$BIJI_BIN 为空。`/system/bin` 仍在 PATH 上，ls/cat/grep/sed/find/tar 可用。）")
             } else {
                 appendLine("```")
                 appendLine(cmds.joinToString(" "))
