@@ -1,0 +1,152 @@
+#	biji 内置终端的 terminfo 源 —— 同目录下两个二进制条目就是它编出来的。
+#
+#	能力表是**按 terminal/TerminalEmulator.kt 逐条核对**出来的，不是抄一份
+#	xterm-256color 了事：我们没实现的（DECSLRM 左右边距、打印控制、调色板
+#	写入、?1034 meta、小键盘 ka1/kb2）一条都没声明，声明了程序就会真的发过
+#	来，而那些序列在我们这儿是被当成畸形输入吃掉的。
+#
+#	重新生成（需要 ncurses 的 tic，5.x/6.x 都行）：
+#	    tic -o out -s SOURCE.ti
+#	    cp out/x/xterm-256color xterm-256color
+#	    cp out/s/screen         screen
+#	    cp out/d/dumb           dumb
+#
+#	自检（三条都必须过）：
+#	 1. 回读一致：infocmp -1 -A ./out xterm-256color | tic -o out2 -
+#	    然后 cmp out/x/xterm-256color out2/x/xterm-256color
+#	 2. 格式是**传统 16 位**（magic 0432）：od -An -tu2 -N2 xterm-256color → 282
+#	    pairs 故意写 32767 而不是 65536 就是为了这个 —— 超过 int16 会让 tic
+#	    改用 01036 扩展格式，ncurses 6.1 以下和一部分第三方读取器不认。
+#	 3. dumb 那条必须和 ncurses 自带的一模一样：
+#	    cmp dumb /usr/share/terminfo/d/dumb
+#
+#	条目里的每一串转义字节都取自 ncurses 6.4 自带的 xterm-256color（用
+#	infocmp 导出后逐条删减），不是手敲的 —— 手敲 setaf 那种 %? %t %e 表达式
+#	错一个字符的表现是「某几个颜色号静默串色」，肉眼查不出来。
+#
+xterm-256color|xterm|xterm-color|vt100|biji built-in terminal,
+#	---- 布尔 ----
+	am,
+	bce,
+	hs,
+	mir,
+	msgr,
+	npc,
+	xenl,
+#	---- 数值 ----
+	colors#256,
+	cols#80,
+	it#8,
+	lines#24,
+	pairs#32767,
+#	---- 光标移动 ----
+	cup=\E[%i%p1%d;%p2%dH,
+	home=\E[H,
+	cr=\r,
+	cuu=\E[%p1%dA, cuu1=\E[A,
+	cud=\E[%p1%dB, cud1=\n,
+	cuf=\E[%p1%dC, cuf1=\E[C,
+	cub=\E[%p1%dD, cub1=^H,
+	hpa=\E[%i%p1%dG,
+	vpa=\E[%i%p1%dd,
+	sc=\E7, rc=\E8,
+	nel=\EE,
+#	---- 制表位 ----
+	ht=^I, cbt=\E[Z, hts=\EH, tbc=\E[3g,
+#	---- 擦除 ----
+	clear=\E[H\E[2J,
+	ed=\E[J, el=\E[K, el1=\E[1K,
+	ech=\E[%p1%dX,
+#	---- 插入 / 删除 ----
+	ich=\E[%p1%d@,
+	il=\E[%p1%dL, il1=\E[L,
+	dl=\E[%p1%dM, dl1=\E[M,
+	dch=\E[%p1%dP, dch1=\E[P,
+	smir=\E[4h, rmir=\E[4l,
+	rep=%p1%c\E[%p2%{1}%-%db,
+#	---- 滚动 ----
+	csr=\E[%i%p1%d;%p2%dr,
+	ind=\n, ri=\EM,
+	indn=\E[%p1%dS, rin=\E[%p1%dT,
+#	---- 属性 ----
+	bold=\E[1m, dim=\E[2m, blink=\E[5m, rev=\E[7m, invis=\E[8m,
+	smul=\E[4m, rmul=\E[24m,
+	sitm=\E[3m, ritm=\E[23m,
+	smso=\E[7m, rmso=\E[27m,
+	sgr0=\E(B\E[m,
+	sgr=%?%p9%t\E(0%e\E(B%;\E[0%?%p6%t;1%;%?%p5%t;2%;%?%p2%t;4%;%?%p1%p3%|%t;7%;%?%p4%t;5%;%?%p7%t;8%;m,
+#	---- 颜色 ----
+	setaf=\E[%?%p1%{8}%<%t3%p1%d%e%p1%{16}%<%t9%p1%{8}%-%d%e38;5;%p1%d%;m,
+	setab=\E[%?%p1%{8}%<%t4%p1%d%e%p1%{16}%<%t10%p1%{8}%-%d%e48;5;%p1%d%;m,
+	op=\E[39;49m,
+#	---- 字符集（DEC 特殊图形） ----
+	smacs=\E(0, rmacs=\E(B,
+	acsc=``aaffggiijjkkllmmnnooppqqrrssttuuvvwwxxyyzz{{||}}~~,
+#	---- 模式 ----
+	smam=\E[?7h, rmam=\E[?7l,
+	smcup=\E[?1049h, rmcup=\E[?1049l,
+	smkx=\E[?1h\E=, rmkx=\E[?1l\E>,
+	civis=\E[?25l, cnorm=\E[?25h,
+	flash=\E[?5h$<100/>\E[?5l,
+	bel=^G,
+#	---- 标题（OSC 0，UI 顶栏显示） ----
+	tsl=\E]0;, fsl=^G, dsl=\E]0;^G,
+#	---- 初始化 / 复位 ----
+	is2=\E[!p\E[4l\E>,
+	rs1=\Ec,
+	rs2=\E[!p\E[4l\E>,
+#	---- 查询（DSR / DA1） ----
+	u6=\E[%i%d;%dR, u7=\E[6n,
+	u8=\E[?%[;0123456789]c, u9=\E[c,
+#	---- 按键（逐条对着 TerminalEmulator.encodeKey 核过） ----
+	kbs=^?,
+	kcuu1=\EOA, kcud1=\EOB, kcuf1=\EOC, kcub1=\EOD,
+	khome=\EOH, kend=\EOF,
+	kich1=\E[2~, kdch1=\E[3~, kpp=\E[5~, knp=\E[6~,
+	kcbt=\E[Z,
+	kmous=\E[M,
+	kf1=\EOP, kf2=\EOQ, kf3=\EOR, kf4=\EOS,
+	kf5=\E[15~, kf6=\E[17~, kf7=\E[18~, kf8=\E[19~,
+	kf9=\E[20~, kf10=\E[21~, kf11=\E[23~, kf12=\E[24~,
+	kHOM=\E[1;2H, kEND=\E[1;2F,
+	kLFT=\E[1;2D, kRIT=\E[1;2C, kri=\E[1;2A, kind=\E[1;2B,
+	kIC=\E[2;2~, kDC=\E[3;2~, kPRV=\E[5;2~, kNXT=\E[6;2~,
+	kf13=\E[1;2P, kf14=\E[1;2Q, kf15=\E[1;2R, kf16=\E[1;2S,
+	kf17=\E[15;2~, kf18=\E[17;2~, kf19=\E[18;2~, kf20=\E[19;2~,
+	kf21=\E[20;2~, kf22=\E[21;2~, kf23=\E[23;2~, kf24=\E[24;2~,
+	kf25=\E[1;5P, kf26=\E[1;5Q, kf27=\E[1;5R, kf28=\E[1;5S,
+	kf29=\E[15;5~, kf30=\E[17;5~, kf31=\E[18;5~, kf32=\E[19;5~,
+	kf33=\E[20;5~, kf34=\E[21;5~, kf35=\E[23;5~, kf36=\E[24;5~,
+	kf37=\E[1;6P, kf38=\E[1;6Q, kf39=\E[1;6R, kf40=\E[1;6S,
+	kf41=\E[15;6~, kf42=\E[17;6~, kf43=\E[18;6~, kf44=\E[19;6~,
+	kf45=\E[20;6~, kf46=\E[21;6~, kf47=\E[23;6~, kf48=\E[24;6~,
+	kf49=\E[1;3P, kf50=\E[1;3Q, kf51=\E[1;3R, kf52=\E[1;3S,
+	kf53=\E[15;3~, kf54=\E[17;3~, kf55=\E[18;3~, kf56=\E[19;3~,
+	kf57=\E[20;3~, kf58=\E[21;3~, kf59=\E[23;3~, kf60=\E[24;3~,
+	kf61=\E[1;4P, kf62=\E[1;4Q, kf63=\E[1;4R,
+
+#	tmux 会把 pane 里的 TERM 设成 screen / screen-256color / tmux-256color，
+#	查不到条目的话 tmux 起得来、但 pane 里每个 ncurses 程序都开机即死。
+#	所以这三个名字必须有条目 —— 但**不能**直接做上面那条的别名：pane 里的
+#	程序说话的对象是 **tmux 的模拟器**，不是我们的，能力表得按 tmux 来。
+#	ncurses 自带的 tmux-256color / screen 都不声明下面这三条，我们也不能
+#	替 tmux 声明（对着 infocmp 的 tmux-256color 比出来的差集就这三个有后果）：
+#	  bce  声明了 ncurses 就认为「擦除会填当前背景色」而省掉重画，tmux 不这么
+#	       干 —— htop / vim 的彩色面板上会出现默认色的空洞，Ctrl-L 才补回来；
+#	  ech  声明了 ncurses 会发 \E[nX 去擦字，tmux 那边不擦，旧字留在屏幕上；
+#	  rep  声明了一长串重复字符会被压成 \E[nb，tmux 那边只画出一个。
+#	其余能力两边都有，所以直接 use= 上面那条再取消这三个，不另抄一份。
+#	（取消项必须写在 use= 前面，tic 才认。）
+screen|screen-256color|tmux-256color|biji built-in terminal (tmux pane),
+	bce@,
+	ech@,
+	rep@,
+	use=xterm-256color,
+
+#	TERM=dumb 有**语义**：AiContainer 用它表示「输出是给模型读的，别上色」。
+#	所以这一条必须是真正的 dumb，不能是上面那条的别名。
+#	内容 = ncurses 6.4 自带的 dumb 条目原样。
+dumb|80-column dumb tty,
+	am,
+	cols#80,
+	bel=^G, cr=\r, cud1=\n, ind=\n,
