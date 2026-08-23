@@ -39,6 +39,7 @@ set(BIJI_REQUIRED_SOURCES
     markdown_parser.cpp     # NativeMarkdown.nParseBlocks
     syntax_highlight.cpp    # NativeHighlight.nHighlight
     text_tools.cpp          # NativeText.nLineDiff / nSyntaxIssues / nLatexToUnicode
+    pty.cpp                 # NativePty.nCreateSubprocess / nSetWinSize / nWaitFor / ...
 )
 foreach(_req IN LISTS BIJI_REQUIRED_SOURCES)
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_req}")
