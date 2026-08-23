@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 装大件（zig 230 MB、go 280 MB）时把进程钉住：前台服务保进程不被回收，
+         wakelock 保锁屏后 CPU 不休眠。targetSdk = 28，所以 Android 14 那套
+         foregroundServiceType 强制不适用，不用声明类型。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <queries>
         <intent>
@@ -32,6 +37,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 工具链安装的保活壳子。不导出：只有本进程的 ToolchainJobs 会拉它，
+             以及通知栏那个「取消」按钮（PendingIntent 走的是本应用自己）。 -->
+        <service
+            android:name=".sandbox.ToolchainService"
+            android:exported="false" />
+
+        <!-- 唯一目的是在 Application.onCreate 之前拿到一个 Context 交给
+             ToolchainJobs —— 工具层的入口签名里没有 Context，而起前台服务
+             必须有。authority 带包名前缀，多个 app 装在同一台机器上不会撞。 -->
+        <provider
+            android:name=".sandbox.ToolchainContextProvider"
+            android:authorities="${applicationId}.toolchaininit"
+            android:exported="false"
+            android:initOrder="100" />
     </application>
 
 </manifest>
