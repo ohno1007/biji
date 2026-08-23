@@ -70,7 +70,7 @@ class AiContainerManager(
 
     /**
      * 节流后的后台收摊。[key] 是本次刚要用的容器，**无论如何不能收它** ——
-     * 调用方手里已经攒着这个引用了，收掉等于把它的 scope cancel 掉，
+     * 调用方手里已经攥着这个引用了，收掉等于把它的 scope cancel 掉，
      * 表现是「AI 说在跑，实际什么都没发生」。
      */
     private fun maybeSweep(key: String) {
@@ -95,7 +95,7 @@ class AiContainerManager(
      * 三条不碰的：本次正在用的那个、有后台任务在跑的、以及 [MIN_EVICT_IDLE_MS]
      * 内动过的（一个刚做完一轮工具调用的容器，模型下一句多半还要用它，
      * 收掉就是白白重建一遍长驻 shell）。全都不满足条件时**宁可超上限** ——
-     * 超一点内存，好过把用户正在编译的活儿掉了。下一次 [get] 再试。
+     * 超一点内存，好过把用户正在编译的活儿掐了。下一次 [get] 再试。
      */
     private suspend fun trimToCap(keepKey: String) {
         if (containers.size <= MAX_CONTAINERS) return
@@ -129,7 +129,7 @@ class AiContainerManager(
     /**
      * 回收空闲容器：长驻 `sh` 什么都不干时几乎不占 CPU，但每个都吃一份
      * 内存和两个读取协程。**有后台任务在跑的容器永远不回收** —— 把人家
-     * 正在编译的活儿掉掉就太蠢了。
+     * 正在编译的活儿掐掉就太蠢了。
      */
     suspend fun reapIdle(idleMs: Long = DEFAULT_IDLE_MS, keep: String? = null) {
         val now = System.currentTimeMillis()
