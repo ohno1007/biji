@@ -89,7 +89,7 @@ object TerminfoDb {
      * 换了 assets 里的字节就必须跟着 +1，否则老设备上留着旧条目 —— 那种 bug
      * 的表现是「我改了 terminfo 但设备上没生效」，查起来很费劲。
      */
-    const val VERSION = "2"
+    const val VERSION = "3"
 
     private const val DIR_NAME = "terminfo"
     private const val STAMP_NAME = ".version"
@@ -228,7 +228,17 @@ object TerminfoDb {
      * 语焉不详的错。这里挡住，至少错误信息指向正确的地方。
      */
     private fun readAsset(ctx: Context, name: String): ByteArray? = runCatching {
-        val bytes = ctx.assets.open("$ASSET_DIR/$name").use { it.readBytes() }
+        // 资产存的是 base64 文本，不是裸二进制。
+        //
+        // 原因不在 Android 这边（AAPT 对 assets/ 是原样打包的），在仓库这边：
+        // 这个项目的源码要经 JSON 通道搬运（本地 git push 没凭据时只能走
+        // GitHub API），那条通道**只能传文本**，二进制文件根本推不上去。
+        // base64 之后 4.7 KB 变 6.3 KB，多出来的 1.6 KB 换「仓库里没有二进制」
+        // 这件事，划算。解码后仍然验魔数，坏了照样挡得住。
+        val text = ctx.assets.open("$ASSET_DIR/$name.b64").use {
+            it.readBytes().toString(Charsets.US_ASCII)
+        }
+        val bytes = android.util.Base64.decode(text, android.util.Base64.DEFAULT)
         val ok = bytes.size > 12 &&
             (bytes[0].toInt() and 0xFF) == MAGIC_LO &&
             (bytes[1].toInt() and 0xFF) == MAGIC_HI
