@@ -369,7 +369,7 @@ private fun EmptyHint() {
         contentAlignment = Alignment.Center
     ) {
         Text(
-            "点上面新建一个对话，或者去「设置」填一下 DeepSeek 的 API Key。",
+            "新建一个对话开始",
             style = MaterialTheme.typography.bodyMedium,
             color = cs.onSurfaceVariant
         )
