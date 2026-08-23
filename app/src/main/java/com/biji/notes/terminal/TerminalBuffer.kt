@@ -61,11 +61,33 @@ private const val MAX_CLUSTER_CPS = 8
 /** 组合簇池上限（int 数）。到顶后新组合符被丢弃，只渲染基字符：只降级，不失败。 */
 private const val MAX_CLUSTER_INTS = 64 * 1024
 
-/** 默认回滚行数。 */
-const val DEFAULT_SCROLLBACK_LINES = 5000
+/**
+ * 默认回滚行数。
+ *
+ * 从 5000 降到 2000（和 Termux 的默认值一致）。账是这么算的：一行满宽占
+ * `cols × 2 int × 4 B = cols × 8 B`，槽位数组只按最宽的那次分配、之后一直复用，
+ * 所以一个会话的回滚常驻 = 行数 × cols × 8 B：
+ *   5000 行 × 80 列 × 8 B = 3.05 MB    5000 × 200 列 = 7.63 MB
+ *   2000 行 × 80 列 × 8 B = 1.22 MB    2000 × 200 列 = 3.05 MB
+ * 再乘上会话数（[com.biji.notes.sandbox.TerminalSessionManager.MAX_SESSIONS] = 8）：
+ * 原来最坏 61 MB，现在被 [DEFAULT_SCROLLBACK_BYTES] 压到 8 × 2 MB = 16 MB。
+ */
+const val DEFAULT_SCROLLBACK_LINES = 2000
 
-/** 默认回滚字节上限。只按行数限会被一行一百万字符的 `cat` 打爆。 */
-const val DEFAULT_SCROLLBACK_BYTES = 8L * 1024 * 1024
+/**
+ * 默认回滚字节上限，**每个会话**。
+ *
+ * 这个值现在是真上限：它在建环的时候就换算成行数（见
+ * [TerminalBuffer.histCapFor]），而不是像以前那样按"已用列数"记账 ——
+ * 老写法记的是内容量，可槽位 IntArray 只增不减，实际常驻是每槽历史最高
+ * 水位之和，于是 cols > 262 时真实占用会**超过**声称的 8 MB 上限。
+ * 一行一百万字符的 `cat` 打不爆它：那行会按 cols 折成很多行，
+ * 每行都不可能宽过 cols。
+ */
+const val DEFAULT_SCROLLBACK_BYTES = 2L * 1024 * 1024
+
+/** 换算行数上限时给回滚留的地板，免得超宽终端把历史压到只剩几行。 */
+private const val MIN_SCROLLBACK_LINES = 200
 
 // ---------------------------------------------------------------------
 // Style intern 表
@@ -348,6 +370,16 @@ class TerminalBuffer(
      * （`TerminalScreen.kt` 第 130 行那条注释踩的就是 Kotlin 版的同一个坑）。
      *
      * 双上限：行数**和**总字节，先到先淘汰。
+     *
+     * ## 字节这一维以前是假的
+     * 老写法 `bytes += used * 8` 记的是**内容量**，而槽位数组只增不减、
+     * 淘汰时不释放，所以真实常驻是每槽历史最高水位之和，上界 `cap × cols × 8`。
+     * cols > 262 时它已经超过声称的 8 MB 了，声明的上限完全不生效。
+     * 现在 [bytes] 记的是**已分配的槽位字节**，两处配合让上限真正成立：
+     *  1. [cap] 由 [TerminalBuffer.histCapFor] 按 cols 折算，`cap × cols × 8 ≤ maxBytes`；
+     *  2. 淘汰时超过每槽预算 [slotBudgetInts] 的大数组直接放掉，不再留着复用。
+     * 正常宽度的行（`n ≤ cols`，因为超宽的行在屏幕上就已经折过了）一律在
+     * 预算内，复用照旧 —— "稳态零分配"这条没丢。
      */
     private class History(val cap: Int, val maxBytes: Long) {
         val cells = arrayOfNulls<IntArray>(if (cap > 0) cap else 1)
@@ -355,7 +387,19 @@ class TerminalBuffer(
         val flags = IntArray(if (cap > 0) cap else 1)
         var head = 0
         var count = 0
+
+        /** 当前**已分配**的槽位总字节（含腾空后留着复用的槽）。 */
         var bytes = 0L
+
+        /**
+         * 每个槽位留着复用的上限（int 数）。淘汰时超过它的数组就地放掉，
+         * 否则一次 `cat` 超宽内容会让那几个槽永远背着大数组。
+         * 由 [maxBytes] / [cap] 摊出来，所以 `cap × 预算 × 4 ≤ maxBytes` 恒成立
+         * —— 这条保证了下面按字节淘汰的循环不会空转到把历史清光。
+         */
+        private val slotBudgetInts: Int =
+            if (cap <= 0) 32
+            else ((maxBytes / cap / 4).toInt()).coerceAtLeast(32)
 
         /** 累计淘汰行数。resize 时用它把绝对行号平移回去。 */
         var evicted = 0
@@ -375,21 +419,28 @@ class TerminalBuffer(
             var arr = cells[s]
             if (arr == null || arr.size < n * 2) {
                 // 只在装不下时重新分配；32 是给"几乎空行"的下限，省得反复 grow。
+                bytes -= (arr?.size ?: 0).toLong() * 4
                 arr = IntArray(if (n * 2 < 32) 32 else n * 2)
                 cells[s] = arr
+                bytes += arr.size.toLong() * 4
             }
             if (n > 0) System.arraycopy(src, 0, arr, 0, n * 2)
             len[s] = n
             flags[s] = rowFlags
             count++
-            bytes += n.toLong() * 8
             while (bytes > maxBytes && count > 1) evictOne()
         }
 
+        /** O(1)：只动 head 和计数，没有任何搬移。 */
         fun evictOne() {
             if (count <= 0) return
-            bytes -= len[head].toLong() * 8
-            if (bytes < 0) bytes = 0
+            val arr = cells[head]
+            if (arr != null && arr.size > slotBudgetInts) {
+                bytes -= arr.size.toLong() * 4
+                cells[head] = null
+            }
+            len[head] = 0
+            flags[head] = 0
             head = (head + 1) % cap
             count--
             evicted++
@@ -398,20 +449,24 @@ class TerminalBuffer(
         /**
          * 丢弃最新的一行，返回它的槽位下标（内容还在，调用方可以先读走）。
          * resize 往回拉行、rewrap 收尾都靠它。
+         *
+         * 不动 [bytes]：数组还在槽里等着复用，钱得继续记着。
          */
         fun popTail(): Int {
             if (count <= 0 || cap <= 0) return -1
             count--
             val s = (head + count) % cap
-            bytes -= len[s].toLong() * 8
-            if (bytes < 0) bytes = 0
             return s
         }
 
+        /** RIS / 清历史：这是用户明确要求腾地方的时刻，数组一并放掉。 */
         fun clear() {
             head = 0
             count = 0
             bytes = 0
+            java.util.Arrays.fill(cells, null)
+            java.util.Arrays.fill(len, 0)
+            java.util.Arrays.fill(flags, 0)
         }
     }
 
@@ -430,9 +485,10 @@ class TerminalBuffer(
     var altActive: Boolean = false
         private set
 
-    private val histCap = if (scrollbackLines < 0) 0 else scrollbackLines
-    private var hist = History(histCap, maxScrollbackBytes)
+    /** 用户/默认要的行数。真正用几行看 [histCapFor]，它还要过一遍字节预算。 */
+    private val histLines = if (scrollbackLines < 0) 0 else scrollbackLines
     private val maxBytes = maxScrollbackBytes
+    private var hist = History(histCapFor(this.cols), maxScrollbackBytes)
 
     // 组合簇池。append-only，只有 reset() 才整体清空 —— 历史行里存着指向
     // 池子的偏移，中途清池就是悬垂引用。
@@ -445,6 +501,24 @@ class TerminalBuffer(
     val historyLines: Int get() = hist.count
 
     val totalLines: Int get() = hist.count + rows
+
+    /**
+     * 按列宽把「要多少行」折算成「能要多少行」。
+     *
+     * 一行满宽 = `cols 格 × 2 int × 4 B = cols × 8 B`，槽位按最宽的那次分配后
+     * 一直复用，所以整个回滚的常驻上界就是 `行数 × cols × 8 B`。在这里先除一次，
+     * 上限才是真的：80 列时 2000 行只占 1.22 MB（行数先到顶），200 列时折成
+     * 1310 行、仍然是 2 MB。宽终端换来的是短历史，而不是偷偷多吃三倍内存。
+     *
+     * 留 [MIN_SCROLLBACK_LINES] 的地板：接了外接显示器的极端列宽下，
+     * 历史被压到只剩几行比多占几 MB 更像 bug。
+     */
+    private fun histCapFor(colCount: Int): Int {
+        if (histLines <= 0) return 0
+        val perLine = colCount.toLong().coerceAtLeast(1L) * 8L
+        val byBytes = (maxBytes / perLine).toInt().coerceAtLeast(MIN_SCROLLBACK_LINES)
+        return if (histLines < byBytes) histLines else byBytes
+    }
 
     // -----------------------------------------------------------------
     // 单元格读写
@@ -752,6 +826,11 @@ class TerminalBuffer(
         } else {
             cur = main
             altActive = false
+            // 切回主屏就把备用屏整块放掉：退了 vim 之后它是一块**只会被读到
+            // 一次都不会**的 rows × cols × 8 B（80×24 是 15 KB，200×60 是 188 KB，
+            // 每个会话一份）。重进 vim 时 setAlternate(true) 本来就要按当时的
+            // cols/rows 重新分配，留着也未必能复用。
+            alt = null
         }
     }
 
@@ -1246,7 +1325,9 @@ class TerminalBuffer(
         }
         val totalSrc = histCount + lastRow + 1
 
-        val out = History(histCap, maxBytes)
+        // 按**新**列宽重算行数上限：变宽了就少留几行，2 MB 的预算不随
+        // 转屏悄悄涨。旧的 hist 整个丢掉，所以这里不用管它的槽位。
+        val out = History(histCapFor(newCols), maxBytes)
         val scratch = IntArray(newCols * 2)
         var dstCol = 0
         var emitted = 0
@@ -1372,7 +1453,7 @@ class TerminalBuffer(
         rows = newRows
         growTmp()
 
-        // 输出序号 → 新的绝对行号。屏幕行和历史行分开算：histCap 比屏幕还小时
+        // 输出序号 → 新的绝对行号。屏幕行和历史行分开算：回滚容量比屏幕还小时
         // （scrollbackLines = 0）两者不再等价，用一个公式糊过去会让光标错位。
         val histLeft = out.count
         var m = 0
