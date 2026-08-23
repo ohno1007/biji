@@ -204,11 +204,11 @@ private fun toolKindOf(m: Message): String? {
     return kind
 }
 
-private const val KIND_HEAD = "{\\\"kind\\\":\\\""
+private const val KIND_HEAD = "{\"kind\":\""
 
 private fun scanToolKind(raw: String): String? {
     if (raw.startsWith(KIND_HEAD)) {
-        val end = raw.indexOf('\"', KIND_HEAD.length)
+        val end = raw.indexOf('"', KIND_HEAD.length)
         if (end > KIND_HEAD.length) return raw.substring(KIND_HEAD.length, end)
     }
     return runCatching {
@@ -424,7 +424,7 @@ fun ChatScreen(
                             ReasoningBlock(
                                 reasoning = item.messages
                                     .mapNotNull { it.reasoning?.takeIf { r -> r.isNotBlank() } }
-                                    .joinToString("\\n\\n")
+                                    .joinToString("\n\n")
                             )
                         }
                     }
@@ -1225,11 +1225,11 @@ private fun AssistantBlock(m: Message, onOpenUrl: (String) -> Unit = {}) {
 // 输出时这个函数每 90ms 对全文跑一次，编译开销比匹配还大。提到
 // 顶层只编译一次。
 private val ToolMarkupClosed =
-    Regex("<\\\\|\\\\|[A-Za-z]+\\\\|\\\\|[\\\\s\\\\S]*?</\\\\|\\\\|[A-Za-z]+\\\\|\\\\|[^>]*>")
+    Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*?</\\|\\|[A-Za-z]+\\|\\|[^>]*>")
 private val ToolMarkupClosedAlt =
-    Regex("<\\\\|tool_calls?\\\\|>[\\\\s\\\\S]*?</\\\\|tool_calls?\\\\|>")
-private val ToolMarkupOpen = Regex("<\\\\|\\\\|[A-Za-z]+\\\\|\\\\|[\\\\s\\\\S]*$")
-private val ToolMarkupOpenAlt = Regex("<\\\\|tool_calls?\\\\|>[\\\\s\\\\S]*$")
+    Regex("<\\|tool_calls?\\|>[\\s\\S]*?</\\|tool_calls?\\|>")
+private val ToolMarkupOpen = Regex("<\\|\\|[A-Za-z]+\\|\\|[\\s\\S]*$")
+private val ToolMarkupOpenAlt = Regex("<\\|tool_calls?\\|>[\\s\\S]*$")
 
 internal fun stripToolCallMarkup(raw: String): String {
     // 绝大多数消息里根本没有这种标记，先做一次廉价的 contains 判断，
