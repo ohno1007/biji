@@ -71,6 +71,14 @@ import kotlinx.coroutines.delay
 // AST
 // =====================================================================
 
+/**
+ * 代码块缓存键的分隔符。NUL 做分隔符是对的 —— lang 里不可能出现它，
+ * 换成空格反而会让 ("kt", " x") 和 ("kt ", "x") 撞键。但原来是一个
+ * **裸的 0x00 字节**直接躺在源文件里，整个文件被 git / grep 当成二进制，
+ * diff 也没法看。写成 Char(0)。
+ */
+private val SEP = Char(0)
+
 private sealed interface Block {
     data class Heading(val level: Int, val text: String) : Block
     data class Paragraph(val text: String) : Block
@@ -765,7 +773,7 @@ private fun CodeBlock(lang: String, code: String, baseColor: Color, isDark: Bool
     // 块每秒被强制折叠十来次，用户根本没法看着它写完。改用「语言 +
     // 前 64 个字符」当 key：追加内容时它不变，不同代码块之间又足够
     // 区分，于是流式期间折叠/展开状态稳定保留。
-    val blockKey = remember(lang, code.take(64)) { lang + " " + code.take(64) }
+    val blockKey = remember(lang, code.take(64)) { lang + SEP + code.take(64) }
     var copied by remember(blockKey) { mutableStateOf(false) }
     // 行数要跟着内容走：短块写着写着变长了，isLong 得能翻成 true。
     val isLong = remember(code) { code.count { it == '\n' } >= 12 }
