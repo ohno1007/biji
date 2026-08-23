@@ -64,6 +64,9 @@ interface ChatDao {
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun deleteMessage(id: Long)
 
-    @Query("SELECT * FROM messages WHERE archived = 0 ORDER BY createdAt DESC LIMIT :limit")
+    // 刻意**不**过滤 archived：归档只表示「不再进请求前缀」，不表示这段内容
+    // 作废了。原来带着 archived = 0，于是一压缩，那段对话同时从请求和长期记忆
+    // 里消失 —— 而「把压掉的东西还能找回来」正是长期记忆该干的事。
+    @Query("SELECT * FROM messages ORDER BY createdAt DESC LIMIT :limit")
     suspend fun getRecentForIndex(limit: Int = 5000): List<Message>
 }
