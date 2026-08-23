@@ -74,12 +74,15 @@ class LocalSandbox(
             return File(base, "projects").also { it.mkdirs() }
         }
 
+    /** folder -> 目录名。归一化规则是全 app 共享的一份，[AiContainerManager]
+     *  和 [TerminalSessionManager] 算出来的必须是同一个字符串。 */
+    private fun folderKey(folder: String?): String =
+        folder?.trim()?.trim('/')?.ifEmpty { null } ?: DEFAULT_FOLDER
+
     /** Project root for [folder]. Falls back to `projects/default` when
      *  the folder is null or blank. Created lazily; survives across runs. */
-    fun projectRoot(folder: String?): File {
-        val name = folder?.trim()?.trim('/')?.ifEmpty { null } ?: DEFAULT_FOLDER
-        return File(projectsBase, name).also { it.mkdirs() }
-    }
+    fun projectRoot(folder: String?): File =
+        File(projectsBase, folderKey(folder)).also { it.mkdirs() }
 
     /** Map a user-supplied relative path to a real [File] inside the
      *  [folder]'s project root. Throws [SecurityException] if the
@@ -309,20 +312,17 @@ class LocalSandbox(
         }
 
     /**
-     * Detect whether Termux is installed at its canonical sandbox path.
-     * Needs root because the Termux app's private data dir isn't
-     * world-readable on stock Android. Returns the bin path on success
-     * (so the caller can splice it into PATH), null otherwise.
+     * `$BIJI_EXEC`：AI 自己编出来的东西的落脚点，必须在**内部存储**上。
+     * 项目目录在共享存储里，那卷是 noexec 的 —— 在那儿 chmod +x 完再执行
+     * 只会拿到 Permission denied，这个坑踩过不止一次。
+     *
+     * 路径规则和 [AiContainerManager] 拼 execDir 的方式逐字一致
+     * （`filesDir/exec/<key>`），差一个字符就是两套目录，表现为
+     * 「AI 装的东西 run_shell_command 里 not found」。
      */
-    suspend fun detectTermuxBin(): String? = withContext(Dispatchers.IO) {
-        runCatching {
-            val p = ProcessBuilder("su", "-c", "test -x $TERMUX_BIN/sh && echo OK")
-                .redirectErrorStream(true).start()
-            val finished = p.waitFor(4_000, TimeUnit.MILLISECONDS)
-            if (!finished) { p.destroyForcibly(); return@runCatching null }
-            val out = p.inputStream.bufferedReader().use { it.readText() }
-            if (p.exitValue() == 0 && out.contains("OK")) TERMUX_BIN else null
-        }.getOrDefault(null)
+    fun execDir(folder: String?): File {
+        val base = File(context.filesDir, "exec")
+        return File(base, folderKey(folder)).also { it.mkdirs() }
     }
 
     /**
@@ -337,6 +337,10 @@ class LocalSandbox(
      * `rm -rf /` even with elevation). If `su` is missing the call
      * comes back with a non-zero exit and a stderr noting that root
      * isn't available.
+     *
+     * root 与非 root 拿到的是**同一份环境**（PATH / HOME / BIJI_*）：差别只在
+     * 谁来执行，不在能找到什么命令。以前 root 分支会额外挂上 Termux 的目录，
+     * 于是同一条命令 asRoot 开和不开跑出两种结果，非常难查。
      */
     suspend fun runShell(
         folder: String?,
@@ -369,19 +373,39 @@ class LocalSandbox(
                 )
             }
             val start = System.currentTimeMillis()
-            // biji 自带 toybox bootstrap 加进 PATH；root 模式时也带上
-            // Termux 默认路径让 su 进去能找到用户装的工具。
-            val toyboxBin = bootstrap?.binDir?.absolutePath
+            // 环境按**我们自己的容器**来，root 与非 root 完全同一份。
+            //
+            // 以前 asRoot 会往 PATH 上拼 Termux 的 usr/bin、再把 LD_LIBRARY_PATH
+            // 和 HOME 指到 Termux 里去。那条路必须死掉：Termux 的包把
+            // `/data/data/com.termux/files/usr` 硬编码在二进制里，借过来跑不是
+            // not found 就是 loader 崩，这个坑本项目已经踩过；而且它要求用户装了
+            // Termux，等于把我们的开发环境挂在别人家的 app 上。
+            //
+            // asRoot 这个开关本身留着 —— 用户手机真有 root 时 `su -c` 依然有意义
+            // （能读到 app 私有目录之外的东西），只是别再假设 Termux 存在。
+            val home = projectRoot(folder)
+            val execDirEnv = execDir(folder)
+            // 容器那边靠 ContainerLayout.mkdirs() 建这两个目录，但 run_shell_command
+            // 可能先于任何容器被调到。导出一个不存在的 $BIJI_WORK 只会让模型
+            // 第一条 `cd \"$BIJI_WORK\"` 就失败，顺手建掉。
+            val workDirEnv = File(home, "work").also { it.mkdirs() }
+            val tmpDirEnv = File(home, "tmp").also { it.mkdirs() }
+            val binDir = bootstrap?.binDir?.absolutePath?.takeIf { it.isNotBlank() }
             val pathParts = buildList {
-                if (!toyboxBin.isNullOrBlank()) add(toyboxBin)
-                if (asRoot) add(TERMUX_BIN)
+                binDir?.let { add(it) }
+                add(execDirEnv.absolutePath)
             }
-            val pathExport = if (pathParts.isNotEmpty())
-                "export PATH=${pathParts.joinToString(":")}:${'$'}PATH; " else ""
-            val ldExport = if (asRoot)
-                "export LD_LIBRARY_PATH=$TERMUX_LIB:${'$'}{LD_LIBRARY_PATH:-}; " else ""
-            val homeExport = if (asRoot) "export HOME=$TERMUX_HOME; " else ""
-            val envPrelude = pathExport + ldExport + homeExport
+            val envPrelude = buildString {
+                if (binDir != null) append("export BIJI_BIN=${shellQuote(binDir)}; ")
+                append("export BIJI_EXEC=${shellQuote(execDirEnv.absolutePath)}; ")
+                append("export BIJI_WORK=${shellQuote(workDirEnv.absolutePath)}; ")
+                append("export BIJI_TMP=${shellQuote(tmpDirEnv.absolutePath)}; ")
+                append("export PATH=${shellQuote(pathParts.joinToString(":"))}:${'$'}PATH; ")
+                // su 进去 HOME 会变成 /root（或干脆没有），工具往那儿写配置就
+                // 散落在容器外面。指回项目根，和 ContainerLayout.applyEnv 一致 ——
+                // 「session 里能跑、job 里 not found」那类问题都出在两边环境不一样。
+                append("export HOME=${shellQuote(home.absolutePath)}; ")
+            }
             val pb = if (asRoot) {
                 ProcessBuilder(
                     "su",
@@ -434,14 +458,6 @@ class LocalSandbox(
 
     companion object {
         const val DEFAULT_FOLDER = "default"
-        /** Termux's canonical bin path under app-private data. Splicing
-         *  this into PATH lets us call `gcc / cmake / clang / make / git
-         *  / python` etc. that the user installed via `pkg install …` —
-         *  the directory itself is unreadable to other apps on stock
-         *  Android, so calls only land if biji is running as root. */
-        const val TERMUX_BIN = "/data/data/com.termux/files/usr/bin"
-        const val TERMUX_LIB = "/data/data/com.termux/files/usr/lib"
-        const val TERMUX_HOME = "/data/data/com.termux/files/home"
 
         /** Return a short human-readable reason if [cmd] looks
          *  unambiguously destructive, else null. Matches on the raw
